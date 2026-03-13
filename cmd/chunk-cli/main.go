@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -26,6 +27,10 @@ type globalOptions struct {
 func main() {
 	opts, args, err := parseGlobalFlags(os.Args[1:])
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage()
+			return
+		}
 		fatal(err)
 	}
 
@@ -223,6 +228,7 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 
 	fs := flag.NewFlagSet("chunk-cli", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {}
 
 	fs.StringVar(&opts.URI, "uri", "chunk://127.0.0.1:4242/", "connection URI: chunk://token@host:port/ or chunks://token@host:port/")
 	fs.StringVar(&opts.TokenOverride, "token", "", "token override (preferred over token in URI)")
@@ -231,6 +237,9 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
 
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return globalOptions{}, nil, flag.ErrHelp
+		}
 		return globalOptions{}, nil, err
 	}
 
