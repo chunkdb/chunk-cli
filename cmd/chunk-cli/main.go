@@ -39,9 +39,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	if args[0] == "version" {
+	cmd := strings.ToLower(args[0])
+	cmdArgs := args[1:]
+
+	switch cmd {
+	case "version":
 		fmt.Println(version)
 		return
+	case "help", "-h", "--help":
+		printUsage()
+		return
+	case "ping", "info", "auth", "get", "set", "chunk", "chunkbin":
+		// network command
+	default:
+		fatal(fmt.Errorf("unknown command %q", cmd))
+	}
+
+	if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+		fatal(err)
 	}
 
 	parsedURI, err := chunkuri.Parse(opts.URI)
@@ -67,9 +82,6 @@ func main() {
 		_ = client.Close()
 	}()
 
-	cmd := strings.ToLower(args[0])
-	cmdArgs := args[1:]
-
 	if cmd != "auth" && effectiveToken != "" {
 		if _, err := runSimple(client, "AUTH "+effectiveToken); err != nil {
 			fatal(fmt.Errorf("automatic AUTH failed: %w", err))
@@ -88,14 +100,10 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		output := string(payload)
-		if !strings.HasSuffix(output, "\n") {
-			output += "\n"
-		}
-		fmt.Print(output)
+		printTextPayload(payload)
 	case "auth":
 		token := ""
-		if len(cmdArgs) > 0 {
+		if len(cmdArgs) == 1 {
 			token = cmdArgs[0]
 		} else {
 			token = effectiveToken
@@ -109,43 +117,87 @@ func main() {
 		}
 		fmt.Println(text)
 	case "get":
-		x, y := mustTwoCoords(cmdArgs, "get")
+		x, y := cmdArgs[0], cmdArgs[1]
 		payload, err := runBulk(client, fmt.Sprintf("GET %s %s", x, y))
 		if err != nil {
 			fatal(err)
 		}
-		fmt.Println(string(payload))
+		printTextPayload(payload)
 	case "set":
-		if len(cmdArgs) != 3 {
-			fatal(fmt.Errorf("usage: set <x> <y> <bits>"))
-		}
-		mustInt(cmdArgs[0], "x")
-		mustInt(cmdArgs[1], "y")
-		bits := cmdArgs[2]
-		if bits == "" {
-			fatal(fmt.Errorf("bits must not be empty"))
-		}
-		text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], bits))
+		text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
 		if err != nil {
 			fatal(err)
 		}
 		fmt.Println(text)
 	case "chunk":
-		cx, cy := mustTwoCoords(cmdArgs, "chunk")
+		cx, cy := cmdArgs[0], cmdArgs[1]
 		payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s", cx, cy))
 		if err != nil {
 			fatal(err)
 		}
-		fmt.Println(string(payload))
+		printTextPayload(payload)
 	case "chunkbin":
 		if err := runChunkBin(client, cmdArgs); err != nil {
 			fatal(err)
 		}
-	case "help", "-h", "--help":
-		printUsage()
-	default:
-		fatal(fmt.Errorf("unknown command %q", cmd))
 	}
+}
+
+func validateCommandArgs(cmd string, cmdArgs []string) error {
+	switch cmd {
+	case "ping", "info":
+		if len(cmdArgs) != 0 {
+			return fmt.Errorf("usage: %s", cmd)
+		}
+	case "auth":
+		if len(cmdArgs) > 1 {
+			return fmt.Errorf("usage: auth <token>")
+		}
+	case "get":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: get <x> <y>")
+		}
+		if err := validateIntArg(cmdArgs[0], "x"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
+			return err
+		}
+	case "set":
+		if len(cmdArgs) != 3 {
+			return fmt.Errorf("usage: set <x> <y> <bits>")
+		}
+		if err := validateIntArg(cmdArgs[0], "x"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
+			return err
+		}
+		if cmdArgs[2] == "" {
+			return fmt.Errorf("bits must not be empty")
+		}
+		if err := validateBits(cmdArgs[2]); err != nil {
+			return err
+		}
+	case "chunk":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: chunk <cx> <cy>")
+		}
+		if err := validateIntArg(cmdArgs[0], "cx"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIntArg(value string, field string) error {
+	if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+		return fmt.Errorf("invalid %s %q: %w", field, value, err)
+	}
+	return nil
 }
 
 func runChunkBin(client *chunkclient.Client, cmdArgs []string) error {
@@ -165,8 +217,13 @@ func runChunkBin(client *chunkclient.Client, cmdArgs []string) error {
 
 	cx := remaining[0]
 	cy := remaining[1]
-	mustInt(cx, "cx")
-	mustInt(cy, "cy")
+
+	if err := validateIntArg(cx, "cx"); err != nil {
+		return err
+	}
+	if err := validateIntArg(cy, "cy"); err != nil {
+		return err
+	}
 
 	payload, err := runBulk(client, fmt.Sprintf("CHUNKBIN %s %s", cx, cy))
 	if err != nil {
@@ -189,10 +246,10 @@ func runChunkBin(client *chunkclient.Client, cmdArgs []string) error {
 func runSimple(client *chunkclient.Client, command string) (string, error) {
 	resp, err := client.Command(command)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s failed: %w", commandVerb(command), err)
 	}
 	if resp.Kind != chunkclient.ResponseSimple {
-		return "", fmt.Errorf("unexpected response kind for %q", command)
+		return "", fmt.Errorf("%s failed: expected simple response", commandVerb(command))
 	}
 	return resp.Simple, nil
 }
@@ -200,27 +257,29 @@ func runSimple(client *chunkclient.Client, command string) (string, error) {
 func runBulk(client *chunkclient.Client, command string) ([]byte, error) {
 	resp, err := client.Command(command)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s failed: %w", commandVerb(command), err)
 	}
 	if resp.Kind != chunkclient.ResponseBulk {
-		return nil, fmt.Errorf("unexpected response kind for %q", command)
+		return nil, fmt.Errorf("%s failed: expected bulk response", commandVerb(command))
 	}
 	return resp.Bulk, nil
 }
 
-func mustTwoCoords(args []string, command string) (string, string) {
-	if len(args) != 2 {
-		fatal(fmt.Errorf("usage: %s <x> <y>", command))
+func commandVerb(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return "command"
 	}
-	mustInt(args[0], "x")
-	mustInt(args[1], "y")
-	return args[0], args[1]
+	return strings.ToLower(fields[0])
 }
 
-func mustInt(value string, field string) {
-	if _, err := strconv.ParseInt(value, 10, 64); err != nil {
-		fatal(fmt.Errorf("invalid %s %q: %w", field, value, err))
+func validateBits(bits string) error {
+	for i, ch := range bits {
+		if ch != '0' && ch != '1' {
+			return fmt.Errorf("invalid bits: only '0' and '1' are allowed (position %d)", i)
+		}
 	}
+	return nil
 }
 
 func parseGlobalFlags(args []string) (globalOptions, []string, error) {
@@ -274,6 +333,14 @@ Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ get 0 0
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)
+}
+
+func printTextPayload(payload []byte) {
+	output := string(payload)
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	fmt.Print(output)
 }
 
 func fatal(err error) {
