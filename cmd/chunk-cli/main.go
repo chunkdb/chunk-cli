@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -49,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "set", "chunk", "chunkbin":
+	case "ping", "info", "auth", "get", "set", "chunk", "chunkbin", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -82,7 +84,7 @@ func main() {
 		_ = client.Close()
 	}()
 
-	if cmd != "auth" && effectiveToken != "" {
+	if cmd != "auth" && cmd != "shell" && effectiveToken != "" {
 		if _, err := runSimple(client, "AUTH "+effectiveToken); err != nil {
 			fatal(fmt.Errorf("automatic AUTH failed: %w", err))
 		}
@@ -100,7 +102,7 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		printTextPayload(payload)
+		printTextPayload(os.Stdout, payload)
 	case "auth":
 		token := ""
 		if len(cmdArgs) == 1 {
@@ -122,7 +124,7 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		printTextPayload(payload)
+		printTextPayload(os.Stdout, payload)
 	case "set":
 		text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
 		if err != nil {
@@ -135,9 +137,13 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
-		printTextPayload(payload)
+		printTextPayload(os.Stdout, payload)
 	case "chunkbin":
-		if err := runChunkBin(client, cmdArgs); err != nil {
+		if err := runChunkBin(client, cmdArgs, os.Stdout, os.Stderr); err != nil {
+			fatal(err)
+		}
+	case "shell":
+		if err := runShell(client, effectiveToken, os.Stdin, os.Stdout, os.Stderr); err != nil {
 			fatal(err)
 		}
 	}
@@ -189,6 +195,10 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
 			return err
 		}
+	case "shell":
+		if len(cmdArgs) != 0 {
+			return fmt.Errorf("usage: shell")
+		}
 	}
 	return nil
 }
@@ -200,9 +210,9 @@ func validateIntArg(value string, field string) error {
 	return nil
 }
 
-func runChunkBin(client *chunkclient.Client, cmdArgs []string) error {
+func runChunkBin(client *chunkclient.Client, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
 	fs := flag.NewFlagSet("chunkbin", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(stderr)
 
 	outPath := fs.String("out", "", "write raw binary payload to file")
 
@@ -234,13 +244,147 @@ func runChunkBin(client *chunkclient.Client, cmdArgs []string) error {
 		if err := os.WriteFile(*outPath, payload, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", *outPath, err)
 		}
-		fmt.Printf("wrote %d bytes to %s\n", len(payload), *outPath)
+		fmt.Fprintf(stdout, "wrote %d bytes to %s\n", len(payload), *outPath)
 		return nil
 	}
 
-	fmt.Printf("bytes=%d\n", len(payload))
-	fmt.Print(hex.Dump(payload))
+	fmt.Fprintf(stdout, "bytes=%d\n", len(payload))
+	fmt.Fprint(stdout, hex.Dump(payload))
 	return nil
+}
+
+func runShell(
+	client *chunkclient.Client,
+	defaultToken string,
+	input io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	if defaultToken != "" {
+		if _, err := runSimple(client, "AUTH "+defaultToken); err != nil {
+			return fmt.Errorf("automatic AUTH failed: %w", err)
+		}
+	}
+
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	for {
+		if _, err := fmt.Fprint(stdout, "chunk> "); err != nil {
+			return fmt.Errorf("write prompt: %w", err)
+		}
+
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("read shell input: %w", err)
+			}
+			return nil
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		cmd := strings.ToLower(fields[0])
+		cmdArgs := fields[1:]
+
+		switch cmd {
+		case "exit":
+			return nil
+		case "quit":
+			text, err := runSimple(client, "QUIT")
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return nil
+			}
+			fmt.Fprintln(stdout, text)
+			return nil
+		case "ping":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, "PING")
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "info":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			payload, err := runBulk(client, "INFO")
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			printTextPayload(stdout, payload)
+		case "auth":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+
+			token := defaultToken
+			if len(cmdArgs) == 1 {
+				token = cmdArgs[0]
+			}
+			if token == "" {
+				fmt.Fprintln(stderr, "error: auth token required: use `auth <token>` or provide token in --uri/--token")
+				continue
+			}
+
+			text, err := runSimple(client, "AUTH "+token)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			defaultToken = token
+			fmt.Fprintln(stdout, text)
+		case "get":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			payload, err := runBulk(client, fmt.Sprintf("GET %s %s", cmdArgs[0], cmdArgs[1]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			printTextPayload(stdout, payload)
+		case "set":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "chunk":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s", cmdArgs[0], cmdArgs[1]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			printTextPayload(stdout, payload)
+		case "chunkbin":
+			if err := runChunkBin(client, cmdArgs, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+			}
+		default:
+			fmt.Fprintf(stderr, "error: unknown shell command %q\n", cmd)
+		}
+	}
 }
 
 func runSimple(client *chunkclient.Client, command string) (string, error) {
@@ -319,6 +463,7 @@ Commands:
   set <x> <y> <bits>
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
+  shell
   version
 
 Global options:
@@ -331,16 +476,17 @@ Global options:
 Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ ping
   chunk-cli --uri chunk://token@127.0.0.1:4242/ get 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ shell
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)
 }
 
-func printTextPayload(payload []byte) {
+func printTextPayload(out io.Writer, payload []byte) {
 	output := string(payload)
 	if !strings.HasSuffix(output, "\n") {
 		output += "\n"
 	}
-	fmt.Print(output)
+	fmt.Fprint(out, output)
 }
 
 func fatal(err error) {

@@ -19,6 +19,7 @@ It provides direct terminal access to the chunk protocol for operational checks,
   - `set`
   - `chunk`
   - `chunkbin`
+  - `shell`
 - token auth via URI (`chunk://token@host:port/`) or `--token`
 - clear text output and explicit error messages
 
@@ -54,6 +55,48 @@ chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunk 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbin 0 0
 ```
 
+## Interactive Shell
+
+Start the interactive shell:
+
+```bash
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ shell
+```
+
+The shell prompt is `chunk>`. Supported shell commands:
+
+- `ping`
+- `info`
+- `auth [token]`
+- `get <x> <y>`
+- `set <x> <y> <bits>`
+- `chunk <cx> <cy>`
+- `chunkbin [--out <file>] <cx> <cy>`
+- `quit`
+- `exit`
+
+Example session:
+
+```text
+chunk> ping
+PONG
+chunk> set 0 0 1111000011110000
+OK
+chunk> get 0 0
+1111000011110000
+chunk> info
+chunkdb_version=1
+...
+chunk> quit
+BYE
+```
+
+Shell auth behavior:
+
+- if token is present in URI or `--token`, shell performs automatic `AUTH` on connect
+- you can re-authenticate at any time with `auth <token>`
+- `exit` exits locally; `quit` sends `QUIT` and exits
+
 ## Usage
 
 ```bash
@@ -70,8 +113,9 @@ Global options:
 
 Auth behavior:
 
-- for non-`auth` commands, CLI auto-runs `AUTH` when token is present in URI or `--token`
+- for non-`auth`/non-`shell` commands, CLI auto-runs `AUTH` when token is present in URI or `--token`
 - for `auth`, token is taken from `auth <token>` first, otherwise from URI/`--token`
+- for `shell`, token is auto-authenticated once on connect (if provided)
 
 ## Command Reference
 
@@ -91,6 +135,8 @@ Auth behavior:
   - sends `CHUNKBIN`
   - default output: payload size + hex dump
   - with `--out`: writes raw bytes to file and prints summary
+- `shell`
+  - starts interactive mode with prompt `chunk>`
 
 ## TLS (`chunks://`) Example
 

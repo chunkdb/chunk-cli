@@ -31,6 +31,8 @@ func TestValidateCommandArgs(t *testing.T) {
 		{name: "chunk ok", cmd: "chunk", args: []string{"0", "0"}, wantErr: false},
 		{name: "auth too many", cmd: "auth", args: []string{"a", "b"}, wantErr: true},
 		{name: "chunkbin passthrough", cmd: "chunkbin", args: []string{"--out", "x", "1", "2"}, wantErr: false},
+		{name: "shell ok", cmd: "shell", args: nil, wantErr: false},
+		{name: "shell extra", cmd: "shell", args: []string{"ping"}, wantErr: true},
 	}
 
 	for _, tc := range cases {
