@@ -51,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunk", "chunkbin", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunkexists", "chunkset", "chunk", "chunkbin", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -143,6 +143,18 @@ func main() {
 			fatal(err)
 		}
 		fmt.Println(text)
+	case "chunkexists":
+		text, err := runSimple(client, fmt.Sprintf("CHUNKEXISTS %s %s", cmdArgs[0], cmdArgs[1]))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
+	case "chunkset":
+		text, err := runSimple(client, fmt.Sprintf("CHUNKSET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
 	case "chunk":
 		cx, cy := cmdArgs[0], cmdArgs[1]
 		payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s", cx, cy))
@@ -215,6 +227,32 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 			return err
 		}
 		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
+			return err
+		}
+	case "chunkexists":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: chunkexists <cx> <cy>")
+		}
+		if err := validateIntArg(cmdArgs[0], "cx"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
+			return err
+		}
+	case "chunkset":
+		if len(cmdArgs) != 3 {
+			return fmt.Errorf("usage: chunkset <cx> <cy> <bits>")
+		}
+		if err := validateIntArg(cmdArgs[0], "cx"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
+			return err
+		}
+		if cmdArgs[2] == "" {
+			return fmt.Errorf("bits must not be empty")
+		}
+		if err := validateBits(cmdArgs[2]); err != nil {
 			return err
 		}
 	case "chunk":
@@ -420,6 +458,28 @@ func runShell(
 				continue
 			}
 			fmt.Fprintln(stdout, text)
+		case "chunkexists":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("CHUNKEXISTS %s %s", cmdArgs[0], cmdArgs[1]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "chunkset":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("CHUNKSET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
 		case "chunk":
 			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
@@ -517,6 +577,8 @@ Commands:
   exists <x> <y>
   set <x> <y> <bits>
   unset <x> <y>
+  chunkexists <cx> <cy>
+  chunkset <cx> <cy> <bits>
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
   shell
@@ -533,6 +595,8 @@ Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ ping
   chunk-cli --uri chunk://token@127.0.0.1:4242/ get 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ exists 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkexists 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkset 0 0 <full_chunk_bits>
   chunk-cli --uri chunk://token@127.0.0.1:4242/ shell
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)

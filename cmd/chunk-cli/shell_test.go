@@ -21,6 +21,8 @@ type shellServerState struct {
 	commands []string
 	blocks   map[string]string
 	present  map[string]bool
+	chunks   map[string]string
+	chunkSet map[string]bool
 }
 
 func (s *shellServerState) record(cmd string) {
@@ -66,6 +68,29 @@ func (s *shellServerState) blockExists(x string, y string) bool {
 	return s.present[x+":"+y]
 }
 
+func (s *shellServerState) setChunk(cx string, cy string, bits string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := cx + ":" + cy
+	s.chunks[key] = bits
+	s.chunkSet[key] = true
+}
+
+func (s *shellServerState) getChunk(cx string, cy string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if bits, ok := s.chunks[cx+":"+cy]; ok {
+		return bits
+	}
+	return "0000"
+}
+
+func (s *shellServerState) chunkExists(cx string, cy string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chunkSet[cx+":"+cy]
+}
+
 func startShellTestServer(t *testing.T, token string) (string, *shellServerState, func()) {
 	t.Helper()
 
@@ -75,8 +100,10 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 	}
 
 	state := &shellServerState{
-		blocks:  make(map[string]string),
-		present: make(map[string]bool),
+		blocks:   make(map[string]string),
+		present:  make(map[string]bool),
+		chunks:   make(map[string]string),
+		chunkSet: make(map[string]bool),
 	}
 	done := make(chan struct{})
 
@@ -223,8 +250,53 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 				if err := writeBulk(writer, []byte("chunkdb_version=1\n")); err != nil {
 					return
 				}
+			case "CHUNKEXISTS":
+				if !authed {
+					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
+						return
+					}
+					continue
+				}
+				if len(fields) != 3 {
+					if err := writeError(writer, "INVALID_ARGUMENT CHUNKEXISTS requires 2 args"); err != nil {
+						return
+					}
+					continue
+				}
+				if state.chunkExists(fields[1], fields[2]) {
+					if err := writeSimple(writer, "1"); err != nil {
+						return
+					}
+				} else {
+					if err := writeSimple(writer, "0"); err != nil {
+						return
+					}
+				}
+			case "CHUNKSET":
+				if !authed {
+					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
+						return
+					}
+					continue
+				}
+				if len(fields) != 4 {
+					if err := writeError(writer, "INVALID_ARGUMENT CHUNKSET requires 3 args"); err != nil {
+						return
+					}
+					continue
+				}
+				if !isBits(fields[3]) {
+					if err := writeError(writer, "INVALID_ARGUMENT invalid bits"); err != nil {
+						return
+					}
+					continue
+				}
+				state.setChunk(fields[1], fields[2], fields[3])
+				if err := writeSimple(writer, "OK"); err != nil {
+					return
+				}
 			case "CHUNK":
-				if err := writeBulk(writer, []byte("0000")); err != nil {
+				if err := writeBulk(writer, []byte(state.getChunk(fields[1], fields[2]))); err != nil {
 					return
 				}
 			case "CHUNKBIN":
@@ -315,7 +387,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	}
 	defer client.Close()
 
-	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nquit\n")
+	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nchunkexists 0 0\nchunkset 0 0 1111000011110000\nchunkexists 0 0\nchunk 0 0\nquit\n")
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 
@@ -334,7 +406,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	if !sawAuth {
 		t.Fatalf("expected shell auto-auth to run AUTH")
 	}
-	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "QUIT"}
+	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "CHUNKEXISTS", "CHUNKSET", "CHUNKEXISTS", "CHUNK", "QUIT"}
 	if len(commands) != len(expectedCommands) {
 		t.Fatalf("unexpected command count: got %v want %v", commands, expectedCommands)
 	}
@@ -345,10 +417,10 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	}
 
 	output := out.String()
-	if strings.Count(output, "chunk> ") < 8 {
+	if strings.Count(output, "chunk> ") < 12 {
 		t.Fatalf("expected repeated prompt, got %q", output)
 	}
-	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "BYE"} {
+	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "1111000011110000", "BYE"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected %q in output %q", expected, output)
 		}

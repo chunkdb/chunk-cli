@@ -19,6 +19,8 @@ It provides direct terminal access to the chunk protocol for operational checks,
   - `exists`
   - `set`
   - `unset`
+  - `chunkexists`
+  - `chunkset`
   - `chunk`
   - `chunkbin`
   - `shell`
@@ -55,6 +57,8 @@ chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ get 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ exists 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ set 0 0 10110011
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ unset 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkexists 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkset 0 0 <full_chunk_bits>
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunk 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbin 0 0
 ```
@@ -64,6 +68,12 @@ Block-state note:
 - `get <x> <y>` prints zero bits for an unset block
 - `exists <x> <y>` prints `1` when the block is explicitly present, `0` when it is unset
 - `set <x> <y> 000...0` is distinct from `unset <x> <y>`
+
+Chunk-state note:
+
+- `chunk <cx> <cy>` still prints zero bits for an absent chunk
+- `chunkexists <cx> <cy>` prints `1` when any explicit chunk presence exists, `0` when the chunk is unset/absent
+- `chunkset <cx> <cy> 000...0` is distinct from an absent chunk, but `<bits>` must be a full chunk-sized payload
 
 ## Interactive Shell
 
@@ -82,6 +92,8 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `exists <x> <y>`
 - `set <x> <y> <bits>`
 - `unset <x> <y>`
+- `chunkexists <cx> <cy>`
+- `chunkset <cx> <cy> <bits>`
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
 - `quit`
@@ -102,6 +114,14 @@ chunk> get 0 0
 1111000011110000
 chunk> unset 0 0
 OK
+chunk> chunkexists 0 0
+0
+chunk> chunkset 0 0 <full_chunk_bits>
+OK
+chunk> chunkexists 0 0
+1
+chunk> chunk 0 0
+<full_chunk_bits>
 chunk> get 0 0
 0000000000000000
 chunk> info
@@ -153,6 +173,10 @@ Auth behavior:
   - sends `SET`; validates `bits` as binary (`0`/`1`) before request
 - `unset <x> <y>`
   - sends `UNSET`, clears explicit block presence, prints simple response
+- `chunkexists <cx> <cy>`
+  - sends `CHUNKEXISTS`, prints `1` when the chunk has explicit presence and `0` when absent
+- `chunkset <cx> <cy> <bits>`
+  - sends `CHUNKSET`; validates `bits` as binary (`0`/`1`) before request
 - `chunk <cx> <cy>`
   - sends `CHUNK`, prints text chunk payload
 - `chunkbin [--out <file>] <cx> <cy>`
