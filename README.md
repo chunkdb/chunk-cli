@@ -21,8 +21,11 @@ It provides direct terminal access to the chunk protocol for operational checks,
   - `unset`
   - `chunkexists`
   - `chunkset`
+  - `chunkstate`
+  - `chunksetstate`
   - `chunk`
   - `chunkbin`
+  - `chunkbinstate`
   - `shell`
 - token auth via URI (`chunk://token@host:port/`) or `--token`
 - clear text output and explicit error messages
@@ -59,8 +62,11 @@ chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ set 0 0 10110011
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ unset 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkexists 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkset 0 0 <full_chunk_bits>
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkstate 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunksetstate 0 0 <payload_bits>|<presence_bits>
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunk 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbin 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbinstate 0 0
 ```
 
 Block-state note:
@@ -74,6 +80,9 @@ Chunk-state note:
 - `chunk <cx> <cy>` still prints zero bits for an absent chunk
 - `chunkexists <cx> <cy>` prints `1` when any explicit chunk presence exists, `0` when the chunk is unset/absent
 - `chunkset <cx> <cy> 000...0` is distinct from an absent chunk, but `<bits>` must be a full chunk-sized payload
+- `chunkstate <cx> <cy>` prints `<payload_bits>|<presence_bits>` for exact per-block presence
+- `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>` writes mixed present/absent block state
+- `chunkbinstate <cx> <cy>` prints exact chunk-state bytes as `[payload_bytes][presence_bytes]`
 
 ## Interactive Shell
 
@@ -94,8 +103,11 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `unset <x> <y>`
 - `chunkexists <cx> <cy>`
 - `chunkset <cx> <cy> <bits>`
+- `chunkstate <cx> <cy>`
+- `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
+- `chunkbinstate [--out <file>] <cx> <cy>`
 - `quit`
 - `exit`
 
@@ -118,10 +130,17 @@ chunk> chunkexists 0 0
 0
 chunk> chunkset 0 0 <full_chunk_bits>
 OK
+chunk> chunkstate 0 0
+<full_chunk_bits>|<presence_bits>
+chunk> chunksetstate 0 0 <payload_bits>|<presence_bits>
+OK
 chunk> chunkexists 0 0
 1
 chunk> chunk 0 0
 <full_chunk_bits>
+chunk> chunkbinstate 0 0
+bytes=<n>
+<hex dump>
 chunk> get 0 0
 0000000000000000
 chunk> info
@@ -177,12 +196,20 @@ Auth behavior:
   - sends `CHUNKEXISTS`, prints `1` when the chunk has explicit presence and `0` when absent
 - `chunkset <cx> <cy> <bits>`
   - sends `CHUNKSET`; validates `bits` as binary (`0`/`1`) before request
+- `chunkstate <cx> <cy>`
+  - sends `CHUNK ... STATE`; prints `<payload_bits>|<presence_bits>`
+- `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
+  - sends `CHUNKSET ... STATE`; validates both halves as binary before request
 - `chunk <cx> <cy>`
   - sends `CHUNK`, prints text chunk payload
 - `chunkbin [--out <file>] <cx> <cy>`
   - sends `CHUNKBIN`
   - default output: payload size + hex dump
   - with `--out`: writes raw bytes to file and prints summary
+- `chunkbinstate [--out <file>] <cx> <cy>`
+  - sends `CHUNKBIN ... STATE`
+  - default output: exact chunk-state size + hex dump
+  - with `--out`: writes raw state bytes to file and prints summary
 - `shell`
   - starts interactive mode with prompt `chunk>`
 

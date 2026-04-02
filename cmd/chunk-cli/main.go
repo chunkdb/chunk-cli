@@ -51,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunkexists", "chunkset", "chunk", "chunkbin", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunk", "chunkbin", "chunkbinstate", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -155,6 +155,19 @@ func main() {
 			fatal(err)
 		}
 		fmt.Println(text)
+	case "chunkstate":
+		cx, cy := cmdArgs[0], cmdArgs[1]
+		payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s STATE", cx, cy))
+		if err != nil {
+			fatal(err)
+		}
+		printTextPayload(os.Stdout, payload)
+	case "chunksetstate":
+		text, err := runSimple(client, fmt.Sprintf("CHUNKSET %s %s STATE %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
 	case "chunk":
 		cx, cy := cmdArgs[0], cmdArgs[1]
 		payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s", cx, cy))
@@ -163,7 +176,11 @@ func main() {
 		}
 		printTextPayload(os.Stdout, payload)
 	case "chunkbin":
-		if err := runChunkBin(client, cmdArgs, os.Stdout, os.Stderr); err != nil {
+		if err := runChunkBinLike(client, "CHUNKBIN", false, "chunkbin", cmdArgs, os.Stdout, os.Stderr); err != nil {
+			fatal(err)
+		}
+	case "chunkbinstate":
+		if err := runChunkBinLike(client, "CHUNKBIN", true, "chunkbinstate", cmdArgs, os.Stdout, os.Stderr); err != nil {
 			fatal(err)
 		}
 	case "shell":
@@ -255,6 +272,29 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateBits(cmdArgs[2]); err != nil {
 			return err
 		}
+	case "chunkstate":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: chunkstate <cx> <cy>")
+		}
+		if err := validateIntArg(cmdArgs[0], "cx"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
+			return err
+		}
+	case "chunksetstate":
+		if len(cmdArgs) != 3 {
+			return fmt.Errorf("usage: chunksetstate <cx> <cy> <payload_bits>|<presence_bits>")
+		}
+		if err := validateIntArg(cmdArgs[0], "cx"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
+			return err
+		}
+		if err := validateChunkState(cmdArgs[2]); err != nil {
+			return err
+		}
 	case "chunk":
 		if len(cmdArgs) != 2 {
 			return fmt.Errorf("usage: chunk <cx> <cy>")
@@ -265,6 +305,10 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
 			return err
 		}
+	case "chunkbin":
+		return validateChunkBinLikeArgs("chunkbin", cmdArgs, stderrDiscard{})
+	case "chunkbinstate":
+		return validateChunkBinLikeArgs("chunkbinstate", cmdArgs, stderrDiscard{})
 	case "shell":
 		if len(cmdArgs) != 0 {
 			return fmt.Errorf("usage: shell")
@@ -280,11 +324,34 @@ func validateIntArg(value string, field string) error {
 	return nil
 }
 
-func runChunkBin(client *chunkclient.Client, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
-	fs := flag.NewFlagSet("chunkbin", flag.ContinueOnError)
+func validateChunkState(state string) error {
+	if state == "" {
+		return fmt.Errorf("chunk state must not be empty")
+	}
+	separator := strings.Index(state, "|")
+	if separator <= 0 || separator != strings.LastIndex(state, "|") || separator == len(state)-1 {
+		return fmt.Errorf("chunk state must be <payload_bits>|<presence_bits>")
+	}
+	if err := validateBits(state[:separator]); err != nil {
+		return err
+	}
+	if err := validateBits(state[separator+1:]); err != nil {
+		return err
+	}
+	return nil
+}
+
+type stderrDiscard struct{}
+
+func (stderrDiscard) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func validateChunkBinLikeArgs(name string, cmdArgs []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	outPath := fs.String("out", "", "write raw binary payload to file")
+	_ = fs.String("out", "", "write raw binary payload to file")
 
 	if err := fs.Parse(cmdArgs); err != nil {
 		return err
@@ -292,7 +359,7 @@ func runChunkBin(client *chunkclient.Client, cmdArgs []string, stdout io.Writer,
 
 	remaining := fs.Args()
 	if len(remaining) != 2 {
-		return fmt.Errorf("usage: chunkbin [--out <file>] <cx> <cy>")
+		return fmt.Errorf("usage: %s [--out <file>] <cx> <cy>", name)
 	}
 
 	cx := remaining[0]
@@ -305,7 +372,40 @@ func runChunkBin(client *chunkclient.Client, cmdArgs []string, stdout io.Writer,
 		return err
 	}
 
-	payload, err := runBulk(client, fmt.Sprintf("CHUNKBIN %s %s", cx, cy))
+	return nil
+}
+
+func runChunkBinLike(client *chunkclient.Client, command string, state bool, name string, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	outPath := fs.String("out", "", "write raw binary payload to file")
+
+	if err := fs.Parse(cmdArgs); err != nil {
+		return err
+	}
+
+	remaining := fs.Args()
+	if len(remaining) != 2 {
+		return fmt.Errorf("usage: %s [--out <file>] <cx> <cy>", name)
+	}
+
+	cx := remaining[0]
+	cy := remaining[1]
+
+	if err := validateIntArg(cx, "cx"); err != nil {
+		return err
+	}
+	if err := validateIntArg(cy, "cy"); err != nil {
+		return err
+	}
+
+	request := fmt.Sprintf("%s %s %s", command, cx, cy)
+	if state {
+		request += " STATE"
+	}
+
+	payload, err := runBulk(client, request)
 	if err != nil {
 		return err
 	}
@@ -492,7 +592,33 @@ func runShell(
 			}
 			printTextPayload(stdout, payload)
 		case "chunkbin":
-			if err := runChunkBin(client, cmdArgs, stdout, stderr); err != nil {
+			if err := runChunkBinLike(client, "CHUNKBIN", false, "chunkbin", cmdArgs, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+			}
+		case "chunkstate":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			payload, err := runBulk(client, fmt.Sprintf("CHUNK %s %s STATE", cmdArgs[0], cmdArgs[1]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			printTextPayload(stdout, payload)
+		case "chunksetstate":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("CHUNKSET %s %s STATE %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "chunkbinstate":
+			if err := runChunkBinLike(client, "CHUNKBIN", true, "chunkbinstate", cmdArgs, stdout, stderr); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 			}
 		default:
@@ -579,8 +705,11 @@ Commands:
   unset <x> <y>
   chunkexists <cx> <cy>
   chunkset <cx> <cy> <bits>
+  chunkstate <cx> <cy>
+  chunksetstate <cx> <cy> <payload_bits>|<presence_bits>
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
+  chunkbinstate [--out <file>] <cx> <cy>
   shell
   version
 
@@ -597,6 +726,8 @@ Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ exists 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkexists 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkset 0 0 <full_chunk_bits>
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkstate 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ chunksetstate 0 0 <payload_bits>|<presence_bits>
   chunk-cli --uri chunk://token@127.0.0.1:4242/ shell
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)

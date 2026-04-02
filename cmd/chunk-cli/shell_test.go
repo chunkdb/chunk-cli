@@ -16,13 +16,14 @@ import (
 )
 
 type shellServerState struct {
-	mu       sync.Mutex
-	sawAuth  bool
-	commands []string
-	blocks   map[string]string
-	present  map[string]bool
-	chunks   map[string]string
-	chunkSet map[string]bool
+	mu          sync.Mutex
+	sawAuth     bool
+	commands    []string
+	blocks      map[string]string
+	present     map[string]bool
+	chunks      map[string]string
+	chunkStates map[string]string
+	chunkSet    map[string]bool
 }
 
 func (s *shellServerState) record(cmd string) {
@@ -73,7 +74,18 @@ func (s *shellServerState) setChunk(cx string, cy string, bits string) {
 	defer s.mu.Unlock()
 	key := cx + ":" + cy
 	s.chunks[key] = bits
+	s.chunkStates[key] = bits + "|" + strings.Repeat("1", len(bits)/4)
 	s.chunkSet[key] = true
+}
+
+func (s *shellServerState) setChunkState(cx string, cy string, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := cx + ":" + cy
+	parts := strings.Split(state, "|")
+	s.chunks[key] = parts[0]
+	s.chunkStates[key] = state
+	s.chunkSet[key] = strings.Contains(parts[1], "1")
 }
 
 func (s *shellServerState) getChunk(cx string, cy string) string {
@@ -83,6 +95,19 @@ func (s *shellServerState) getChunk(cx string, cy string) string {
 		return bits
 	}
 	return "0000"
+}
+
+func (s *shellServerState) getChunkState(cx string, cy string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := cx + ":" + cy
+	if state, ok := s.chunkStates[key]; ok {
+		return state
+	}
+	if bits, ok := s.chunks[key]; ok {
+		return bits + "|" + strings.Repeat("1", len(bits)/4)
+	}
+	return "0000000000000000|0000"
 }
 
 func (s *shellServerState) chunkExists(cx string, cy string) bool {
@@ -100,10 +125,11 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 	}
 
 	state := &shellServerState{
-		blocks:   make(map[string]string),
-		present:  make(map[string]bool),
-		chunks:   make(map[string]string),
-		chunkSet: make(map[string]bool),
+		blocks:      make(map[string]string),
+		present:     make(map[string]bool),
+		chunks:      make(map[string]string),
+		chunkStates: make(map[string]string),
+		chunkSet:    make(map[string]bool),
 	}
 	done := make(chan struct{})
 
@@ -279,6 +305,13 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 					}
 					continue
 				}
+				if len(fields) == 5 && strings.EqualFold(fields[3], "STATE") {
+					if err := writeSimple(writer, "OK"); err != nil {
+						return
+					}
+					state.setChunkState(fields[1], fields[2], fields[4])
+					continue
+				}
 				if len(fields) != 4 {
 					if err := writeError(writer, "INVALID_ARGUMENT CHUNKSET requires 3 args"); err != nil {
 						return
@@ -296,10 +329,22 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 					return
 				}
 			case "CHUNK":
+				if len(fields) == 4 && strings.EqualFold(fields[3], "STATE") {
+					if err := writeBulk(writer, []byte(state.getChunkState(fields[1], fields[2]))); err != nil {
+						return
+					}
+					continue
+				}
 				if err := writeBulk(writer, []byte(state.getChunk(fields[1], fields[2]))); err != nil {
 					return
 				}
 			case "CHUNKBIN":
+				if len(fields) == 4 && strings.EqualFold(fields[3], "STATE") {
+					if err := writeBulk(writer, []byte{0xAA, 0x55, 0x03}); err != nil {
+						return
+					}
+					continue
+				}
 				if err := writeBulk(writer, []byte{0xAA, 0x55}); err != nil {
 					return
 				}
@@ -387,7 +432,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	}
 	defer client.Close()
 
-	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nchunkexists 0 0\nchunkset 0 0 1111000011110000\nchunkexists 0 0\nchunk 0 0\nquit\n")
+	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nchunkexists 0 0\nchunkset 0 0 1111000011110000\nchunkexists 0 0\nchunk 0 0\nchunkstate 0 0\nchunksetstate 1 0 1010101010101010|1000\nchunkstate 1 0\nchunkbinstate 1 0\nquit\n")
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 
@@ -406,7 +451,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	if !sawAuth {
 		t.Fatalf("expected shell auto-auth to run AUTH")
 	}
-	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "CHUNKEXISTS", "CHUNKSET", "CHUNKEXISTS", "CHUNK", "QUIT"}
+	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "CHUNKEXISTS", "CHUNKSET", "CHUNKEXISTS", "CHUNK", "CHUNK", "CHUNKSET", "CHUNK", "CHUNKBIN", "QUIT"}
 	if len(commands) != len(expectedCommands) {
 		t.Fatalf("unexpected command count: got %v want %v", commands, expectedCommands)
 	}
@@ -420,7 +465,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	if strings.Count(output, "chunk> ") < 12 {
 		t.Fatalf("expected repeated prompt, got %q", output)
 	}
-	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "1111000011110000", "BYE"} {
+	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "1111000011110000", "1111000011110000|1111", "1010101010101010|1000", "bytes=3", "BYE"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected %q in output %q", expected, output)
 		}
