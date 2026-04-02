@@ -51,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "set", "chunk", "chunkbin", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunk", "chunkbin", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -125,8 +125,20 @@ func main() {
 			fatal(err)
 		}
 		printTextPayload(os.Stdout, payload)
+	case "exists":
+		text, err := runSimple(client, fmt.Sprintf("EXISTS %s %s", cmdArgs[0], cmdArgs[1]))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
 	case "set":
 		text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
+	case "unset":
+		text, err := runSimple(client, fmt.Sprintf("UNSET %s %s", cmdArgs[0], cmdArgs[1]))
 		if err != nil {
 			fatal(err)
 		}
@@ -169,6 +181,16 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
 			return err
 		}
+	case "exists":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: exists <x> <y>")
+		}
+		if err := validateIntArg(cmdArgs[0], "x"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
+			return err
+		}
 	case "set":
 		if len(cmdArgs) != 3 {
 			return fmt.Errorf("usage: set <x> <y> <bits>")
@@ -183,6 +205,16 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 			return fmt.Errorf("bits must not be empty")
 		}
 		if err := validateBits(cmdArgs[2]); err != nil {
+			return err
+		}
+	case "unset":
+		if len(cmdArgs) != 2 {
+			return fmt.Errorf("usage: unset <x> <y>")
+		}
+		if err := validateIntArg(cmdArgs[0], "x"); err != nil {
+			return err
+		}
+		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
 			return err
 		}
 	case "chunk":
@@ -355,12 +387,34 @@ func runShell(
 				continue
 			}
 			printTextPayload(stdout, payload)
+		case "exists":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("EXISTS %s %s", cmdArgs[0], cmdArgs[1]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
 		case "set":
 			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				continue
 			}
 			text, err := runSimple(client, fmt.Sprintf("SET %s %s %s", cmdArgs[0], cmdArgs[1], cmdArgs[2]))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "unset":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, fmt.Sprintf("UNSET %s %s", cmdArgs[0], cmdArgs[1]))
 			if err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				continue
@@ -460,7 +514,9 @@ Commands:
   info
   auth <token>
   get <x> <y>
+  exists <x> <y>
   set <x> <y> <bits>
+  unset <x> <y>
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
   shell
@@ -476,6 +532,7 @@ Global options:
 Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ ping
   chunk-cli --uri chunk://token@127.0.0.1:4242/ get 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ exists 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ shell
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)

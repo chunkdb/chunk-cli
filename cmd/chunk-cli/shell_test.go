@@ -20,6 +20,7 @@ type shellServerState struct {
 	sawAuth  bool
 	commands []string
 	blocks   map[string]string
+	present  map[string]bool
 }
 
 func (s *shellServerState) record(cmd string) {
@@ -37,7 +38,17 @@ func (s *shellServerState) setAuth() {
 func (s *shellServerState) setBlock(x string, y string, bits string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.blocks[x+":"+y] = bits
+	key := x + ":" + y
+	s.blocks[key] = bits
+	s.present[key] = true
+}
+
+func (s *shellServerState) unsetBlock(x string, y string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := x + ":" + y
+	delete(s.present, key)
+	s.blocks[key] = "0000"
 }
 
 func (s *shellServerState) getBlock(x string, y string) string {
@@ -49,6 +60,12 @@ func (s *shellServerState) getBlock(x string, y string) string {
 	return "0000"
 }
 
+func (s *shellServerState) blockExists(x string, y string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.present[x+":"+y]
+}
+
 func startShellTestServer(t *testing.T, token string) (string, *shellServerState, func()) {
 	t.Helper()
 
@@ -57,7 +74,10 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 		t.Fatalf("listen: %v", err)
 	}
 
-	state := &shellServerState{blocks: make(map[string]string)}
+	state := &shellServerState{
+		blocks:  make(map[string]string),
+		present: make(map[string]bool),
+	}
 	done := make(chan struct{})
 
 	go func() {
@@ -138,6 +158,23 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 				if err := writeSimple(writer, "OK"); err != nil {
 					return
 				}
+			case "UNSET":
+				if !authed {
+					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
+						return
+					}
+					continue
+				}
+				if len(fields) != 3 {
+					if err := writeError(writer, "INVALID_ARGUMENT UNSET requires 2 args"); err != nil {
+						return
+					}
+					continue
+				}
+				state.unsetBlock(fields[1], fields[2])
+				if err := writeSimple(writer, "OK"); err != nil {
+					return
+				}
 			case "GET":
 				if !authed {
 					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
@@ -153,6 +190,28 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 				}
 				if err := writeBulk(writer, []byte(state.getBlock(fields[1], fields[2]))); err != nil {
 					return
+				}
+			case "EXISTS":
+				if !authed {
+					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
+						return
+					}
+					continue
+				}
+				if len(fields) != 3 {
+					if err := writeError(writer, "INVALID_ARGUMENT EXISTS requires 2 args"); err != nil {
+						return
+					}
+					continue
+				}
+				if state.blockExists(fields[1], fields[2]) {
+					if err := writeSimple(writer, "1"); err != nil {
+						return
+					}
+				} else {
+					if err := writeSimple(writer, "0"); err != nil {
+						return
+					}
 				}
 			case "INFO":
 				if !authed {
@@ -241,7 +300,7 @@ func isBits(bits string) bool {
 	return bits != ""
 }
 
-func TestRunShellConnectAuthPingGetSetQuit(t *testing.T) {
+func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	uri, state, stop := startShellTestServer(t, "dev-token")
 	defer stop()
 
@@ -256,7 +315,7 @@ func TestRunShellConnectAuthPingGetSetQuit(t *testing.T) {
 	}
 	defer client.Close()
 
-	input := strings.NewReader("ping\nset 1 2 1010\nget 1 2\nquit\n")
+	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nquit\n")
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 
@@ -270,16 +329,26 @@ func TestRunShellConnectAuthPingGetSetQuit(t *testing.T) {
 
 	state.mu.Lock()
 	sawAuth := state.sawAuth
+	commands := append([]string(nil), state.commands...)
 	state.mu.Unlock()
 	if !sawAuth {
 		t.Fatalf("expected shell auto-auth to run AUTH")
 	}
+	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "QUIT"}
+	if len(commands) != len(expectedCommands) {
+		t.Fatalf("unexpected command count: got %v want %v", commands, expectedCommands)
+	}
+	for i := range expectedCommands {
+		if commands[i] != expectedCommands[i] {
+			t.Fatalf("unexpected command sequence: got %v want %v", commands, expectedCommands)
+		}
+	}
 
 	output := out.String()
-	if strings.Count(output, "chunk> ") < 4 {
+	if strings.Count(output, "chunk> ") < 8 {
 		t.Fatalf("expected repeated prompt, got %q", output)
 	}
-	for _, expected := range []string{"PONG", "OK", "1010", "BYE"} {
+	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "BYE"} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected %q in output %q", expected, output)
 		}

@@ -16,7 +16,9 @@ It provides direct terminal access to the chunk protocol for operational checks,
   - `info`
   - `auth`
   - `get`
+  - `exists`
   - `set`
+  - `unset`
   - `chunk`
   - `chunkbin`
   - `shell`
@@ -50,10 +52,18 @@ Default URI is `chunk://127.0.0.1:4242/`.
 chunk-cli ping
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ info
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ get 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ exists 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ set 0 0 10110011
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ unset 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunk 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbin 0 0
 ```
+
+Block-state note:
+
+- `get <x> <y>` prints zero bits for an unset block
+- `exists <x> <y>` prints `1` when the block is explicitly present, `0` when it is unset
+- `set <x> <y> 000...0` is distinct from `unset <x> <y>`
 
 ## Interactive Shell
 
@@ -69,7 +79,9 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `info`
 - `auth [token]`
 - `get <x> <y>`
+- `exists <x> <y>`
 - `set <x> <y> <bits>`
+- `unset <x> <y>`
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
 - `quit`
@@ -80,10 +92,18 @@ Example session:
 ```text
 chunk> ping
 PONG
+chunk> exists 0 0
+0
 chunk> set 0 0 1111000011110000
 OK
+chunk> exists 0 0
+1
 chunk> get 0 0
 1111000011110000
+chunk> unset 0 0
+OK
+chunk> get 0 0
+0000000000000000
 chunk> info
 chunkdb_version=1
 ...
@@ -127,8 +147,12 @@ Auth behavior:
   - sends `AUTH <token>`, prints simple response
 - `get <x> <y>`
   - sends `GET`, prints block bit payload
+- `exists <x> <y>`
+  - sends `EXISTS`, prints `1` when present and `0` when unset
 - `set <x> <y> <bits>`
   - sends `SET`; validates `bits` as binary (`0`/`1`) before request
+- `unset <x> <y>`
+  - sends `UNSET`, clears explicit block presence, prints simple response
 - `chunk <cx> <cy>`
   - sends `CHUNK`, prints text chunk payload
 - `chunkbin [--out <file>] <cx> <cy>`
