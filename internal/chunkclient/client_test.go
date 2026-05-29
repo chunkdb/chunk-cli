@@ -72,6 +72,51 @@ func TestCommandBulkResponse(t *testing.T) {
 	}
 }
 
+func TestCommandArrayResponse(t *testing.T) {
+	c := newPipeClient(t, func(server net.Conn) {
+		buf := make([]byte, 64)
+		_, _ = server.Read(buf)
+		// MGET reply: *N then N bulk items
+		_, _ = server.Write([]byte("*3\r\n$4\r\n1010\r\n$4\r\n0000\r\n$4\r\n1111\r\n"))
+	})
+	defer c.Close()
+
+	resp, err := c.Command("MGET 0 0 1 0 2 0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Kind != ResponseArray {
+		t.Fatalf("expected array response, got: %#v", resp)
+	}
+	want := []string{"1010", "0000", "1111"}
+	if len(resp.Array) != len(want) {
+		t.Fatalf("expected %d items, got %d: %#v", len(want), len(resp.Array), resp.Array)
+	}
+	for i, w := range want {
+		if string(resp.Array[i]) != w {
+			t.Fatalf("item %d: expected %q, got %q", i, w, string(resp.Array[i]))
+		}
+	}
+}
+
+func TestCommandEmptyArrayResponse(t *testing.T) {
+	c := newPipeClient(t, func(server net.Conn) {
+		buf := make([]byte, 64)
+		_, _ = server.Read(buf)
+		_, _ = server.Write([]byte("*0\r\n"))
+	})
+	defer c.Close()
+
+	resp, err := c.Command("MGET")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Kind != ResponseArray || len(resp.Array) != 0 {
+		t.Fatalf("expected empty array response, got: %#v", resp)
+	}
+}
+
 func TestCommandServerError(t *testing.T) {
 	c := newPipeClient(t, func(server net.Conn) {
 		buf := make([]byte, 64)

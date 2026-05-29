@@ -2,9 +2,12 @@
 
 [![CI](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml)
 
-`chunk-cli` is the first practical command-line client for `chunkdb`, a specialized chunk/grid storage engine.
+`chunk-cli` is the command-line client for [`chunkdb`](https://github.com/chunkdb/chunkdb), a specialized chunk/grid storage engine.
 
 It provides direct terminal access to the chunk protocol for operational checks, debugging, and scripting.
+
+Targets the stable `chunkdb` 1.x protocol; see the engine's
+[compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
 ## Features
 
@@ -19,6 +22,8 @@ It provides direct terminal access to the chunk protocol for operational checks,
   - `exists`
   - `set`
   - `unset`
+  - `mset`
+  - `mget`
   - `chunkexists`
   - `chunkset`
   - `chunkstate`
@@ -101,6 +106,8 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `exists <x> <y>`
 - `set <x> <y> <bits>`
 - `unset <x> <y>`
+- `mset <x> <y> <bits> [<x> <y> <bits> ...]`
+- `mget <x> <y> [<x> <y> ...]`
 - `chunkexists <cx> <cy>`
 - `chunkset <cx> <cy> <bits>`
 - `chunkstate <cx> <cy>`
@@ -192,6 +199,10 @@ Auth behavior:
   - sends `SET`; validates `bits` as binary (`0`/`1`) before request
 - `unset <x> <y>`
   - sends `UNSET`, clears explicit block presence, prints simple response
+- `mset <x> <y> <bits> [<x> <y> <bits> ...]`
+  - sends `MSET` (one round-trip for many blocks); validates each `bits`; prints simple response
+- `mget <x> <y> [<x> <y> ...]`
+  - sends `MGET` (one round-trip for many blocks); prints one bit payload per line
 - `chunkexists <cx> <cy>`
   - sends `CHUNKEXISTS`, prints `1` when the chunk has explicit presence and `0` when absent
 - `chunkset <cx> <cy> <bits>`

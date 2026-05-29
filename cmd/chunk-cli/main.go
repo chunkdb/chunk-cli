@@ -16,7 +16,7 @@ import (
 	"github.com/chunkdb/chunk-cli/internal/chunkuri"
 )
 
-const version = "0.1.0-alpha"
+const version = "1.0.0"
 
 type globalOptions struct {
 	URI           string
@@ -51,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "exists", "set", "unset", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunk", "chunkbin", "chunkbinstate", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "mset", "mget", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunk", "chunkbin", "chunkbinstate", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -143,6 +143,20 @@ func main() {
 			fatal(err)
 		}
 		fmt.Println(text)
+	case "mset":
+		text, err := runSimple(client, "MSET "+strings.Join(cmdArgs, " "))
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(text)
+	case "mget":
+		items, err := runArray(client, "MGET "+strings.Join(cmdArgs, " "))
+		if err != nil {
+			fatal(err)
+		}
+		for _, item := range items {
+			fmt.Println(string(item))
+		}
 	case "chunkexists":
 		text, err := runSimple(client, fmt.Sprintf("CHUNKEXISTS %s %s", cmdArgs[0], cmdArgs[1]))
 		if err != nil {
@@ -245,6 +259,36 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		}
 		if err := validateIntArg(cmdArgs[1], "y"); err != nil {
 			return err
+		}
+	case "mset":
+		if len(cmdArgs) == 0 || len(cmdArgs)%3 != 0 {
+			return fmt.Errorf("usage: mset <x> <y> <bits> [<x> <y> <bits> ...]")
+		}
+		for i := 0; i < len(cmdArgs); i += 3 {
+			if err := validateIntArg(cmdArgs[i], "x"); err != nil {
+				return err
+			}
+			if err := validateIntArg(cmdArgs[i+1], "y"); err != nil {
+				return err
+			}
+			if cmdArgs[i+2] == "" {
+				return fmt.Errorf("bits must not be empty")
+			}
+			if err := validateBits(cmdArgs[i+2]); err != nil {
+				return err
+			}
+		}
+	case "mget":
+		if len(cmdArgs) == 0 || len(cmdArgs)%2 != 0 {
+			return fmt.Errorf("usage: mget <x> <y> [<x> <y> ...]")
+		}
+		for i := 0; i < len(cmdArgs); i += 2 {
+			if err := validateIntArg(cmdArgs[i], "x"); err != nil {
+				return err
+			}
+			if err := validateIntArg(cmdArgs[i+1], "y"); err != nil {
+				return err
+			}
 		}
 	case "chunkexists":
 		if len(cmdArgs) != 2 {
@@ -558,6 +602,30 @@ func runShell(
 				continue
 			}
 			fmt.Fprintln(stdout, text)
+		case "mset":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			text, err := runSimple(client, "MSET "+strings.Join(cmdArgs, " "))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			fmt.Fprintln(stdout, text)
+		case "mget":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			items, err := runArray(client, "MGET "+strings.Join(cmdArgs, " "))
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			for _, item := range items {
+				fmt.Fprintln(stdout, string(item))
+			}
 		case "chunkexists":
 			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
@@ -649,6 +717,17 @@ func runBulk(client *chunkclient.Client, command string) ([]byte, error) {
 	return resp.Bulk, nil
 }
 
+func runArray(client *chunkclient.Client, command string) ([][]byte, error) {
+	resp, err := client.Command(command)
+	if err != nil {
+		return nil, fmt.Errorf("%s failed: %w", commandVerb(command), err)
+	}
+	if resp.Kind != chunkclient.ResponseArray {
+		return nil, fmt.Errorf("%s failed: expected array response", commandVerb(command))
+	}
+	return resp.Array, nil
+}
+
 func commandVerb(command string) string {
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
@@ -703,6 +782,8 @@ Commands:
   exists <x> <y>
   set <x> <y> <bits>
   unset <x> <y>
+  mset <x> <y> <bits> [<x> <y> <bits> ...]
+  mget <x> <y> [<x> <y> ...]
   chunkexists <cx> <cy>
   chunkset <cx> <cy> <bits>
   chunkstate <cx> <cy>

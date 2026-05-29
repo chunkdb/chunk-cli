@@ -25,12 +25,14 @@ type ResponseKind int
 const (
 	ResponseSimple ResponseKind = iota + 1
 	ResponseBulk
+	ResponseArray
 )
 
 type Response struct {
 	Kind   ResponseKind
 	Simple string
 	Bulk   []byte
+	Array  [][]byte
 }
 
 type ServerError struct {
@@ -136,26 +138,57 @@ func (c *Client) Command(command string) (Response, error) {
 		}
 		return Response{}, &ServerError{Message: msg}
 	case '$':
-		length, err := strconv.Atoi(strings.TrimSpace(line[1:]))
-		if err != nil || length < 0 {
-			return Response{}, fmt.Errorf("invalid bulk length: %q", line)
+		payload, err := c.readBulkPayload(line)
+		if err != nil {
+			return Response{}, err
 		}
-
-		payload := make([]byte, length)
-		if _, err := io.ReadFull(c.reader, payload); err != nil {
-			return Response{}, fmt.Errorf("read bulk payload: %w", err)
-		}
-
-		terminator := make([]byte, 2)
-		if _, err := io.ReadFull(c.reader, terminator); err != nil {
-			return Response{}, fmt.Errorf("read bulk terminator: %w", err)
-		}
-		if terminator[0] != '\r' || terminator[1] != '\n' {
-			return Response{}, fmt.Errorf("invalid bulk terminator")
-		}
-
 		return Response{Kind: ResponseBulk, Bulk: payload}, nil
+	case '*':
+		count, err := strconv.Atoi(strings.TrimSpace(line[1:]))
+		if err != nil || count < 0 {
+			return Response{}, fmt.Errorf("invalid array length: %q", line)
+		}
+		items := make([][]byte, 0, count)
+		for i := 0; i < count; i++ {
+			header, err := c.reader.ReadString('\n')
+			if err != nil {
+				return Response{}, fmt.Errorf("read array item header: %w", err)
+			}
+			header = strings.TrimRight(header, "\r\n")
+			if header == "" || header[0] != '$' {
+				return Response{}, fmt.Errorf("invalid array item header: %q", header)
+			}
+			payload, err := c.readBulkPayload(header)
+			if err != nil {
+				return Response{}, err
+			}
+			items = append(items, payload)
+		}
+		return Response{Kind: ResponseArray, Array: items}, nil
 	default:
 		return Response{}, fmt.Errorf("unsupported response type: %q", line)
 	}
+}
+
+// readBulkPayload reads a bulk payload + trailing CRLF given an already-read
+// "$<len>" header line.
+func (c *Client) readBulkPayload(header string) ([]byte, error) {
+	length, err := strconv.Atoi(strings.TrimSpace(header[1:]))
+	if err != nil || length < 0 {
+		return nil, fmt.Errorf("invalid bulk length: %q", header)
+	}
+
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(c.reader, payload); err != nil {
+		return nil, fmt.Errorf("read bulk payload: %w", err)
+	}
+
+	terminator := make([]byte, 2)
+	if _, err := io.ReadFull(c.reader, terminator); err != nil {
+		return nil, fmt.Errorf("read bulk terminator: %w", err)
+	}
+	if terminator[0] != '\r' || terminator[1] != '\n' {
+		return nil, fmt.Errorf("invalid bulk terminator")
+	}
+	return payload, nil
 }
