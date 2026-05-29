@@ -101,6 +101,10 @@ func (c *Client) Command(command string) (Response, error) {
 		return Response{}, fmt.Errorf("connection is closed")
 	}
 
+	if strings.ContainsAny(command, "\r\n") {
+		return Response{}, fmt.Errorf("command contains invalid control characters")
+	}
+
 	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 		return Response{}, fmt.Errorf("set deadline: %w", err)
 	}
