@@ -16,7 +16,7 @@ import (
 	"github.com/chunkdb/chunk-cli/internal/chunkuri"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 type globalOptions struct {
 	URI           string
