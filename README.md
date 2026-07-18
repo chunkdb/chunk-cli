@@ -31,6 +31,16 @@ Targets the stable `chunkdb` 1.x protocol; see the engine's
   - `chunk`
   - `chunkbin`
   - `chunkbinstate`
+  - `chunkbinc`
+  - `chunkbincstate`
+  - `chunkscan`
+  - `chunkrange`
+  - `chunkradius`
+  - `chunkver`
+  - `chunkcas`
+  - `chunkbatch`
+  - `walflush`
+  - `metrics`
   - `shell`
 - token auth via URI (`chunk://token@host:port/`) or `--token`
 - clear text output and explicit error messages
@@ -88,6 +98,8 @@ Chunk-state note:
 - `chunkstate <cx> <cy>` prints `<payload_bits>|<presence_bits>` for exact per-block presence
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>` writes mixed present/absent block state
 - `chunkbinstate <cx> <cy>` prints exact chunk-state bytes as `[payload_bytes][presence_bytes]`
+- `chunkbinc <cx> <cy>` / `chunkbincstate <cx> <cy>` fetch the same bytes as `chunkbin`/`chunkbinstate` over the compressed `CHUNKBINC` transfer and decompress client-side; pass `--raw` to keep the compressed payload
+- `chunkradius <cx> <cy> <radius_chunks>` reads populated chunks within a chunk-space radius (disc), like `chunkrange` but circular
 
 ## Interactive Shell
 
@@ -115,6 +127,16 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
 - `chunkbinstate [--out <file>] <cx> <cy>`
+- `chunkbinc [--out <file>] [--raw] <cx> <cy>`
+- `chunkbincstate [--out <file>] [--raw] <cx> <cy>`
+- `chunkscan <limit> [<cursor_cx> <cursor_cy>]`
+- `chunkrange <cx0> <cy0> <cx1> <cy1>`
+- `chunkradius <cx> <cy> <radius_chunks>`
+- `chunkver <cx> <cy>`
+- `chunkcas <cx> <cy> <version> <payload_bits>|<presence_bits>`
+- `chunkbatch <cx> <cy> <version|-> SET <x> <y> <bits> | UNSET <x> <y> ...`
+- `walflush`
+- `metrics`
 - `quit`
 - `exit`
 
@@ -201,6 +223,7 @@ Auth behavior:
   - sends `UNSET`, clears explicit block presence, prints simple response
 - `mset <x> <y> <bits> [<x> <y> <bits> ...]`
   - sends `MSET` (one round-trip for many blocks); validates each `bits`; prints simple response
+  - items apply in order and are not atomic as a group: on a server error, earlier items may already be applied (use `chunkbatch` for an atomic single-chunk update)
 - `mget <x> <y> [<x> <y> ...]`
   - sends `MGET` (one round-trip for many blocks); prints one bit payload per line
 - `chunkexists <cx> <cy>`
@@ -221,6 +244,26 @@ Auth behavior:
   - sends `CHUNKBIN ... STATE`
   - default output: exact chunk-state size + hex dump
   - with `--out`: writes raw state bytes to file and prints summary
+- `chunkscan <limit> [<cursor_cx> <cursor_cy>]`
+  - sends `CHUNKSCAN`; prints one line per array item: first `END` or
+    `CURSOR <cx> <cy>` (pass those coordinates to the next call to continue),
+    then one `<cx> <cy>` line per populated chunk
+- `chunkrange <cx0> <cy0> <cx1> <cy1>`
+  - sends `CHUNKRANGE` (max 256 chunks); prints one
+    `<cx> <cy> <payload_bits>|<presence_bits>` line per populated chunk
+- `chunkver <cx> <cy>`
+  - sends `CHUNKVER`; prints the chunk's opaque version token
+- `chunkcas <cx> <cy> <version> <payload_bits>|<presence_bits>`
+  - sends `CHUNKCAS ... STATE ...`; prints the new version on success; a
+    stale version fails with `VERSION_MISMATCH current=<version>`
+- `chunkbatch <cx> <cy> <version|-> SET <x> <y> <bits> | UNSET <x> <y> ...`
+  - sends `CHUNKBATCH` (atomic within one chunk); pass `-` to skip the
+    version check; prints the new version on success
+- `walflush`
+  - sends `WALFLUSH`; on `OK`, all previously acknowledged writes are durable
+    even when the server runs in `relaxed` durability mode
+- `metrics`
+  - sends `METRICS`; prints Prometheus text-format runtime metrics
 - `shell`
   - starts interactive mode with prompt `chunk>`
 
