@@ -51,7 +51,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "exists", "set", "unset", "mset", "mget", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunk", "chunkbin", "chunkbinstate", "chunkbinc", "chunkbincstate", "chunkscan", "chunkrange", "chunkradius", "chunkver", "chunkcas", "chunkbatch", "walflush", "metrics", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "mset", "mget", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunksetbin", "chunksetbinstate", "chunk", "chunkbin", "chunkbinstate", "chunkbinc", "chunkbincstate", "chunkscan", "chunkrange", "chunkradius", "chunkver", "chunkcas", "chunkbatch", "walflush", "metrics", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -189,6 +189,14 @@ func main() {
 			fatal(err)
 		}
 		printTextPayload(os.Stdout, payload)
+	case "chunksetbin":
+		if err := runChunkSetBin(client, false, "chunksetbin", cmdArgs, os.Stdout, os.Stderr); err != nil {
+			fatal(err)
+		}
+	case "chunksetbinstate":
+		if err := runChunkSetBin(client, true, "chunksetbinstate", cmdArgs, os.Stdout, os.Stderr); err != nil {
+			fatal(err)
+		}
 	case "chunkbin":
 		if err := runChunkBinLike(client, "CHUNKBIN", false, "chunkbin", cmdArgs, os.Stdout, os.Stderr); err != nil {
 			fatal(err)
@@ -411,6 +419,12 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateIntArg(cmdArgs[1], "cy"); err != nil {
 			return err
 		}
+	case "chunksetbin":
+		_, _, _, err := parseChunkSetBinArgs("chunksetbin", cmdArgs, stderrDiscard{})
+		return err
+	case "chunksetbinstate":
+		_, _, _, err := parseChunkSetBinArgs("chunksetbinstate", cmdArgs, stderrDiscard{})
+		return err
 	case "chunkbin":
 		return validateChunkBinLikeArgs("chunkbin", cmdArgs, stderrDiscard{})
 	case "chunkbinstate":
@@ -681,6 +695,73 @@ func runChunkBinLike(client *chunkclient.Client, command string, state bool, nam
 	return nil
 }
 
+// parseChunkSetBinArgs validates "<cx> <cy> <hex>" or "--in <file> <cx> <cy>"
+// and returns the coordinates plus the raw payload bytes (nil when the payload
+// is only known at run time from --in).
+func parseChunkSetBinArgs(name string, cmdArgs []string, stderr io.Writer) (cx string, cy string, payload []byte, err error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	inPath := fs.String("in", "", "read the raw payload bytes from file")
+	if err := fs.Parse(cmdArgs); err != nil {
+		return "", "", nil, err
+	}
+	remaining := fs.Args()
+	usage := fmt.Errorf("usage: %s <cx> <cy> <hex> | %s --in <file> <cx> <cy>", name, name)
+	switch {
+	case *inPath != "" && len(remaining) == 2:
+	case *inPath == "" && len(remaining) == 3:
+	default:
+		return "", "", nil, usage
+	}
+	cx, cy = remaining[0], remaining[1]
+	if err := validateIntArg(cx, "cx"); err != nil {
+		return "", "", nil, err
+	}
+	if err := validateIntArg(cy, "cy"); err != nil {
+		return "", "", nil, err
+	}
+	if *inPath != "" {
+		data, err := os.ReadFile(*inPath)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("read %s: %w", *inPath, err)
+		}
+		return cx, cy, data, nil
+	}
+	data, err := hex.DecodeString(remaining[2])
+	if err != nil {
+		return "", "", nil, fmt.Errorf("payload must be hex: %w", err)
+	}
+	if len(data) == 0 {
+		return "", "", nil, fmt.Errorf("payload must not be empty")
+	}
+	return cx, cy, data, nil
+}
+
+// runChunkSetBin sends CHUNKSETBIN [STATE] with the raw payload bytes taken
+// from a hex argument or a file; the byte layout is what chunkbin /
+// chunkbinstate print.
+func runChunkSetBin(client *chunkclient.Client, state bool, name string, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
+	cx, cy, payload, err := parseChunkSetBinArgs(name, cmdArgs, stderr)
+	if err != nil {
+		return err
+	}
+	request := fmt.Sprintf("CHUNKSETBIN %s %s", cx, cy)
+	if state {
+		request += " STATE"
+	}
+	request += fmt.Sprintf(" %d", len(payload))
+
+	resp, err := client.CommandWithPayload(request, payload)
+	if err != nil {
+		return fmt.Errorf("%s failed: %w", name, err)
+	}
+	if resp.Kind != chunkclient.ResponseSimple {
+		return fmt.Errorf("%s failed: expected simple response", name)
+	}
+	fmt.Fprintln(stdout, resp.Simple)
+	return nil
+}
+
 // runChunkBinCompressed sends CHUNKBINC, decompresses the zrle payload
 // client-side, and presents the same decompressed bytes as chunkbin so
 // compressed reads are usable without a separate tool.
@@ -940,6 +1021,14 @@ func runShell(
 			if err := runChunkBinLike(client, "CHUNKBIN", false, "chunkbin", cmdArgs, stdout, stderr); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 			}
+		case "chunksetbin":
+			if err := runChunkSetBin(client, false, "chunksetbin", cmdArgs, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+			}
+		case "chunksetbinstate":
+			if err := runChunkSetBin(client, true, "chunksetbinstate", cmdArgs, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+			}
 		case "chunkstate":
 			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
@@ -1126,6 +1215,8 @@ Commands:
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
   chunkbinstate [--out <file>] <cx> <cy>
+  chunksetbin <cx> <cy> <hex> | --in <file>
+  chunksetbinstate <cx> <cy> <hex> | --in <file>
   chunkbinc [--out <file>] [--raw] <cx> <cy>
   chunkbincstate [--out <file>] [--raw] <cx> <cy>
   chunkscan <limit> [<cursor_cx> <cursor_cy>]

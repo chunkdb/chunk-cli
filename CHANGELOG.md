@@ -6,6 +6,15 @@ This CLI follows [Semantic Versioning](https://semver.org/) and targets the
 stable `chunkdb` 1.x protocol; see the engine's
 [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
+## Unreleased
+
+### Added
+- `chunksetbin` and `chunksetbinstate`: binary chunk writes over the new
+  `CHUNKSETBIN` command (chunkdb server 1.3+). The payload is given as hex or
+  read from a file with `--in`, in the byte layouts `chunkbin` /
+  `chunkbinstate` print, so `chunkbin --out` output can be written back as is.
+  Also available in `shell`
+
 ## 1.1.0 - 2026-07-18
 
 ### Added

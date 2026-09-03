@@ -99,6 +99,12 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) Command(command string) (Response, error) {
+	return c.CommandWithPayload(command, nil)
+}
+
+// CommandWithPayload sends a request line followed by raw payload bytes and an
+// empty line (the CHUNKSETBIN framing). A nil payload sends the line alone.
+func (c *Client) CommandWithPayload(command string, payload []byte) (Response, error) {
 	if c.conn == nil {
 		return Response{}, fmt.Errorf("connection is closed")
 	}
@@ -113,6 +119,14 @@ func (c *Client) Command(command string) (Response, error) {
 
 	if _, err := c.writer.WriteString(command + "\r\n"); err != nil {
 		return Response{}, fmt.Errorf("write command: %w", err)
+	}
+	if payload != nil {
+		if _, err := c.writer.Write(payload); err != nil {
+			return Response{}, fmt.Errorf("write payload: %w", err)
+		}
+		if _, err := c.writer.WriteString("\r\n"); err != nil {
+			return Response{}, fmt.Errorf("write payload terminator: %w", err)
+		}
 	}
 	if err := c.writer.Flush(); err != nil {
 		return Response{}, fmt.Errorf("flush command: %w", err)

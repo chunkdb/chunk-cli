@@ -28,6 +28,8 @@ Targets the stable `chunkdb` 1.x protocol; see the engine's
   - `chunkset`
   - `chunkstate`
   - `chunksetstate`
+  - `chunksetbin`
+  - `chunksetbinstate`
   - `chunk`
   - `chunkbin`
   - `chunkbinstate`
@@ -82,6 +84,8 @@ chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunksetstate 0 0 <payload_bits>
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunk 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbin 0 0
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkbinstate 0 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunksetbin 0 0 <hex_payload_bytes>
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunksetbinstate --in state.bin 0 0
 ```
 
 Block-state note:
@@ -99,6 +103,7 @@ Chunk-state note:
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>` writes mixed present/absent block state
 - `chunkbinstate <cx> <cy>` prints exact chunk-state bytes as `[payload_bytes][presence_bytes]`
 - `chunkbinc <cx> <cy>` / `chunkbincstate <cx> <cy>` fetch the same bytes as `chunkbin`/`chunkbinstate` over the compressed `CHUNKBINC` transfer and decompress client-side; pass `--raw` to keep the compressed payload
+- `chunksetbin <cx> <cy> <hex>` / `chunksetbinstate <cx> <cy> <hex>` write raw chunk bytes in the layouts `chunkbin`/`chunkbinstate` print; `--in <file>` reads the bytes from a file (for example one written by `chunkbin --out`). Requires chunkdb server 1.3+
 - `chunkradius <cx> <cy> <radius_chunks>` reads populated chunks within a chunk-space radius (disc), like `chunkrange` but circular
 
 ## Interactive Shell
@@ -124,6 +129,8 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `chunkset <cx> <cy> <bits>`
 - `chunkstate <cx> <cy>`
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
+- `chunksetbin <cx> <cy> <hex> | --in <file>`
+- `chunksetbinstate <cx> <cy> <hex> | --in <file>`
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
 - `chunkbinstate [--out <file>] <cx> <cy>`
@@ -233,6 +240,8 @@ Auth behavior:
 - `chunkstate <cx> <cy>`
   - sends `CHUNK ... STATE`; prints `<payload_bits>|<presence_bits>`
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
+- `chunksetbin <cx> <cy> <hex> | --in <file>`
+- `chunksetbinstate <cx> <cy> <hex> | --in <file>`
   - sends `CHUNKSET ... STATE`; validates both halves as binary before request
 - `chunk <cx> <cy>`
   - sends `CHUNK`, prints text chunk payload
