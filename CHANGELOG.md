@@ -6,7 +6,7 @@ This CLI follows [Semantic Versioning](https://semver.org/) and targets the
 stable `chunkdb` 1.x protocol; see the engine's
 [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
-## Unreleased
+## 1.2.0 - 2026-09-03
 
 ### Added
 - `chunksetbin` and `chunksetbinstate`: binary chunk writes over the new
