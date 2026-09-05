@@ -1,7 +1,5 @@
 # chunk-cli
 
-[![CI](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml)
-
 `chunk-cli` is the command-line client for [`chunkdb`](https://github.com/chunkdb/chunkdb), a specialized chunk/grid storage engine.
 
 It provides direct terminal access to the chunk protocol for operational checks, debugging, and scripting.
@@ -44,6 +42,7 @@ Targets the stable `chunkdb` 1.x protocol; see the engine's
   - `walflush`
   - `metrics`
   - `shell`
+  - `version`
 - token auth via URI (`chunk://token@host:port/`) or `--token`
 - clear text output and explicit error messages
 
@@ -51,7 +50,7 @@ Targets the stable `chunkdb` 1.x protocol; see the engine's
 
 Requirements:
 
-- Go `1.25+`
+- Go `1.25.6+`
 
 Build from source:
 
@@ -103,7 +102,7 @@ Chunk-state note:
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>` writes mixed present/absent block state
 - `chunkbinstate <cx> <cy>` prints exact chunk-state bytes as `[payload_bytes][presence_bytes]`
 - `chunkbinc <cx> <cy>` / `chunkbincstate <cx> <cy>` fetch the same bytes as `chunkbin`/`chunkbinstate` over the compressed `CHUNKBINC` transfer and decompress client-side; pass `--raw` to keep the compressed payload
-- `chunksetbin <cx> <cy> <hex>` / `chunksetbinstate <cx> <cy> <hex>` write raw chunk bytes in the layouts `chunkbin`/`chunkbinstate` print; `--in <file>` reads the bytes from a file (for example one written by `chunkbin --out`). Requires chunkdb server 1.3+
+- `chunksetbin <cx> <cy> <hex>` / `chunksetbinstate <cx> <cy> <hex>` write raw chunk bytes in the layouts `chunkbin`/`chunkbinstate` print; to read the bytes from a file (for example one written by `chunkbin --out`) put the flag before the coordinates: `chunksetbin --in <file> <cx> <cy>`. Requires chunkdb server 1.3+
 - `chunkradius <cx> <cy> <radius_chunks>` reads populated chunks within a chunk-space radius (disc), like `chunkrange` but circular
 
 ## Interactive Shell
@@ -129,8 +128,8 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `chunkset <cx> <cy> <bits>`
 - `chunkstate <cx> <cy>`
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
-- `chunksetbin <cx> <cy> <hex> | --in <file>`
-- `chunksetbinstate <cx> <cy> <hex> | --in <file>`
+- `chunksetbin <cx> <cy> <hex>` | `chunksetbin --in <file> <cx> <cy>`
+- `chunksetbinstate <cx> <cy> <hex>` | `chunksetbinstate --in <file> <cx> <cy>`
 - `chunk <cx> <cy>`
 - `chunkbin [--out <file>] <cx> <cy>`
 - `chunkbinstate [--out <file>] <cx> <cy>`
@@ -240,9 +239,16 @@ Auth behavior:
 - `chunkstate <cx> <cy>`
   - sends `CHUNK ... STATE`; prints `<payload_bits>|<presence_bits>`
 - `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
-- `chunksetbin <cx> <cy> <hex> | --in <file>`
-- `chunksetbinstate <cx> <cy> <hex> | --in <file>`
   - sends `CHUNKSET ... STATE`; validates both halves as binary before request
+- `chunksetbin <cx> <cy> <hex>` | `chunksetbin --in <file> <cx> <cy>`
+  - sends `CHUNKSETBIN` with the raw payload bytes `chunkbin` prints; the
+    payload is either a hex argument after the coordinates or, with `--in`,
+    the contents of a file. `--in` must come before `<cx> <cy>`
+  - requires chunkdb server 1.3+
+- `chunksetbinstate <cx> <cy> <hex>` | `chunksetbinstate --in <file> <cx> <cy>`
+  - sends `CHUNKSETBIN ... STATE` with the `[payload_bytes][presence_bytes]`
+    layout `chunkbinstate` prints; same argument forms as `chunksetbin`
+  - requires chunkdb server 1.3+
 - `chunk <cx> <cy>`
   - sends `CHUNK`, prints text chunk payload
 - `chunkbin [--out <file>] <cx> <cy>`
@@ -253,6 +259,13 @@ Auth behavior:
   - sends `CHUNKBIN ... STATE`
   - default output: exact chunk-state size + hex dump
   - with `--out`: writes raw state bytes to file and prints summary
+- `chunkbinc [--out <file>] [--raw] <cx> <cy>`
+  - sends `CHUNKBINC`, decompresses the payload client-side, and prints the
+    same bytes as `chunkbin` plus the compressed size
+  - with `--raw`: keeps the compressed payload instead of decompressing
+  - with `--out`: writes the bytes to file and prints summary
+- `chunkbincstate [--out <file>] [--raw] <cx> <cy>`
+  - sends `CHUNKBINC ... STATE`; same output and flags as `chunkbinc`
 - `chunkscan <limit> [<cursor_cx> <cursor_cy>]`
   - sends `CHUNKSCAN`; prints one line per array item: first `END` or
     `CURSOR <cx> <cy>` (pass those coordinates to the next call to continue),
@@ -260,6 +273,9 @@ Auth behavior:
 - `chunkrange <cx0> <cy0> <cx1> <cy1>`
   - sends `CHUNKRANGE` (max 256 chunks); prints one
     `<cx> <cy> <payload_bits>|<presence_bits>` line per populated chunk
+- `chunkradius <cx> <cy> <radius_chunks>`
+  - sends `CHUNKRADIUS` (populated chunks within a disc of `radius_chunks`
+    around `<cx> <cy>`, max 256 chunks); same output shape as `chunkrange`
 - `chunkver <cx> <cy>`
   - sends `CHUNKVER`; prints the chunk's opaque version token
 - `chunkcas <cx> <cy> <version> <payload_bits>|<presence_bits>`
@@ -275,6 +291,10 @@ Auth behavior:
   - sends `METRICS`; prints Prometheus text-format runtime metrics
 - `shell`
   - starts interactive mode with prompt `chunk>`
+- `version`
+  - prints the CLI version and exits; opens no connection
+- `help` (also `--help`, `-h`)
+  - prints usage, commands, and global options; opens no connection
 
 ## TLS (`chunks://`) Example
 
@@ -288,19 +308,3 @@ chunk-cli --uri chunks://mytoken@127.0.0.1:4242/ --tls-insecure info
 - errors are printed as `error: ...` and process exits non-zero
 - server `-ERR ...` responses are surfaced directly
 
-## Development
-
-Run local checks:
-
-```bash
-gofmt -w .
-go vet ./...
-go test ./...
-go build ./...
-```
-
-Show help:
-
-```bash
-go run ./cmd/chunk-cli --help
-```
