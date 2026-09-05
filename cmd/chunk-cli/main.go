@@ -1215,8 +1215,8 @@ Commands:
   chunk <cx> <cy>
   chunkbin [--out <file>] <cx> <cy>
   chunkbinstate [--out <file>] <cx> <cy>
-  chunksetbin <cx> <cy> <hex> | --in <file>
-  chunksetbinstate <cx> <cy> <hex> | --in <file>
+  chunksetbin <cx> <cy> <hex> | chunksetbin --in <file> <cx> <cy>
+  chunksetbinstate <cx> <cy> <hex> | chunksetbinstate --in <file> <cx> <cy>
   chunkbinc [--out <file>] [--raw] <cx> <cy>
   chunkbincstate [--out <file>] [--raw] <cx> <cy>
   chunkscan <limit> [<cursor_cx> <cursor_cy>]
@@ -1229,6 +1229,7 @@ Commands:
   metrics
   shell
   version
+  help
 
 Global options:
   --uri <chunk://token@host:port/ | chunks://token@host:port/>

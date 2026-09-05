@@ -6,6 +6,14 @@ This CLI follows [Semantic Versioning](https://semver.org/) and targets the
 stable `chunkdb` 1.x protocol; see the engine's
 [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
+## Unreleased
+
+### Fixed
+- the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
+  | --in <file>`, a form the argument parser rejects: `--in` has to precede the
+  coordinates. It now shows both accepted forms, and lists `help` itself among
+  the commands
+
 ## 1.2.0 - 2026-09-03
 
 ### Added
