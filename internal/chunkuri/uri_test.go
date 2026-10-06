@@ -41,3 +41,22 @@ func TestParseInvalidScheme(t *testing.T) {
 		t.Fatalf("expected error for unsupported scheme")
 	}
 }
+
+func TestParseTablePath(t *testing.T) {
+	for raw, want := range map[string]string{
+		"chunk://t@h:1/":        "",
+		"chunk://t@h:1":         "",
+		"chunk://t@h:1/terrain": "terrain",
+	} {
+		parsed, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", raw, err)
+		}
+		if parsed.Table != want {
+			t.Fatalf("Parse(%q).Table = %q, want %q", raw, parsed.Table, want)
+		}
+	}
+	if _, err := Parse("chunk://t@h:1/a/b"); err == nil {
+		t.Fatal("expected an error for a two-segment path")
+	}
+}

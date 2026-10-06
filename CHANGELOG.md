@@ -8,6 +8,13 @@ stable `chunkdb` 1.x protocol; see the engine's
 
 ## Unreleased
 
+### Added
+- tables (chunkdb 2.0+): `tables`, `tableinfo`, `use`, `tablecreate`,
+  `tableset` and `tabledrop`, in the shell as well; `--table <table>` or the
+  URI path (`chunk://token@host:port/terrain`) selects the table every
+  command works on. The shell prompt shows the selected table
+  (`chunk:terrain>`)
+
 ### Fixed
 - the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
   | --in <file>`, a form the argument parser rejects: `--in` has to precede the

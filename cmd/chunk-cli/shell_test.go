@@ -348,6 +348,27 @@ func startShellTestServer(t *testing.T, token string) (string, *shellServerState
 				if err := writeBulk(writer, []byte{0xAA, 0x55}); err != nil {
 					return
 				}
+			case "USE", "TABLEINFO":
+				if len(fields) != 2 || fields[1] == "missing" {
+					if err := writeError(writer, "NO_TABLE table does not exist"); err != nil {
+						return
+					}
+					continue
+				}
+				if err := writeBulk(writer, []byte("table="+fields[1]+"\nblock_bits=4\n")); err != nil {
+					return
+				}
+			case "TABLES":
+				if _, err := writer.WriteString("*2\r\n$7\r\ndefault\r\n$7\r\nterrain\r\n"); err != nil {
+					return
+				}
+				if err := writer.Flush(); err != nil {
+					return
+				}
+			case "TABLECREATE", "TABLESET", "TABLEDROP":
+				if err := writeSimple(writer, "OK"); err != nil {
+					return
+				}
 			case "QUIT":
 				_ = writeSimple(writer, "BYE")
 				return
@@ -436,7 +457,7 @@ func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 
-	if err := runShell(client, parsed.Token, input, &out, &errOut); err != nil {
+	if err := runShell(client, parsed.Token, "", input, &out, &errOut); err != nil {
 		t.Fatalf("run shell: %v", err)
 	}
 
@@ -489,7 +510,7 @@ func TestRunShellExitAlias(t *testing.T) {
 
 	var out bytes.Buffer
 	var errOut bytes.Buffer
-	if err := runShell(client, "", strings.NewReader("exit\n"), &out, &errOut); err != nil {
+	if err := runShell(client, "", "", strings.NewReader("exit\n"), &out, &errOut); err != nil {
 		t.Fatalf("run shell: %v", err)
 	}
 
@@ -498,5 +519,76 @@ func TestRunShellExitAlias(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("expected no stderr output, got %q", errOut.String())
+	}
+}
+
+func TestRunShellTables(t *testing.T) {
+	uri, state, stop := startShellTestServer(t, "dev-token")
+	defer stop()
+
+	parsed, err := chunkuri.Parse(uri)
+	if err != nil {
+		t.Fatalf("parse uri: %v", err)
+	}
+	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	input := strings.NewReader("tables\ntablecreate sky block_bits 2\ntableset sky checkpoint_updates 3\n" +
+		"use missing\nuse sky\ntableinfo terrain\ntabledrop sky\ntablecreate x block_bits\nexit\n")
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	if err := runShell(client, parsed.Token, "terrain", input, &out, &errOut); err != nil {
+		t.Fatalf("run shell: %v", err)
+	}
+
+	state.mu.Lock()
+	commands := append([]string(nil), state.commands...)
+	state.mu.Unlock()
+	expected := []string{"AUTH", "USE", "TABLES", "TABLECREATE", "TABLESET", "USE", "USE", "TABLEINFO", "TABLEDROP"}
+	if strings.Join(commands, " ") != strings.Join(expected, " ") {
+		t.Fatalf("got commands %v, want %v", commands, expected)
+	}
+
+	output := out.String()
+	// The prompt names the selected table; a failed use keeps it.
+	if !strings.HasPrefix(output, "chunk:terrain> default\nterrain\n") {
+		t.Fatalf("unexpected output start %q", output)
+	}
+	for _, want := range []string{"chunk:terrain> table=sky\n", "chunk:sky> table=terrain\n", "chunk:sky> OK\n"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected %q in output %q", want, output)
+		}
+	}
+	errText := errOut.String()
+	if !strings.Contains(errText, "NO_TABLE") {
+		t.Fatalf("expected NO_TABLE for use missing, got %q", errText)
+	}
+	if !strings.Contains(errText, "usage: tablecreate") {
+		t.Fatalf("expected usage error, got %q", errText)
+	}
+}
+
+func TestRunShellFailsWhenItsTableIsMissing(t *testing.T) {
+	uri, _, stop := startShellTestServer(t, "")
+	defer stop()
+
+	parsed, err := chunkuri.Parse(uri)
+	if err != nil {
+		t.Fatalf("parse uri: %v", err)
+	}
+	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	err = runShell(client, "", "missing", strings.NewReader("exit\n"), &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), `selecting table "missing" failed`) {
+		t.Fatalf("got %v, want a table selection error", err)
 	}
 }

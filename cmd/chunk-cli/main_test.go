@@ -23,6 +23,16 @@ func TestValidateCommandArgs(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "ping ok", cmd: "ping", args: nil, wantErr: false},
+		{name: "tables ok", cmd: "tables", args: nil, wantErr: false},
+		{name: "tables extra", cmd: "tables", args: []string{"x"}, wantErr: true},
+		{name: "use ok", cmd: "use", args: []string{"terrain"}, wantErr: false},
+		{name: "use missing name", cmd: "use", args: nil, wantErr: true},
+		{name: "tableinfo ok", cmd: "tableinfo", args: []string{"terrain"}, wantErr: false},
+		{name: "tabledrop extra", cmd: "tabledrop", args: []string{"a", "b"}, wantErr: true},
+		{name: "tablecreate ok", cmd: "tablecreate", args: []string{"terrain", "block_bits", "4"}, wantErr: false},
+		{name: "tablecreate odd pairs", cmd: "tablecreate", args: []string{"terrain", "block_bits"}, wantErr: true},
+		{name: "tableset ok", cmd: "tableset", args: []string{"terrain", "checkpoint_updates", "3"}, wantErr: false},
+		{name: "tableset no option", cmd: "tableset", args: []string{"terrain"}, wantErr: true},
 		{name: "ping extra", cmd: "ping", args: []string{"x"}, wantErr: true},
 		{name: "get ok", cmd: "get", args: []string{"1", "2"}, wantErr: false},
 		{name: "get bad int", cmd: "get", args: []string{"a", "2"}, wantErr: true},
@@ -121,6 +131,7 @@ func TestParseGlobalFlagsCustomValues(t *testing.T) {
 		"--timeout", "3s",
 		"--tls-insecure",
 		"--tls-server-name", "example.com",
+		"--table", "terrain",
 		"get", "1", "2",
 	})
 	if err != nil {
@@ -141,6 +152,9 @@ func TestParseGlobalFlagsCustomValues(t *testing.T) {
 	}
 	if opts.TLSServerName != "example.com" {
 		t.Fatalf("unexpected tls server name: %q", opts.TLSServerName)
+	}
+	if opts.Table != "terrain" {
+		t.Fatalf("unexpected table: %q", opts.Table)
 	}
 	if len(args) != 3 || args[0] != "get" || args[1] != "1" || args[2] != "2" {
 		t.Fatalf("unexpected remaining args: %#v", args)

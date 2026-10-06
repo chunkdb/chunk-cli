@@ -5,6 +5,7 @@ import (
 	"net"
 	neturl "net/url"
 	"strconv"
+	"strings"
 )
 
 const DefaultPort = 4242
@@ -15,6 +16,9 @@ type Parsed struct {
 	Port   int
 	Token  string
 	Secure bool
+	// Table is the table the path names (chunk://host:4242/terrain), empty
+	// for / (the server's default table).
+	Table string
 }
 
 func Parse(raw string) (Parsed, error) {
@@ -46,12 +50,18 @@ func Parse(raw string) (Parsed, error) {
 		token = u.User.Username()
 	}
 
+	table := strings.TrimPrefix(u.Path, "/")
+	if strings.Contains(table, "/") {
+		return Parsed{}, fmt.Errorf("uri path must name one table: %q", u.Path)
+	}
+
 	return Parsed{
 		Scheme: u.Scheme,
 		Host:   host,
 		Port:   port,
 		Token:  token,
 		Secure: u.Scheme == "chunks",
+		Table:  table,
 	}, nil
 }
 
