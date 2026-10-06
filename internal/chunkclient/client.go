@@ -3,6 +3,7 @@ package chunkclient
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,13 +27,20 @@ const (
 	ResponseSimple ResponseKind = iota + 1
 	ResponseBulk
 	ResponseArray
+	// ResponseNull is `$-1`: no value (an unset block).
+	ResponseNull
 )
+
+// ProtocolVersion is the chunkdb protocol this client speaks.
+const ProtocolVersion = 2
 
 type Response struct {
 	Kind   ResponseKind
 	Simple string
 	Bulk   []byte
-	Array  [][]byte
+	// Array items; a null item (`$-1`) is nil, an empty one a non-nil
+	// empty slice.
+	Array [][]byte
 }
 
 type ServerError struct {
@@ -98,12 +106,59 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// Hello sends `HELLO 2 [AUTH <token>] [TABLE <name>]`, the first command on a
+// connection, and returns the reply's key=value lines.
+func (c *Client) Hello(token string, table string) (map[string]string, error) {
+	command := "HELLO " + strconv.Itoa(ProtocolVersion)
+	if token != "" {
+		command += " AUTH " + token
+	}
+	if table != "" {
+		command += " TABLE " + table
+	}
+	resp, err := c.Command(command)
+	if err != nil {
+		// A 1.x server does not know HELLO; one that requires a token answers
+		// AUTH_REQUIRED although HELLO carried it, which a protocol 2 server
+		// never does.
+		var serverErr *ServerError
+		if errors.As(err, &serverErr) && (strings.HasPrefix(serverErr.Message, "UNKNOWN_COMMAND") ||
+			(strings.HasPrefix(serverErr.Message, "AUTH_REQUIRED") && token != "")) {
+			return nil, fmt.Errorf("server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs chunkdb 2.0 or later", ProtocolVersion)
+		}
+		return nil, err
+	}
+	if resp.Kind != ResponseBulk {
+		return nil, fmt.Errorf("expected bulk HELLO reply")
+	}
+	info := ParseInfo(resp.Bulk)
+	if info["protocol"] != strconv.Itoa(ProtocolVersion) {
+		return nil, fmt.Errorf("server replied with protocol %q, expected %d", info["protocol"], ProtocolVersion)
+	}
+	return info, nil
+}
+
+// ParseInfo parses the key=value lines of an INFO, HELLO, USE or TABLEINFO
+// reply.
+func ParseInfo(payload []byte) map[string]string {
+	info := make(map[string]string)
+	for _, line := range strings.Split(string(payload), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		key, value, _ := strings.Cut(line, "=")
+		info[key] = value
+	}
+	return info
+}
+
 func (c *Client) Command(command string) (Response, error) {
 	return c.CommandWithPayload(command, nil)
 }
 
 // CommandWithPayload sends a request line followed by raw payload bytes and an
-// empty line (the CHUNKSETBIN framing). A nil payload sends the line alone.
+// empty line (the CHUNKPUT framing). A nil payload sends the line alone.
 func (c *Client) CommandWithPayload(command string, payload []byte) (Response, error) {
 	if c.conn == nil {
 		return Response{}, fmt.Errorf("connection is closed")
@@ -152,6 +207,9 @@ func (c *Client) CommandWithPayload(command string, payload []byte) (Response, e
 		}
 		return Response{}, &ServerError{Message: msg}
 	case '$':
+		if line == "$-1" {
+			return Response{Kind: ResponseNull}, nil
+		}
 		payload, err := c.readBulkPayload(line)
 		if err != nil {
 			return Response{}, err
@@ -171,6 +229,10 @@ func (c *Client) CommandWithPayload(command string, payload []byte) (Response, e
 			header = strings.TrimRight(header, "\r\n")
 			if header == "" || header[0] != '$' {
 				return Response{}, fmt.Errorf("invalid array item header: %q", header)
+			}
+			if header == "$-1" {
+				items = append(items, nil)
+				continue
 			}
 			payload, err := c.readBulkPayload(header)
 			if err != nil {

@@ -258,3 +258,82 @@ func mustSelfSignedCert(t *testing.T) tls.Certificate {
 		PrivateKey:  priv,
 	}
 }
+
+func TestCommandNullResponses(t *testing.T) {
+	c := newPipeClient(t, func(server net.Conn) {
+		reader := bufio.NewReader(server)
+		_, _ = reader.ReadString('\n')
+		_, _ = server.Write([]byte("$-1\r\n"))
+		_, _ = reader.ReadString('\n')
+		_, _ = server.Write([]byte("*3\r\n$4\r\n1010\r\n$-1\r\n$0\r\n\r\n"))
+	})
+	defer c.Close()
+
+	resp, err := c.Command("GET 0 0")
+	if err != nil || resp.Kind != ResponseNull {
+		t.Fatalf("expected a null response, got %#v, %v", resp, err)
+	}
+	resp, err = c.Command("MGET 0 0 1 0 2 0")
+	if err != nil || resp.Kind != ResponseArray || len(resp.Array) != 3 {
+		t.Fatalf("unexpected response: %#v, %v", resp, err)
+	}
+	if string(resp.Array[0]) != "1010" || resp.Array[1] != nil || resp.Array[2] == nil || len(resp.Array[2]) != 0 {
+		t.Fatalf("a null item must be nil and an empty one non-nil: %#v", resp.Array)
+	}
+}
+
+func TestHello(t *testing.T) {
+	sent := make(chan string, 1)
+	c := newPipeClient(t, func(server net.Conn) {
+		line, _ := bufio.NewReader(server).ReadString('\n')
+		sent <- line
+		body := "protocol=2\nserver_version=test\ntable=terrain\nblock_bits=4\n"
+		_, _ = fmt.Fprintf(server, "$%d\r\n%s\r\n", len(body), body)
+	})
+	defer c.Close()
+
+	info, err := c.Hello("secret", "terrain")
+	if err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if got := <-sent; got != "HELLO 2 AUTH secret TABLE terrain\r\n" {
+		t.Fatalf("sent %q", got)
+	}
+	if info["table"] != "terrain" || info["block_bits"] != "4" || info["server_version"] != "test" {
+		t.Fatalf("unexpected info %v", info)
+	}
+}
+
+func TestHelloRefusals(t *testing.T) {
+	cases := map[string]string{
+		"-ERR UNKNOWN_COMMAND HELLO\r\n":     "does not speak protocol 2",
+		"-ERR AUTH_FAILED invalid token\r\n": "AUTH_FAILED",
+		"$11\r\nprotocol=3\n\r\n":            `protocol "3"`,
+		"+OK\r\n":                            "expected bulk HELLO reply",
+	}
+	for reply, want := range cases {
+		c := newPipeClient(t, func(server net.Conn) {
+			_, _ = bufio.NewReader(server).ReadString('\n')
+			_, _ = server.Write([]byte(reply))
+		})
+		_, err := c.Hello("", "")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("reply %q: got %v, want %q", reply, err, want)
+		}
+		_ = c.Close()
+	}
+
+	// A 1.x server that requires a token answers AUTH_REQUIRED even to a
+	// HELLO with a token; without a token the reply stays an auth error.
+	for token, want := range map[string]string{"tok": "does not speak protocol 2", "": "AUTH_REQUIRED"} {
+		c := newPipeClient(t, func(server net.Conn) {
+			_, _ = bufio.NewReader(server).ReadString('\n')
+			_, _ = server.Write([]byte("-ERR AUTH_REQUIRED use AUTH <token>\r\n"))
+		})
+		_, err := c.Hello(token, "")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("token %q: got %v, want %q", token, err, want)
+		}
+		_ = c.Close()
+	}
+}

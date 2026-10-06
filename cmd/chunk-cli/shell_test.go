@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -15,580 +16,448 @@ import (
 	"github.com/chunkdb/chunk-cli/internal/chunkuri"
 )
 
-type shellServerState struct {
-	mu          sync.Mutex
-	sawAuth     bool
-	commands    []string
-	blocks      map[string]string
-	present     map[string]bool
-	chunks      map[string]string
-	chunkStates map[string]string
-	chunkSet    map[string]bool
+// fakeTable is a table of the fake server; chunks hold their state bytes
+// (payload, then presence).
+type fakeTable struct {
+	blockBits int
+	width     int
+	height    int
+	chunks    map[string][]byte
+	versions  map[string]uint64
+	blocks    map[string]string
 }
 
-func (s *shellServerState) record(cmd string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.commands = append(s.commands, cmd)
+func (t *fakeTable) geometry() geometry {
+	return geometry{blockBits: t.blockBits, width: t.width, height: t.height}
 }
 
-func (s *shellServerState) setAuth() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sawAuth = true
+func (t *fakeTable) info(name string) string {
+	return fmt.Sprintf("table=%s\nstore_id=00\nblock_bits=%d\nchunk_width_blocks=%d\nchunk_height_blocks=%d\n"+
+		"large_chunk_width_chunks=8\nlarge_chunk_height_chunks=8\ndurability_mode=relaxed\n"+
+		"checkpoint_updates=1000\ncheckpoint_wal_bytes=1048576\nwal_group_commit_updates=64\ncheckpoint_compression=none\n",
+		name, t.blockBits, t.width, t.height)
 }
 
-func (s *shellServerState) setBlock(x string, y string, bits string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := x + ":" + y
-	s.blocks[key] = bits
-	s.present[key] = true
-}
-
-func (s *shellServerState) unsetBlock(x string, y string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := x + ":" + y
-	delete(s.present, key)
-	s.blocks[key] = "0000"
-}
-
-func (s *shellServerState) getBlock(x string, y string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if bits, ok := s.blocks[x+":"+y]; ok {
-		return bits
+func (t *fakeTable) state(key string) []byte {
+	if data, ok := t.chunks[key]; ok {
+		return data
 	}
-	return "0000"
+	g := t.geometry()
+	return make([]byte, g.payloadBytes()+g.presenceBytes())
 }
 
-func (s *shellServerState) blockExists(x string, y string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.present[x+":"+y]
+type fakeServer struct {
+	mu       sync.Mutex
+	token    string
+	tables   map[string]*fakeTable
+	commands []string
+	clock    uint64
+	// legacy answers HELLO like a 1.x server.
+	legacy bool
 }
 
-func (s *shellServerState) setChunk(cx string, cy string, bits string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := cx + ":" + cy
-	s.chunks[key] = bits
-	s.chunkStates[key] = bits + "|" + strings.Repeat("1", len(bits)/4)
-	s.chunkSet[key] = true
-}
-
-func (s *shellServerState) setChunkState(cx string, cy string, state string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := cx + ":" + cy
-	parts := strings.Split(state, "|")
-	s.chunks[key] = parts[0]
-	s.chunkStates[key] = state
-	s.chunkSet[key] = strings.Contains(parts[1], "1")
-}
-
-func (s *shellServerState) getChunk(cx string, cy string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if bits, ok := s.chunks[cx+":"+cy]; ok {
-		return bits
+func newFakeTable(blockBits, width, height int) *fakeTable {
+	return &fakeTable{
+		blockBits: blockBits, width: width, height: height,
+		chunks: map[string][]byte{}, versions: map[string]uint64{}, blocks: map[string]string{},
 	}
-	return "0000"
 }
 
-func (s *shellServerState) getChunkState(cx string, cy string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := cx + ":" + cy
-	if state, ok := s.chunkStates[key]; ok {
-		return state
-	}
-	if bits, ok := s.chunks[key]; ok {
-		return bits + "|" + strings.Repeat("1", len(bits)/4)
-	}
-	return "0000000000000000|0000"
-}
-
-func (s *shellServerState) chunkExists(cx string, cy string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.chunkSet[cx+":"+cy]
-}
-
-func startShellTestServer(t *testing.T, token string) (string, *shellServerState, func()) {
+// startFakeServer serves protocol 2 on one connection at a time: `default`
+// has 2x2 blocks of 4 bits (2 payload bytes, 1 presence byte), `sky` 2x2
+// blocks of 2 bits.
+func startFakeServer(t *testing.T, server *fakeServer) string {
 	t.Helper()
-
+	if server.tables == nil {
+		server.tables = map[string]*fakeTable{"default": newFakeTable(4, 2, 2), "sky": newFakeTable(2, 2, 2)}
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-
-	state := &shellServerState{
-		blocks:      make(map[string]string),
-		present:     make(map[string]bool),
-		chunks:      make(map[string]string),
-		chunkStates: make(map[string]string),
-		chunkSet:    make(map[string]bool),
-	}
-	done := make(chan struct{})
-
 	go func() {
-		defer close(done)
-
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		writer := bufio.NewWriter(conn)
-		authed := token == ""
-
 		for {
-			line, err := reader.ReadString('\n')
+			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-
-			line = strings.TrimRight(line, "\r\n")
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-
-			fields := strings.Fields(line)
-			if len(fields) == 0 {
-				continue
-			}
-
-			cmd := strings.ToUpper(fields[0])
-			state.record(cmd)
-
-			switch cmd {
-			case "PING":
-				if err := writeSimple(writer, "PONG"); err != nil {
-					return
-				}
-			case "AUTH":
-				if len(fields) != 2 {
-					if err := writeError(writer, "INVALID_ARGUMENT AUTH requires token"); err != nil {
-						return
-					}
-					continue
-				}
-				if fields[1] != token {
-					if err := writeError(writer, "AUTH_FAILED invalid token"); err != nil {
-						return
-					}
-					continue
-				}
-				authed = true
-				state.setAuth()
-				if err := writeSimple(writer, "OK"); err != nil {
-					return
-				}
-			case "SET":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) != 4 {
-					if err := writeError(writer, "INVALID_ARGUMENT SET requires 3 args"); err != nil {
-						return
-					}
-					continue
-				}
-				if !isBits(fields[3]) {
-					if err := writeError(writer, "INVALID_ARGUMENT invalid bits"); err != nil {
-						return
-					}
-					continue
-				}
-				state.setBlock(fields[1], fields[2], fields[3])
-				if err := writeSimple(writer, "OK"); err != nil {
-					return
-				}
-			case "UNSET":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) != 3 {
-					if err := writeError(writer, "INVALID_ARGUMENT UNSET requires 2 args"); err != nil {
-						return
-					}
-					continue
-				}
-				state.unsetBlock(fields[1], fields[2])
-				if err := writeSimple(writer, "OK"); err != nil {
-					return
-				}
-			case "GET":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) != 3 {
-					if err := writeError(writer, "INVALID_ARGUMENT GET requires 2 args"); err != nil {
-						return
-					}
-					continue
-				}
-				if err := writeBulk(writer, []byte(state.getBlock(fields[1], fields[2]))); err != nil {
-					return
-				}
-			case "EXISTS":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) != 3 {
-					if err := writeError(writer, "INVALID_ARGUMENT EXISTS requires 2 args"); err != nil {
-						return
-					}
-					continue
-				}
-				if state.blockExists(fields[1], fields[2]) {
-					if err := writeSimple(writer, "1"); err != nil {
-						return
-					}
-				} else {
-					if err := writeSimple(writer, "0"); err != nil {
-						return
-					}
-				}
-			case "INFO":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if err := writeBulk(writer, []byte("chunkdb_version=1\n")); err != nil {
-					return
-				}
-			case "CHUNKEXISTS":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) != 3 {
-					if err := writeError(writer, "INVALID_ARGUMENT CHUNKEXISTS requires 2 args"); err != nil {
-						return
-					}
-					continue
-				}
-				if state.chunkExists(fields[1], fields[2]) {
-					if err := writeSimple(writer, "1"); err != nil {
-						return
-					}
-				} else {
-					if err := writeSimple(writer, "0"); err != nil {
-						return
-					}
-				}
-			case "CHUNKSET":
-				if !authed {
-					if err := writeError(writer, "AUTH_REQUIRED use AUTH <token>"); err != nil {
-						return
-					}
-					continue
-				}
-				if len(fields) == 5 && strings.EqualFold(fields[3], "STATE") {
-					if err := writeSimple(writer, "OK"); err != nil {
-						return
-					}
-					state.setChunkState(fields[1], fields[2], fields[4])
-					continue
-				}
-				if len(fields) != 4 {
-					if err := writeError(writer, "INVALID_ARGUMENT CHUNKSET requires 3 args"); err != nil {
-						return
-					}
-					continue
-				}
-				if !isBits(fields[3]) {
-					if err := writeError(writer, "INVALID_ARGUMENT invalid bits"); err != nil {
-						return
-					}
-					continue
-				}
-				state.setChunk(fields[1], fields[2], fields[3])
-				if err := writeSimple(writer, "OK"); err != nil {
-					return
-				}
-			case "CHUNK":
-				if len(fields) == 4 && strings.EqualFold(fields[3], "STATE") {
-					if err := writeBulk(writer, []byte(state.getChunkState(fields[1], fields[2]))); err != nil {
-						return
-					}
-					continue
-				}
-				if err := writeBulk(writer, []byte(state.getChunk(fields[1], fields[2]))); err != nil {
-					return
-				}
-			case "CHUNKBIN":
-				if len(fields) == 4 && strings.EqualFold(fields[3], "STATE") {
-					if err := writeBulk(writer, []byte{0xAA, 0x55, 0x03}); err != nil {
-						return
-					}
-					continue
-				}
-				if err := writeBulk(writer, []byte{0xAA, 0x55}); err != nil {
-					return
-				}
-			case "USE", "TABLEINFO":
-				if len(fields) != 2 || fields[1] == "missing" {
-					if err := writeError(writer, "NO_TABLE table does not exist"); err != nil {
-						return
-					}
-					continue
-				}
-				if err := writeBulk(writer, []byte("table="+fields[1]+"\nblock_bits=4\n")); err != nil {
-					return
-				}
-			case "TABLES":
-				if _, err := writer.WriteString("*2\r\n$7\r\ndefault\r\n$7\r\nterrain\r\n"); err != nil {
-					return
-				}
-				if err := writer.Flush(); err != nil {
-					return
-				}
-			case "TABLECREATE", "TABLESET", "TABLEDROP":
-				if err := writeSimple(writer, "OK"); err != nil {
-					return
-				}
-			case "QUIT":
-				_ = writeSimple(writer, "BYE")
-				return
-			default:
-				if err := writeError(writer, "UNKNOWN_COMMAND "+fields[0]); err != nil {
-					return
-				}
-			}
+			go server.serve(conn)
 		}
 	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return "chunk://" + server.token + "@" + ln.Addr().String() + "/"
+}
 
-	host, portText, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("split host port: %v", err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatalf("parse port: %v", err)
-	}
+func (s *fakeServer) recorded() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.commands...)
+}
 
-	uri := fmt.Sprintf("chunk://%s@%s:%d/", token, host, port)
-	stop := func() {
-		_ = ln.Close()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatalf("server did not stop in time")
+func (s *fakeServer) serve(conn net.Conn) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	writer := bufio.NewWriter(conn)
+	greeted := false
+	var table *fakeTable
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		fields := strings.Fields(strings.TrimRight(line, "\r\n"))
+		if len(fields) == 0 {
+			continue
+		}
+		cmd := strings.ToUpper(fields[0])
+		var payload []byte
+		if cmd == "CHUNKPUT" {
+			length, _ := strconv.Atoi(fields[len(fields)-1])
+			payload = make([]byte, length+2)
+			if _, err := io.ReadFull(reader, payload); err != nil {
+				return
+			}
+			payload = payload[:length]
+		}
+		s.mu.Lock()
+		s.commands = append(s.commands, cmd)
+		var reply string
+		switch {
+		case cmd == "HELLO" && s.legacy:
+			reply = "-ERR UNKNOWN_COMMAND HELLO\r\n"
+		case cmd == "HELLO":
+			reply, table, greeted = s.hello(fields)
+		case !greeted:
+			reply = "-ERR PROTOCOL expected HELLO 2\r\n"
+		default:
+			reply, table = s.command(cmd, fields[1:], payload, table)
+		}
+		s.mu.Unlock()
+		if _, err := writer.WriteString(reply); err != nil || writer.Flush() != nil {
+			return
+		}
+		if cmd == "QUIT" || reply == "-ERR PROTOCOL expected HELLO 2\r\n" {
+			return
 		}
 	}
-
-	return uri, state, stop
 }
 
-func writeSimple(w *bufio.Writer, payload string) error {
-	if _, err := w.WriteString("+" + payload + "\r\n"); err != nil {
-		return err
-	}
-	return w.Flush()
-}
+func bulk(data string) string { return "$" + strconv.Itoa(len(data)) + "\r\n" + data + "\r\n" }
 
-func writeError(w *bufio.Writer, message string) error {
-	if _, err := w.WriteString("-ERR " + message + "\r\n"); err != nil {
-		return err
-	}
-	return w.Flush()
-}
-
-func writeBulk(w *bufio.Writer, payload []byte) error {
-	if _, err := fmt.Fprintf(w, "$%d\r\n", len(payload)); err != nil {
-		return err
-	}
-	if _, err := w.Write(payload); err != nil {
-		return err
-	}
-	if _, err := w.WriteString("\r\n"); err != nil {
-		return err
-	}
-	return w.Flush()
-}
-
-func isBits(bits string) bool {
-	for _, ch := range bits {
-		if ch != '0' && ch != '1' {
-			return false
+func (s *fakeServer) hello(fields []string) (string, *fakeTable, bool) {
+	token, tableName := "", "default"
+	for i := 2; i+1 < len(fields); i += 2 {
+		switch strings.ToUpper(fields[i]) {
+		case "AUTH":
+			token = fields[i+1]
+		case "TABLE":
+			tableName = fields[i+1]
 		}
 	}
-	return bits != ""
+	if s.token != "" && token == "" {
+		return "-ERR AUTH_REQUIRED use HELLO 2 AUTH <token>\r\n", nil, false
+	}
+	if s.token != "" && token != s.token {
+		return "-ERR AUTH_FAILED invalid token\r\n", nil, false
+	}
+	reply := "protocol=2\nserver_version=test\ncapabilities=zrle\nmax_line_bytes=65536\n" +
+		"max_area_chunks=256\nmax_response_bytes=67108864\nmax_scan_limit=1024\nmax_batch_ops=1024\n"
+	table, ok := s.tables[tableName]
+	if !ok && len(fields) > 2 && strings.Contains(strings.ToUpper(strings.Join(fields, " ")), "TABLE") {
+		return "-ERR NO_TABLE table '" + tableName + "' does not exist\r\n", nil, false
+	}
+	if ok {
+		reply += table.info(tableName)
+	}
+	return bulk(reply), table, true
 }
 
-func TestRunShellConnectAuthPingExistsGetSetUnsetQuit(t *testing.T) {
-	uri, state, stop := startShellTestServer(t, "dev-token")
-	defer stop()
+func (s *fakeServer) command(cmd string, args []string, payload []byte, table *fakeTable) (string, *fakeTable) {
+	switch cmd {
+	case "PING":
+		return "+PONG\r\n", table
+	case "QUIT":
+		return "+BYE\r\n", table
+	case "TABLES":
+		return "*2\r\n" + bulk("default") + bulk("sky"), table
+	case "USE", "TABLEINFO":
+		next, ok := s.tables[args[0]]
+		if !ok {
+			return "-ERR NO_TABLE table '" + args[0] + "' does not exist\r\n", table
+		}
+		if cmd == "USE" {
+			table = next
+		}
+		return bulk(next.info(args[0])), table
+	case "TABLECREATE", "TABLESET", "TABLEDROP":
+		return "+OK\r\n", table
+	}
+	if table == nil {
+		return "-ERR NO_TABLE no table selected\r\n", table
+	}
+	g := table.geometry()
+	switch cmd {
+	case "GET":
+		bits, ok := table.blocks[args[0]+":"+args[1]]
+		if !ok {
+			return "$-1\r\n", table
+		}
+		return bulk(bits), table
+	case "SET":
+		table.blocks[args[0]+":"+args[1]] = args[2]
+		return "+OK\r\n", table
+	case "UNSET":
+		delete(table.blocks, args[0]+":"+args[1])
+		return "+OK\r\n", table
+	case "MGET":
+		reply := "*" + strconv.Itoa(len(args)/2) + "\r\n"
+		for i := 0; i+1 < len(args); i += 2 {
+			if bits, ok := table.blocks[args[i]+":"+args[i+1]]; ok {
+				reply += bulk(bits)
+			} else {
+				reply += "$-1\r\n"
+			}
+		}
+		return reply, table
+	case "CHUNKEXISTS":
+		state := table.state(args[0] + ":" + args[1])
+		if bytes.Count(state[g.payloadBytes():], []byte{0}) == g.presenceBytes() {
+			return "+0\r\n", table
+		}
+		return "+1\r\n", table
+	case "CHUNKVER":
+		return bulk(strconv.FormatUint(table.versions[args[0]+":"+args[1]], 10)), table
+	case "CHUNKGET":
+		state := table.state(args[0] + ":" + args[1])
+		options := strings.ToUpper(strings.Join(args[2:], " "))
+		data := state[:g.payloadBytes()]
+		if strings.Contains(options, "STATE") {
+			data = state
+		}
+		if strings.Contains(options, "ZRLE") {
+			data = encodeZrle(data)
+		}
+		return bulk(string(data)), table
+	case "CHUNKPUT":
+		key := args[0] + ":" + args[1]
+		options := strings.ToUpper(strings.Join(args[2:len(args)-1], " "))
+		data := payload
+		size := g.payloadBytes()
+		if strings.Contains(options, "STATE") {
+			size += g.presenceBytes()
+		}
+		if strings.Contains(options, "ZRLE") {
+			decoded, err := decodeZrle(payload, size)
+			if err != nil {
+				return "-ERR INVALID_ARGUMENT zrle payload is invalid\r\n", table
+			}
+			data = decoded
+		}
+		if len(data) != size {
+			return "-ERR INVALID_ARGUMENT payload length does not match\r\n", table
+		}
+		if index := strings.Index(options, "IF "); index >= 0 {
+			want, _ := strconv.ParseUint(strings.Fields(options[index+3:])[0], 10, 64)
+			if want != table.versions[key] {
+				return "-ERR VERSION_MISMATCH current=" + strconv.FormatUint(table.versions[key], 10) + "\r\n", table
+			}
+		}
+		if !strings.Contains(options, "STATE") {
+			data = append(append([]byte(nil), data...), bytes.Repeat([]byte{0xff}, g.presenceBytes())...)
+			data[len(data)-1] = byte(1<<(g.blockCount()%8)) - 1
+			if g.blockCount()%8 == 0 {
+				data[len(data)-1] = 0xff
+			}
+		}
+		s.clock++
+		table.chunks[key] = data
+		table.versions[key] = s.clock
+		return bulk(strconv.FormatUint(s.clock, 10)), table
+	case "CHUNKRANGE":
+		reply := []string{}
+		for key, state := range table.chunks {
+			cx, cy, _ := strings.Cut(key, ":")
+			if args[0] <= cx && cx <= args[2] && args[1] <= cy && cy <= args[3] {
+				reply = append(reply, bulk(cx+" "+cy)+bulk(string(state)))
+			}
+		}
+		return "*" + strconv.Itoa(2*len(reply)) + "\r\n" + strings.Join(reply, ""), table
+	case "CHUNKBATCH":
+		return bulk("7"), table
+	}
+	return "-ERR UNKNOWN_COMMAND " + cmd + "\r\n", table
+}
 
+func dialSession(t *testing.T, uri string, table string) (*session, error) {
+	t.Helper()
 	parsed, err := chunkuri.Parse(uri)
 	if err != nil {
 		t.Fatalf("parse uri: %v", err)
 	}
-
 	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer client.Close()
+	t.Cleanup(func() { _ = client.Close() })
+	return openSession(client, parsed.Token, table)
+}
 
-	input := strings.NewReader("ping\nexists 1 2\nset 1 2 1010\nexists 1 2\nget 1 2\nunset 1 2\nexists 1 2\nget 1 2\nchunkexists 0 0\nchunkset 0 0 1111000011110000\nchunkexists 0 0\nchunk 0 0\nchunkstate 0 0\nchunksetstate 1 0 1010101010101010|1000\nchunkstate 1 0\nchunkbinstate 1 0\nquit\n")
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-
-	if err := runShell(client, parsed.Token, "", input, &out, &errOut); err != nil {
+func runScript(t *testing.T, sess *session, script string) (string, string) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	if err := runShell(sess, strings.NewReader(script), &out, &errOut); err != nil {
 		t.Fatalf("run shell: %v", err)
 	}
+	return out.String(), errOut.String()
+}
 
-	if errOut.Len() != 0 {
-		t.Fatalf("expected empty stderr, got %q", errOut.String())
+func TestShellBlocksAndChunks(t *testing.T) {
+	server := &fakeServer{token: "dev-token"}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
 	}
 
-	state.mu.Lock()
-	sawAuth := state.sawAuth
-	commands := append([]string(nil), state.commands...)
-	state.mu.Unlock()
-	if !sawAuth {
-		t.Fatalf("expected shell auto-auth to run AUTH")
+	out, errOut := runScript(t, sess, strings.Join([]string{
+		"ping", "get 1 2", "set 1 2 1010", "get 1 2", "mget 1 2 3 4", "unset 1 2", "get 1 2",
+		"chunkexists 0 0", "chunkset 0 0 1111000011110000", "chunkexists 0 0", "chunk 0 0", "chunkstate 0 0",
+		"chunksetstate 1 0 1010101010101010|1000", "chunkstate 1 0", "chunkget --state 1 0",
+		"chunkget --zrle --state 0 0", "chunkrange 0 0 1 0", "quit",
+	}, "\n")+"\n")
+	if errOut != "" {
+		t.Fatalf("unexpected stderr %q", errOut)
 	}
-	expectedCommands := []string{"AUTH", "PING", "EXISTS", "SET", "EXISTS", "GET", "UNSET", "EXISTS", "GET", "CHUNKEXISTS", "CHUNKSET", "CHUNKEXISTS", "CHUNK", "CHUNK", "CHUNKSET", "CHUNK", "CHUNKBIN", "QUIT"}
-	if len(commands) != len(expectedCommands) {
-		t.Fatalf("unexpected command count: got %v want %v", commands, expectedCommands)
+
+	commands := server.recorded()
+	want := "HELLO PING GET SET GET MGET UNSET GET CHUNKEXISTS CHUNKPUT CHUNKEXISTS CHUNKGET CHUNKGET " +
+		"CHUNKPUT CHUNKGET CHUNKGET CHUNKGET CHUNKRANGE QUIT"
+	if strings.Join(commands, " ") != want {
+		t.Fatalf("got commands %v, want %s", commands, want)
 	}
-	for i := range expectedCommands {
-		if commands[i] != expectedCommands[i] {
-			t.Fatalf("unexpected command sequence: got %v want %v", commands, expectedCommands)
+	for _, expected := range []string{
+		"chunk> PONG\n", "chunk> (unset)\n", "chunk> 1010\n", "chunk> 1010\n(unset)\n",
+		"chunk> 0\n", "chunk> 1\n", "chunk> 1111000011110000\n", "chunk> 1111000011110000|1111\n",
+		"chunk> 1010101010101010|1000\n", "bytes=3\n", "bytes=3 compressed_bytes=",
+		"0 0 1111000011110000|1111\n", "1 0 1010101010101010|1000\n", "BYE",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("expected %q in output %q", expected, out)
 		}
 	}
-
-	output := out.String()
-	if strings.Count(output, "chunk> ") < 12 {
-		t.Fatalf("expected repeated prompt, got %q", output)
+	// Bit i of the text is byte i/8, bit i%8: "1111000011110000" is 0x0f 0x0f.
+	server.mu.Lock()
+	state := server.tables["default"].chunks["0:0"]
+	server.mu.Unlock()
+	if !bytes.Equal(state, []byte{0x0f, 0x0f, 0x0f}) {
+		t.Fatalf("chunk 0 0 stored as % x", state)
 	}
-	for _, expected := range []string{"PONG", "chunk> 0\n", "chunk> 1\n", "1010", "0000", "1111000011110000", "1111000011110000|1111", "1010101010101010|1000", "bytes=3", "BYE"} {
-		if !strings.Contains(output, expected) {
-			t.Fatalf("expected %q in output %q", expected, output)
+}
+
+func TestShellChunkPutVersionsAndSizes(t *testing.T) {
+	server := &fakeServer{}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, "chunkput 0 0 a0a1\nchunkput --state --if 1 0 0 a0a10f\n"+
+		"chunkput --if 1 0 0 a0a1\nchunkput 0 0 a0\nchunkput --zrle 1 1 0000\nchunkver 0 0\nexit\n")
+	if !strings.Contains(out, "chunk> 1\nchunk> 2\n") {
+		t.Fatalf("expected versions 1 and 2 in %q", out)
+	}
+	if !strings.Contains(errOut, "VERSION_MISMATCH current=2") {
+		t.Fatalf("expected a version mismatch in %q", errOut)
+	}
+	if !strings.Contains(errOut, "got 1 bytes, the table's chunks have 2") {
+		t.Fatalf("expected a size error in %q", errOut)
+	}
+	// The size error is caught before sending. Two zero bytes do not shrink,
+	// so the --zrle put goes uncompressed.
+	commands := strings.Join(server.recorded(), " ")
+	if commands != "HELLO CHUNKPUT CHUNKPUT CHUNKPUT CHUNKPUT CHUNKVER" {
+		t.Fatalf("got commands %q", commands)
+	}
+	if !strings.Contains(out, "chunk> 3\nchunk> 2\n") {
+		t.Fatalf("expected the zrle put and chunkver in %q", out)
+	}
+}
+
+func TestShellExitAlias(t *testing.T) {
+	uri := startFakeServer(t, &fakeServer{})
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, "exit\n")
+	if out != "chunk> " || errOut != "" {
+		t.Fatalf("unexpected output %q / %q", out, errOut)
+	}
+}
+
+func TestShellTables(t *testing.T) {
+	server := &fakeServer{token: "dev-token"}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "default")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, "tables\ntablecreate x block_bits 2\nuse missing\nuse sky\n"+
+		"chunkset 0 0 10101010\nchunk 0 0\ntabledrop x\ntablecreate x block_bits\nauth x\nexit\n")
+
+	commands := strings.Join(server.recorded(), " ")
+	if commands != "HELLO TABLES TABLECREATE USE USE CHUNKPUT CHUNKGET TABLEDROP" {
+		t.Fatalf("got commands %q", commands)
+	}
+	// The prompt names the selected table; a failed use keeps it, and the
+	// chunk commands follow the new table's geometry (8 payload bits on sky).
+	if !strings.HasPrefix(out, "chunk:default> default\nsky\n") {
+		t.Fatalf("unexpected output start %q", out)
+	}
+	for _, want := range []string{"chunk:default> table=sky\n", "chunk:sky> 1\n", "chunk:sky> 10101010\n", "chunk:sky> OK\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output %q", want, out)
+		}
+	}
+	for _, want := range []string{"NO_TABLE", "usage: tablecreate", `unknown shell command "auth"`} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("expected %q in stderr %q", want, errOut)
 		}
 	}
 }
 
-func TestRunShellExitAlias(t *testing.T) {
-	uri, _, stop := startShellTestServer(t, "")
-	defer stop()
-
-	parsed, err := chunkuri.Parse(uri)
-	if err != nil {
-		t.Fatalf("parse uri: %v", err)
+func TestOpenSessionFailures(t *testing.T) {
+	uri := startFakeServer(t, &fakeServer{token: "dev-token"})
+	if _, err := dialSession(t, strings.Replace(uri, "dev-token", "wrong", 1), ""); err == nil ||
+		!strings.Contains(err.Error(), "AUTH_FAILED") {
+		t.Fatalf("wrong token: got %v", err)
 	}
-
-	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	if _, err := dialSession(t, strings.Replace(uri, "dev-token@", "", 1), ""); err == nil ||
+		!strings.Contains(err.Error(), "AUTH_REQUIRED") {
+		t.Fatalf("missing token: got %v", err)
 	}
-	defer client.Close()
-
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	if err := runShell(client, "", "", strings.NewReader("exit\n"), &out, &errOut); err != nil {
-		t.Fatalf("run shell: %v", err)
+	if _, err := dialSession(t, uri, "missing"); err == nil ||
+		!strings.Contains(err.Error(), `connecting with table "missing" failed`) || !strings.Contains(err.Error(), "NO_TABLE") {
+		t.Fatalf("missing table: got %v", err)
 	}
-
-	if out.String() != "chunk> " {
-		t.Fatalf("unexpected output %q", out.String())
-	}
-	if errOut.Len() != 0 {
-		t.Fatalf("expected no stderr output, got %q", errOut.String())
+	legacy := startFakeServer(t, &fakeServer{legacy: true})
+	if _, err := dialSession(t, legacy, ""); err == nil || !strings.Contains(err.Error(), "does not speak protocol 2") {
+		t.Fatalf("1.x server: got %v", err)
 	}
 }
 
-func TestRunShellTables(t *testing.T) {
-	uri, state, stop := startShellTestServer(t, "dev-token")
-	defer stop()
-
-	parsed, err := chunkuri.Parse(uri)
+func TestSessionWithoutTable(t *testing.T) {
+	server := &fakeServer{tables: map[string]*fakeTable{"sky": newFakeTable(2, 2, 2)}}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
 	if err != nil {
-		t.Fatalf("parse uri: %v", err)
+		t.Fatalf("open session: %v", err)
 	}
-	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	out, errOut := runScript(t, sess, "chunk 0 0\nuse sky\nchunk 0 0\nexit\n")
+	if !strings.Contains(errOut, "no table selected") {
+		t.Fatalf("expected a no-table error, got %q", errOut)
 	}
-	defer client.Close()
-
-	input := strings.NewReader("tables\ntablecreate sky block_bits 2\ntableset sky checkpoint_updates 3\n" +
-		"use missing\nuse sky\ntableinfo terrain\ntabledrop sky\ntablecreate x block_bits\nexit\n")
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	if err := runShell(client, parsed.Token, "terrain", input, &out, &errOut); err != nil {
-		t.Fatalf("run shell: %v", err)
-	}
-
-	state.mu.Lock()
-	commands := append([]string(nil), state.commands...)
-	state.mu.Unlock()
-	expected := []string{"AUTH", "USE", "TABLES", "TABLECREATE", "TABLESET", "USE", "USE", "TABLEINFO", "TABLEDROP"}
-	if strings.Join(commands, " ") != strings.Join(expected, " ") {
-		t.Fatalf("got commands %v, want %v", commands, expected)
-	}
-
-	output := out.String()
-	// The prompt names the selected table; a failed use keeps it.
-	if !strings.HasPrefix(output, "chunk:terrain> default\nterrain\n") {
-		t.Fatalf("unexpected output start %q", output)
-	}
-	for _, want := range []string{"chunk:terrain> table=sky\n", "chunk:sky> table=terrain\n", "chunk:sky> OK\n"} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("expected %q in output %q", want, output)
-		}
-	}
-	errText := errOut.String()
-	if !strings.Contains(errText, "NO_TABLE") {
-		t.Fatalf("expected NO_TABLE for use missing, got %q", errText)
-	}
-	if !strings.Contains(errText, "usage: tablecreate") {
-		t.Fatalf("expected usage error, got %q", errText)
-	}
-}
-
-func TestRunShellFailsWhenItsTableIsMissing(t *testing.T) {
-	uri, _, stop := startShellTestServer(t, "")
-	defer stop()
-
-	parsed, err := chunkuri.Parse(uri)
-	if err != nil {
-		t.Fatalf("parse uri: %v", err)
-	}
-	client, err := chunkclient.Dial(chunkclient.Config{URI: parsed, Timeout: 2 * time.Second})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer client.Close()
-
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	err = runShell(client, "", "missing", strings.NewReader("exit\n"), &out, &errOut)
-	if err == nil || !strings.Contains(err.Error(), `selecting table "missing" failed`) {
-		t.Fatalf("got %v, want a table selection error", err)
+	if !strings.Contains(out, "chunk:sky> 00000000\n") {
+		t.Fatalf("expected the chunk after use in %q", out)
 	}
 }
