@@ -70,3 +70,20 @@ func TestDecodeZrleRejectsMalformed(t *testing.T) {
 		t.Fatalf("valid input rejected: %v", err)
 	}
 }
+
+// A STATE EXTRA reply decodes to the state size plus up to the extra data cap.
+func TestDecodeZrleRange(t *testing.T) {
+	data := append([]byte{1, 2, 3}, make([]byte, 40)...)
+	encoded := encodeZrle(data)
+	for _, bounds := range [][2]int{{3, 43}, {43, 43}, {3, 1000}} {
+		got, err := decodeZrleRange(encoded, bounds[0], bounds[1])
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("bounds %v: got %d bytes, %v", bounds, len(got), err)
+		}
+	}
+	for _, bounds := range [][2]int{{44, 100}, {3, 42}} {
+		if _, err := decodeZrleRange(encoded, bounds[0], bounds[1]); err == nil {
+			t.Fatalf("bounds %v: a size outside them was accepted", bounds)
+		}
+	}
+}

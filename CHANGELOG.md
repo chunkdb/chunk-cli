@@ -34,12 +34,17 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 2 (chunkdb
   URI path (`chunk://token@host:port/terrain`) selects the table every
   command works on. The shell prompt shows the selected table
   (`chunk:terrain>`)
+- per-block extra data (chunkdb 2.0+): `xget [--bits]`, `xput` (`0`/`1` text, or bytes with `--hex` or `--in <file>` and `--bit-length <n>`) and `xdel`; `chunkget --extra` lists a chunk's values after the dump and `chunkput --extra` writes a state with its values; `chunkbatch` takes `XPUT <x> <y> <bits>` and `XDEL <x> <y>`. `tablecreate` and `tableset` pass `extra_max_block_bits` and `extra_max_chunk_bytes` through, and `tableinfo` shows them
 
 ### Fixed
 - the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
   | --in <file>`, a form the argument parser rejects: `--in` has to precede the
   coordinates. It now shows both accepted forms, and lists `help` itself among
   the commands
+- `chunkget`, `chunkput` and `chunkbatch` took a negative first coordinate for an unknown flag (`chunkget -1 0` failed); negative coordinates now work without `--` in every command
+- a coordinate with a leading `+` passed the CLI's check but not the server's; in a `chunkput` header the server then closed the connection. Such coordinates are refused before sending
+- after a timeout or a read or write error, the shell kept using the connection, so the next command could read the rest of an earlier reply as its own. The connection is closed instead
+- a request line longer than the server's `max_line_bytes` is refused before sending; the server answered `BAD_REQUEST` and closed the connection
 
 ## 1.2.0 - 2026-09-03
 
