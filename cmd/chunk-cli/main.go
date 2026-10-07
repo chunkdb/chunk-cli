@@ -30,6 +30,7 @@ type globalOptions struct {
 // networkCommands are the commands that talk to a server.
 var networkCommands = map[string]bool{
 	"ping": true, "info": true, "get": true, "set": true, "unset": true, "mset": true, "mget": true,
+	"xget": true, "xput": true, "xdel": true,
 	"chunkexists": true, "chunk": true, "chunkstate": true, "chunkset": true, "chunksetstate": true,
 	"chunkget": true, "chunkput": true, "chunkscan": true, "chunkrange": true, "chunkradius": true,
 	"chunkver": true, "chunkbatch": true, "walflush": true, "metrics": true,
@@ -135,6 +136,9 @@ type session struct {
 	// the shell prompt shows it then.
 	named    bool
 	geometry *geometry
+	// maxExtraChunkBytes is HELLO's max_extra_chunk_bytes, 0 when the server
+	// has no extra data.
+	maxExtraChunkBytes int
 }
 
 func openSession(client *chunkclient.Client, token string, table string) (*session, error) {
@@ -146,6 +150,13 @@ func openSession(client *chunkclient.Client, token string, table string) (*sessi
 		return nil, fmt.Errorf("connecting failed: %w", err)
 	}
 	sess := &session{client: client, named: table != ""}
+	if text, ok := info["max_extra_chunk_bytes"]; ok {
+		limit, err := strconv.Atoi(text)
+		if err != nil || limit <= 0 {
+			return nil, fmt.Errorf("HELLO reply has no valid max_extra_chunk_bytes: %q", text)
+		}
+		sess.maxExtraChunkBytes = limit
+	}
 	if err := sess.adopt(info); err != nil {
 		return nil, err
 	}
@@ -188,7 +199,7 @@ func (s *session) requireGeometry() (geometry, error) {
 func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
 	client := s.client
 	switch cmd {
-	case "ping", "walflush", "set", "unset", "mset", "chunkexists":
+	case "ping", "walflush", "set", "unset", "mset", "chunkexists", "xdel":
 		command := strings.ToUpper(cmd)
 		if len(cmdArgs) > 0 {
 			command += " " + strings.Join(cmdArgs, " ")
@@ -225,6 +236,10 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		for _, item := range items {
 			printBlock(stdout, item)
 		}
+	case "xget":
+		return runXGet(s, cmdArgs, stdout, stderr)
+	case "xput":
+		return runXPut(s, cmdArgs, stdout, stderr)
 	case "chunk", "chunkstate":
 		g, err := s.requireGeometry()
 		if err != nil {
@@ -425,6 +440,7 @@ func bytesFromBits(bits string) []byte {
 
 type chunkPutArgs struct {
 	state     bool
+	extra     bool
 	zrle      bool
 	ifVersion string
 }
@@ -436,6 +452,9 @@ func putChunk(client *chunkclient.Client, cx string, cy string, data []byte, arg
 	request := fmt.Sprintf("CHUNKPUT %s %s", cx, cy)
 	if args.state {
 		request += " STATE"
+	}
+	if args.extra {
+		request += " EXTRA"
 	}
 	body := data
 	if args.zrle {
@@ -461,6 +480,7 @@ func putChunk(client *chunkclient.Client, cx string, cy string, data []byte, arg
 type chunkGetRequest struct {
 	cx, cy string
 	state  bool
+	extra  bool
 	zrle   bool
 	out    string
 }
@@ -470,6 +490,7 @@ func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, err
 	fs.SetOutput(stderr)
 	var req chunkGetRequest
 	fs.BoolVar(&req.state, "state", false, "include the presence bitmap")
+	fs.BoolVar(&req.extra, "extra", false, "include the EXTRA section (implies --state)")
 	fs.BoolVar(&req.zrle, "zrle", false, "transfer zrle-compressed")
 	fs.StringVar(&req.out, "out", "", "write the bytes to file")
 	if err := fs.Parse(cmdArgs); err != nil {
@@ -477,8 +498,9 @@ func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, err
 	}
 	remaining := fs.Args()
 	if len(remaining) != 2 {
-		return chunkGetRequest{}, errors.New("usage: chunkget [--state] [--zrle] [--out <file>] <cx> <cy>")
+		return chunkGetRequest{}, errors.New("usage: chunkget [--state] [--extra] [--zrle] [--out <file>] <cx> <cy>")
 	}
+	req.state = req.state || req.extra
 	req.cx, req.cy = remaining[0], remaining[1]
 	if err := validateIntArg(req.cx, "cx"); err != nil {
 		return chunkGetRequest{}, err
@@ -490,7 +512,9 @@ func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, err
 }
 
 // runChunkGet prints a chunk's raw bytes as a hex dump, or writes them to a
-// file. With --zrle the transfer is compressed and decompressed here.
+// file. With --zrle the transfer is compressed and decompressed here. With
+// --extra the bytes end with the EXTRA section, whose values are listed after
+// the dump.
 func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
 	req, err := parseChunkGetArgs(cmdArgs, stderr)
 	if err != nil {
@@ -506,6 +530,17 @@ func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 		request += " STATE"
 		want += g.presenceBytes()
 	}
+	// The EXTRA section follows the state; HELLO's max_extra_chunk_bytes
+	// bounds it for every table.
+	maxWant := want
+	if req.extra {
+		limit, err := s.extraCap()
+		if err != nil {
+			return err
+		}
+		request += " EXTRA"
+		maxWant += limit
+	}
 	if req.zrle {
 		request += " ZRLE"
 	}
@@ -515,11 +550,20 @@ func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 	}
 	data := body
 	if req.zrle {
-		if data, err = decodeZrle(body, want); err != nil {
+		if data, err = decodeZrleRange(body, want, maxWant); err != nil {
 			return fmt.Errorf("chunkget failed: %w", err)
 		}
-	} else if len(data) != want {
+	} else if req.extra && (len(data) < want || len(data) > maxWant) {
+		return fmt.Errorf("chunkget failed: got %d bytes, the table's chunk state has %d and the EXTRA section at most %d",
+			len(data), want, maxWant-want)
+	} else if !req.extra && len(data) != want {
 		return fmt.Errorf("chunkget failed: got %d bytes, the table's chunks have %d", len(data), want)
+	}
+	var values []extraValue
+	if req.extra {
+		if values, err = decodeExtraSection(data[want:], g.blockCount()); err != nil {
+			return fmt.Errorf("chunkget failed: %w", err)
+		}
 	}
 
 	if req.out != "" {
@@ -529,12 +573,24 @@ func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 		fmt.Fprintf(stdout, "wrote %d bytes to %s\n", len(data), req.out)
 		return nil
 	}
+	var extra []string
+	if req.extra {
+		if extra, err = extraLines(req.cx, req.cy, g, values); err != nil {
+			return fmt.Errorf("chunkget failed: %w", err)
+		}
+	}
 	if req.zrle {
 		fmt.Fprintf(stdout, "bytes=%d compressed_bytes=%d\n", len(data), len(body))
 	} else {
 		fmt.Fprintf(stdout, "bytes=%d\n", len(data))
 	}
 	fmt.Fprint(stdout, hex.Dump(data))
+	if req.extra {
+		fmt.Fprintf(stdout, "extra_bytes=%d extra_values=%d\n", len(data)-want, len(extra))
+		for _, line := range extra {
+			fmt.Fprintln(stdout, line)
+		}
+	}
 	return nil
 }
 
@@ -551,6 +607,7 @@ func parseChunkPutArgs(cmdArgs []string, stderr io.Writer) (chunkPutRequest, err
 	fs.SetOutput(stderr)
 	var req chunkPutRequest
 	fs.BoolVar(&req.args.state, "state", false, "the bytes include the presence bitmap")
+	fs.BoolVar(&req.args.extra, "extra", false, "the bytes end with an EXTRA section (implies --state)")
 	fs.BoolVar(&req.args.zrle, "zrle", false, "send zrle-compressed when smaller")
 	fs.StringVar(&req.args.ifVersion, "if", "", "write only if the chunk has this version")
 	fs.StringVar(&req.inPath, "in", "", "read the bytes from file")
@@ -558,13 +615,14 @@ func parseChunkPutArgs(cmdArgs []string, stderr io.Writer) (chunkPutRequest, err
 		return chunkPutRequest{}, err
 	}
 	remaining := fs.Args()
-	usage := errors.New("usage: chunkput [--state] [--zrle] [--if <version>] <cx> <cy> <hex> | chunkput [flags] --in <file> <cx> <cy>")
+	usage := errors.New("usage: chunkput [--state] [--extra] [--zrle] [--if <version>] <cx> <cy> <hex> | chunkput [flags] --in <file> <cx> <cy>")
 	switch {
 	case req.inPath != "" && len(remaining) == 2:
 	case req.inPath == "" && len(remaining) == 3:
 	default:
 		return chunkPutRequest{}, usage
 	}
+	req.args.state = req.args.state || req.args.extra
 	req.cx, req.cy = remaining[0], remaining[1]
 	if err := validateIntArg(req.cx, "cx"); err != nil {
 		return chunkPutRequest{}, err
@@ -610,7 +668,22 @@ func runChunkPut(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 	if req.args.state {
 		want += g.presenceBytes()
 	}
-	if len(req.data) != want {
+	if req.args.extra {
+		limit, err := s.extraCap()
+		if err != nil {
+			return err
+		}
+		if len(req.data) < want {
+			return fmt.Errorf("chunkput failed: got %d bytes, the table's chunk state has %d", len(req.data), want)
+		}
+		if len(req.data)-want > limit {
+			return fmt.Errorf("chunkput failed: the EXTRA section has %d bytes, the server takes at most %d (max_extra_chunk_bytes)",
+				len(req.data)-want, limit)
+		}
+		if _, err := decodeExtraSection(req.data[want:], g.blockCount()); err != nil {
+			return fmt.Errorf("chunkput failed: %w", err)
+		}
+	} else if len(req.data) != want {
 		return fmt.Errorf("chunkput failed: got %d bytes, the table's chunks have %d", len(req.data), want)
 	}
 	version, err := putChunk(s.client, req.cx, req.cy, req.data, req.args)
@@ -628,7 +701,7 @@ type chunkBatchRequest struct {
 }
 
 func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest, error) {
-	const usage = "usage: chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> ..."
+	const usage = "usage: chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ..."
 	fs := flag.NewFlagSet("chunkbatch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var req chunkBatchRequest
@@ -655,7 +728,7 @@ func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest,
 	i := 2
 	for i < len(args) {
 		switch strings.ToLower(args[i]) {
-		case "set":
+		case "set", "xput":
 			if i+3 > len(args)-1 {
 				return chunkBatchRequest{}, errors.New(usage)
 			}
@@ -669,7 +742,7 @@ func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest,
 				return chunkBatchRequest{}, err
 			}
 			i += 4
-		case "unset":
+		case "unset", "xdel":
 			if i+2 > len(args)-1 {
 				return chunkBatchRequest{}, errors.New(usage)
 			}
@@ -681,7 +754,7 @@ func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest,
 			}
 			i += 3
 		default:
-			return chunkBatchRequest{}, fmt.Errorf("batch operations must be SET or UNSET, got %q", args[i])
+			return chunkBatchRequest{}, fmt.Errorf("batch operations must be SET, UNSET, XPUT or XDEL, got %q", args[i])
 		}
 	}
 	req.ops = args[2:]
@@ -709,6 +782,14 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		return intArgs("usage: get <x> <y>", "x", "y")
 	case "unset":
 		return intArgs("usage: unset <x> <y>", "x", "y")
+	case "xdel":
+		return intArgs("usage: xdel <x> <y>", "x", "y")
+	case "xget":
+		_, err := parseXGetArgs(cmdArgs, io.Discard)
+		return err
+	case "xput":
+		_, err := parseXPutArgs(cmdArgs, io.Discard)
+		return err
 	case "chunkexists", "chunk", "chunkstate", "chunkver":
 		return intArgs(fmt.Sprintf("usage: %s <cx> <cy>", cmd), "cx", "cy")
 	case "set":
@@ -999,19 +1080,24 @@ Commands:
   unset <x> <y>
   mset <x> <y> <bits> [<x> <y> <bits> ...]
   mget <x> <y> [<x> <y> ...]
+  xget [--bits] <x> <y>            extra data: bit length and hex, or (none)
+  xput <x> <y> <bits>
+  xput --hex --bit-length <n> <x> <y> <hex>
+  xput --bit-length <n> --in <file> <x> <y>
+  xdel <x> <y>
   chunkexists <cx> <cy>
   chunk <cx> <cy>                  payload as bit text
   chunkstate <cx> <cy>             <payload_bits>|<presence_bits>
   chunkset <cx> <cy> <bits>
   chunksetstate <cx> <cy> <payload_bits>|<presence_bits>
-  chunkget [--state] [--zrle] [--out <file>] <cx> <cy>
-  chunkput [--state] [--zrle] [--if <version>] <cx> <cy> <hex>
-  chunkput [--state] [--zrle] [--if <version>] --in <file> <cx> <cy>
+  chunkget [--state] [--extra] [--zrle] [--out <file>] <cx> <cy>
+  chunkput [--state] [--extra] [--zrle] [--if <version>] <cx> <cy> <hex>
+  chunkput [--state] [--extra] [--zrle] [--if <version>] --in <file> <cx> <cy>
   chunkscan <limit> [<cursor_cx> <cursor_cy>]
   chunkrange <cx0> <cy0> <cx1> <cy1>
   chunkradius <cx> <cy> <radius_chunks>
   chunkver <cx> <cy>
-  chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> ...
+  chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ...
   walflush
   metrics
   tables

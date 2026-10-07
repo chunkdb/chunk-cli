@@ -34,6 +34,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 2 (chunkdb
   URI path (`chunk://token@host:port/terrain`) selects the table every
   command works on. The shell prompt shows the selected table
   (`chunk:terrain>`)
+- per-block extra data (chunkdb 2.0+): `xget [--bits]`, `xput` (`0`/`1` text, or bytes with `--hex` or `--in <file>` and `--bit-length <n>`) and `xdel`; `chunkget --extra` lists a chunk's values after the dump and `chunkput --extra` writes a state with its values; `chunkbatch` takes `XPUT <x> <y> <bits>` and `XDEL <x> <y>`. `tablecreate` and `tableset` pass `extra_max_block_bits` and `extra_max_chunk_bytes` through, and `tableinfo` shows them
 
 ### Fixed
 - the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
