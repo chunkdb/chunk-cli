@@ -656,7 +656,7 @@ func TestShellExtraData(t *testing.T) {
 		"xput --hex --bit-length 3 0 1 07", "xput 5 5 1", "xput --hex --bit-length 12 0 0 0d",
 		"chunkget --extra 0 0", "chunkget --extra --zrle 0 0", "chunkget --extra --out " + chunkFile + " 0 0",
 		"xdel 1 0", "xget 1 0", "chunkput --extra --zrle --in " + chunkFile + " 0 0", "xget --bits 1 0",
-		"chunkset -1 -1 0000000000000000", "xput -1 -1 11", "chunkget --extra -- -1 -1",
+		"chunkset -1 -1 0000000000000000", "xput -1 -1 11", "chunkget --extra -1 -1",
 		"chunkbatch 0 0 XPUT 1 1 1 XDEL 0 1", "xput --bit-length 4 --in " + valueFile + " 0 0", "xget 0 0",
 		"use sky", "xget 0 0", "xdel 0 0", "exit",
 	}, "\n")+"\n")
@@ -734,6 +734,33 @@ func TestShellTableExtraOptions(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in output %q", want, out)
 		}
+	}
+}
+
+// Coordinates take the server's integer form: a leading '+' is refused
+// before sending (in a payload header the server would close the
+// connection), and negative coordinates need no "--".
+func TestShellCoordinateForms(t *testing.T) {
+	server := &fakeServer{}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, strings.Join([]string{
+		"chunkput +0 0 a0a1", "chunkput 0 +0 a0a1", "ping",
+		"chunkput -1 -1 a0a1", "chunkput --state --if 1 -1 -1 a0a10f", "chunkget -1 -1",
+		"chunkbatch -1 -1 SET -2 -2 0011", "exit",
+	}, "\n")+"\n")
+	if strings.Count(errOut, "not an integer") != 2 {
+		t.Fatalf("expected two refused coordinates, got %q", errOut)
+	}
+	commands := strings.Join(server.recorded(), " ")
+	if want := "HELLO PING CHUNKPUT CHUNKPUT CHUNKGET CHUNKBATCH"; commands != want {
+		t.Fatalf("got commands %q, want %q (errors %q)", commands, want, errOut)
+	}
+	if !strings.Contains(out, "PONG") {
+		t.Fatalf("connection should survive the refused commands: %q", out)
 	}
 }
 

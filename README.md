@@ -140,6 +140,8 @@ command from the reference below, plus:
 - `quit`: sends `QUIT` and exits
 - `exit`: exits locally
 
+After a timeout or a connection error the shell's connection is closed (the rest of a reply could not be told apart from the next one), and later commands fail with `connection is closed`; start the shell again.
+
 Example session:
 
 ```text
@@ -284,3 +286,5 @@ chunk-cli --uri chunks://mytoken@127.0.0.1:4242/ --tls-insecure info
 - errors are printed as `error: ...` and process exits non-zero
 - server `-ERR ...` responses are surfaced directly
 - a server without protocol 2 (chunkdb 1.x) is reported as such when connecting
+- coordinates are decimal integers with an optional `-`; negative coordinates need no `--`
+- a request line longer than the server's `max_line_bytes` (64 KiB by default, for example a long `chunkbatch`) is refused before it is sent

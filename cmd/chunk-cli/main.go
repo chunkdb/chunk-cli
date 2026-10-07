@@ -493,7 +493,7 @@ func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, err
 	fs.BoolVar(&req.extra, "extra", false, "include the EXTRA section (implies --state)")
 	fs.BoolVar(&req.zrle, "zrle", false, "transfer zrle-compressed")
 	fs.StringVar(&req.out, "out", "", "write the bytes to file")
-	if err := fs.Parse(cmdArgs); err != nil {
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "out")); err != nil {
 		return chunkGetRequest{}, err
 	}
 	remaining := fs.Args()
@@ -611,7 +611,7 @@ func parseChunkPutArgs(cmdArgs []string, stderr io.Writer) (chunkPutRequest, err
 	fs.BoolVar(&req.args.zrle, "zrle", false, "send zrle-compressed when smaller")
 	fs.StringVar(&req.args.ifVersion, "if", "", "write only if the chunk has this version")
 	fs.StringVar(&req.inPath, "in", "", "read the bytes from file")
-	if err := fs.Parse(cmdArgs); err != nil {
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if", "in")); err != nil {
 		return chunkPutRequest{}, err
 	}
 	remaining := fs.Args()
@@ -706,7 +706,7 @@ func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest,
 	fs.SetOutput(stderr)
 	var req chunkBatchRequest
 	fs.StringVar(&req.ifVersion, "if", "", "apply only if the chunk has this version")
-	if err := fs.Parse(cmdArgs); err != nil {
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if")); err != nil {
 		return chunkBatchRequest{}, err
 	}
 	args := fs.Args()
@@ -901,7 +901,14 @@ func validateNonEmptyBits(bits string) error {
 	return validateBits(bits)
 }
 
+// validateIntArg accepts what the server parses as an integer: an optional
+// '-' and decimal digits. strconv also takes a leading '+', which the server
+// refuses; in a payload header that closes the connection.
 func validateIntArg(value string, field string) error {
+	digits := strings.TrimPrefix(value, "-")
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return fmt.Errorf("invalid %s %q: not an integer", field, value)
+	}
 	if _, err := strconv.ParseInt(value, 10, 64); err != nil {
 		return fmt.Errorf("invalid %s %q: %w", field, value, err)
 	}
