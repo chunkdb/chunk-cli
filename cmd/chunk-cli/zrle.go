@@ -10,10 +10,69 @@ import (
 // server's codec (see chunkdb docs/STORAGE_FORMAT.md).
 const zrleCodecID = 0x01
 
-// maxZrleOutputBytes bounds decompression so a hostile or corrupt declared
-// size cannot make the CLI allocate unbounded memory. It matches the server's
-// hard response-size limit for chunk state transfers.
-const maxZrleOutputBytes = 64 * 1024 * 1024
+// zrleMaxOverheadBytes is the most encodeZrle adds to its input: the header
+// and one literal token over the whole input. The server accepts a CHUNKPUT
+// ZRLE payload up to 16 bytes over the raw size.
+const zrleMaxOverheadBytes = 5 + 1 + 5
+
+// encodeZrle produces the server's zero-run-length encoding. Data that the
+// run encoding would expand is emitted as one literal token.
+func encodeZrle(input []byte) []byte {
+	out := []byte{zrleCodecID}
+	out = binary.LittleEndian.AppendUint32(out, uint32(len(input)))
+	header := len(out)
+	i := 0
+	for i < len(input) {
+		if input[i] == 0 {
+			run := 1
+			for i+run < len(input) && input[i+run] == 0 {
+				run++
+			}
+			out = append(out, 0x00)
+			out = appendUleb128(out, uint64(run))
+			i += run
+			continue
+		}
+		// Short zero gaps (up to 2 bytes) stay inside the literal run.
+		run := 1
+		for i+run < len(input) {
+			if input[i+run] != 0 {
+				run++
+				continue
+			}
+			zeros := 0
+			for i+run+zeros < len(input) && input[i+run+zeros] == 0 {
+				zeros++
+			}
+			if zeros <= 2 && i+run+zeros < len(input) {
+				run += zeros + 1
+				continue
+			}
+			break
+		}
+		out = append(out, 0x01)
+		out = appendUleb128(out, uint64(run))
+		out = append(out, input[i:i+run]...)
+		i += run
+	}
+	literal := append([]byte(nil), out[:header]...)
+	if len(input) > 0 {
+		literal = append(literal, 0x01)
+		literal = appendUleb128(literal, uint64(len(input)))
+	}
+	if len(out) > len(literal)+len(input) {
+		return append(literal, input...)
+	}
+	return out
+}
+
+func appendUleb128(out []byte, v uint64) []byte {
+	for v >= 0x80 {
+		out = append(out, byte(v&0x7f)|0x80)
+		v >>= 7
+	}
+	return append(out, byte(v))
+}
 
 // decodeZrle reverses the server's zero-run-length codec:
 //
@@ -21,9 +80,10 @@ const maxZrleOutputBytes = 64 * 1024 * 1024
 //	token := 0x00 <uleb128 n>            n zero bytes
 //	       | 0x01 <uleb128 n> <n bytes>  n literal bytes
 //
-// It rejects truncated, malformed, or oversized input and any payload whose
-// produced size differs from the declared size.
-func decodeZrle(data []byte) ([]byte, error) {
+// expected is the size the table's geometry gives the data. It rejects
+// truncated or malformed input and any payload that declares or produces a
+// different size, so a hostile size cannot make the CLI allocate more.
+func decodeZrle(data []byte, expected int) ([]byte, error) {
 	if len(data) < 5 {
 		return nil, errors.New("zrle: input too small")
 	}
@@ -31,8 +91,8 @@ func decodeZrle(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("zrle: unsupported codec id 0x%02x", data[0])
 	}
 	declared := binary.LittleEndian.Uint32(data[1:5])
-	if declared > maxZrleOutputBytes {
-		return nil, fmt.Errorf("zrle: declared size %d exceeds %d-byte limit", declared, maxZrleOutputBytes)
+	if uint64(declared) != uint64(expected) {
+		return nil, fmt.Errorf("zrle: declared size %d, expected %d", declared, expected)
 	}
 
 	out := make([]byte, 0, declared)

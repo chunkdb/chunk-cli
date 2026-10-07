@@ -2,11 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
-This CLI follows [Semantic Versioning](https://semver.org/) and targets the
-stable `chunkdb` 1.x protocol; see the engine's
+This CLI follows [Semantic Versioning](https://semver.org/). Version 1.x
+speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 2 (chunkdb
+2.0); see the engine's
 [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
 ## Unreleased
+
+### Breaking
+- Protocol 2 (chunkdb 2.0). Every connection opens with `HELLO 2`, which
+  carries the token and the table; a wrong or missing token or an unknown
+  table fails the command, and a 1.x server is reported as such. The `auth`
+  command (also in the shell) is removed
+- `get` and `mget` print `(unset)` for a block without a value; `exists` is
+  removed
+- `chunk`, `chunkstate`, `chunkset` and `chunksetstate` keep their bit-text
+  form but run over `CHUNKGET` / `CHUNKPUT` with the table's geometry;
+  `chunkset` and `chunksetstate` print the chunk's version instead of `OK`
+- `chunkget [--state] [--zrle] [--out <file>]` replaces `chunkbin`,
+  `chunkbinstate`, `chunkbinc` and `chunkbincstate`; `chunkput [--state]
+  [--zrle] [--if <version>]` (hex or `--in <file>`) replaces `chunksetbin`,
+  `chunksetbinstate` and `chunkcas`
+- `chunkbatch` takes `--if <version>` before the coordinates instead of a
+  `<version|->` argument
+- `chunkrange` / `chunkradius` print the same lines as before, built from the
+  binary reply
 
 ### Added
 - tables (chunkdb 2.0+): `tables`, `tableinfo`, `use`, `tablecreate`,
