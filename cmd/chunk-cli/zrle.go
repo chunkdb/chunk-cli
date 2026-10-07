@@ -84,12 +84,6 @@ func appendUleb128(out []byte, v uint64) []byte {
 // truncated or malformed input and any payload that declares or produces a
 // different size, so a hostile size cannot make the CLI allocate more.
 func decodeZrle(data []byte, expected int) ([]byte, error) {
-	return decodeZrleRange(data, expected, expected)
-}
-
-// decodeZrleRange is decodeZrle for data of minSize to maxSize bytes, such as
-// a chunk state followed by an EXTRA section.
-func decodeZrleRange(data []byte, minSize int, maxSize int) ([]byte, error) {
 	if len(data) < 5 {
 		return nil, errors.New("zrle: input too small")
 	}
@@ -97,11 +91,8 @@ func decodeZrleRange(data []byte, minSize int, maxSize int) ([]byte, error) {
 		return nil, fmt.Errorf("zrle: unsupported codec id 0x%02x", data[0])
 	}
 	declared := binary.LittleEndian.Uint32(data[1:5])
-	if minSize == maxSize && uint64(declared) != uint64(minSize) {
-		return nil, fmt.Errorf("zrle: declared size %d, expected %d", declared, minSize)
-	}
-	if uint64(declared) < uint64(minSize) || uint64(declared) > uint64(maxSize) {
-		return nil, fmt.Errorf("zrle: declared size %d, expected %d..%d", declared, minSize, maxSize)
+	if uint64(declared) != uint64(expected) {
+		return nil, fmt.Errorf("zrle: declared size %d, expected %d", declared, expected)
 	}
 
 	out := make([]byte, 0, declared)
