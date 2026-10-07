@@ -56,9 +56,6 @@ type Client struct {
 	reader  *bufio.Reader
 	writer  *bufio.Writer
 	timeout time.Duration
-	// maxLineBytes is HELLO's max_line_bytes (0 before HELLO): the server
-	// answers a longer request line with BAD_REQUEST and closes.
-	maxLineBytes int
 }
 
 func Dial(cfg Config) (*Client, error) {
@@ -138,9 +135,6 @@ func (c *Client) Hello(token string, table string) (map[string]string, error) {
 	if info["protocol"] != strconv.Itoa(ProtocolVersion) {
 		return nil, fmt.Errorf("server replied with protocol %q, expected %d", info["protocol"], ProtocolVersion)
 	}
-	if limit, err := strconv.Atoi(info["max_line_bytes"]); err == nil && limit > 0 {
-		c.maxLineBytes = limit
-	}
 	return info, nil
 }
 
@@ -165,10 +159,6 @@ func (c *Client) Command(command string) (Response, error) {
 
 // CommandWithPayload sends a request line followed by raw payload bytes and an
 // empty line (the CHUNKPUT framing). A nil payload sends the line alone.
-//
-// A failed write or read (a timeout included) leaves the stream at an unknown
-// point, so the connection is closed: a later command would otherwise read
-// the rest of this reply as its own.
 func (c *Client) CommandWithPayload(command string, payload []byte) (Response, error) {
 	if c.conn == nil {
 		return Response{}, fmt.Errorf("connection is closed")
@@ -177,21 +167,7 @@ func (c *Client) CommandWithPayload(command string, payload []byte) (Response, e
 	if strings.ContainsAny(command, "\r\n") {
 		return Response{}, fmt.Errorf("command contains invalid control characters")
 	}
-	if c.maxLineBytes > 0 && len(command)+2 > c.maxLineBytes {
-		return Response{}, fmt.Errorf("request line of %d bytes exceeds the server's max_line_bytes (%d)",
-			len(command)+2, c.maxLineBytes)
-	}
 
-	resp, err := c.exchange(command, payload)
-	var serverErr *ServerError
-	if err != nil && !errors.As(err, &serverErr) {
-		_ = c.conn.Close()
-		c.conn = nil
-	}
-	return resp, err
-}
-
-func (c *Client) exchange(command string, payload []byte) (Response, error) {
 	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 		return Response{}, fmt.Errorf("set deadline: %w", err)
 	}
