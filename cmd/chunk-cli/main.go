@@ -21,6 +21,7 @@ const version = "1.2.0"
 type globalOptions struct {
 	URI           string
 	TokenOverride string
+	Table         string
 	Timeout       time.Duration
 	TLSInsecure   bool
 	TLSServerName string
@@ -51,7 +52,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 		return
-	case "ping", "info", "auth", "get", "exists", "set", "unset", "mset", "mget", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunksetbin", "chunksetbinstate", "chunk", "chunkbin", "chunkbinstate", "chunkbinc", "chunkbincstate", "chunkscan", "chunkrange", "chunkradius", "chunkver", "chunkcas", "chunkbatch", "walflush", "metrics", "shell":
+	case "ping", "info", "auth", "get", "exists", "set", "unset", "mset", "mget", "chunkexists", "chunkset", "chunkstate", "chunksetstate", "chunksetbin", "chunksetbinstate", "chunk", "chunkbin", "chunkbinstate", "chunkbinc", "chunkbincstate", "chunkscan", "chunkrange", "chunkradius", "chunkver", "chunkcas", "chunkbatch", "walflush", "metrics", "tables", "tableinfo", "use", "tablecreate", "tableset", "tabledrop", "shell":
 		// network command
 	default:
 		fatal(fmt.Errorf("unknown command %q", cmd))
@@ -70,6 +71,10 @@ func main() {
 	if opts.TokenOverride != "" {
 		effectiveToken = opts.TokenOverride
 	}
+	table := parsedURI.Table
+	if opts.Table != "" {
+		table = opts.Table
+	}
 
 	client, err := chunkclient.Dial(chunkclient.Config{
 		URI:           parsedURI,
@@ -87,6 +92,11 @@ func main() {
 	if cmd != "auth" && cmd != "shell" && effectiveToken != "" {
 		if _, err := runSimple(client, "AUTH "+effectiveToken); err != nil {
 			fatal(fmt.Errorf("automatic AUTH failed: %w", err))
+		}
+	}
+	if cmd != "auth" && cmd != "shell" && table != "" {
+		if _, err := runBulk(client, "USE "+table); err != nil {
+			fatal(fmt.Errorf("selecting table %q failed: %w", table, err))
 		}
 	}
 
@@ -267,11 +277,47 @@ func main() {
 			fatal(err)
 		}
 		printTextPayload(os.Stdout, payload)
+	case "tables", "tableinfo", "use", "tablecreate", "tableset", "tabledrop":
+		if err := runTableCommand(client, cmd, cmdArgs, os.Stdout); err != nil {
+			fatal(err)
+		}
 	case "shell":
-		if err := runShell(client, effectiveToken, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		if err := runShell(client, effectiveToken, table, os.Stdin, os.Stdout, os.Stderr); err != nil {
 			fatal(err)
 		}
 	}
+}
+
+// runTableCommand runs one of the table commands and prints its reply: table
+// names one per line, a table's key=value lines, or the status.
+func runTableCommand(client *chunkclient.Client, cmd string, cmdArgs []string, stdout io.Writer) error {
+	command := strings.ToUpper(cmd)
+	if len(cmdArgs) > 0 {
+		command += " " + strings.Join(cmdArgs, " ")
+	}
+	switch cmd {
+	case "tables":
+		items, err := runArray(client, command)
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			fmt.Fprintln(stdout, string(item))
+		}
+	case "tableinfo", "use":
+		payload, err := runBulk(client, command)
+		if err != nil {
+			return err
+		}
+		printTextPayload(stdout, payload)
+	default:
+		text, err := runSimple(client, command)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, text)
+	}
+	return nil
 }
 
 func validateCommandArgs(cmd string, cmdArgs []string) error {
@@ -500,9 +546,21 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		if err := validateChunkBatchArgs(cmdArgs); err != nil {
 			return err
 		}
-	case "walflush", "metrics":
+	case "walflush", "metrics", "tables":
 		if len(cmdArgs) != 0 {
 			return fmt.Errorf("usage: %s", cmd)
+		}
+	case "tableinfo", "use", "tabledrop":
+		if len(cmdArgs) != 1 {
+			return fmt.Errorf("usage: %s <table>", cmd)
+		}
+	case "tablecreate":
+		if len(cmdArgs) < 3 || len(cmdArgs)%2 != 1 {
+			return fmt.Errorf("usage: tablecreate <table> block_bits <n> [<key> <value> ...]")
+		}
+	case "tableset":
+		if len(cmdArgs) < 3 || len(cmdArgs)%2 != 1 {
+			return fmt.Errorf("usage: tableset <table> <option> <value> [<option> <value> ...]")
 		}
 	case "shell":
 		if len(cmdArgs) != 0 {
@@ -828,6 +886,7 @@ func runChunkBinCompressed(client *chunkclient.Client, state bool, name string, 
 func runShell(
 	client *chunkclient.Client,
 	defaultToken string,
+	table string,
 	input io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
@@ -837,11 +896,21 @@ func runShell(
 			return fmt.Errorf("automatic AUTH failed: %w", err)
 		}
 	}
+	if table != "" {
+		if _, err := runBulk(client, "USE "+table); err != nil {
+			return fmt.Errorf("selecting table %q failed: %w", table, err)
+		}
+	}
 
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
 	for {
-		if _, err := fmt.Fprint(stdout, "chunk> "); err != nil {
+		// The prompt names the table once one was selected.
+		prompt := "chunk> "
+		if table != "" {
+			prompt = "chunk:" + table + "> "
+		}
+		if _, err := fmt.Fprint(stdout, prompt); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
 		}
 
@@ -1113,6 +1182,18 @@ func runShell(
 				continue
 			}
 			fmt.Fprintln(stdout, text)
+		case "tables", "tableinfo", "use", "tablecreate", "tableset", "tabledrop":
+			if err := validateCommandArgs(cmd, cmdArgs); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			if err := runTableCommand(client, cmd, cmdArgs, stdout); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				continue
+			}
+			if cmd == "use" {
+				table = cmdArgs[0]
+			}
 		default:
 			fmt.Fprintf(stderr, "error: unknown shell command %q\n", cmd)
 		}
@@ -1178,6 +1259,7 @@ func parseGlobalFlags(args []string) (globalOptions, []string, error) {
 
 	fs.StringVar(&opts.URI, "uri", "chunk://127.0.0.1:4242/", "connection URI: chunk://token@host:port/ or chunks://token@host:port/")
 	fs.StringVar(&opts.TokenOverride, "token", "", "token override (preferred over token in URI)")
+	fs.StringVar(&opts.Table, "table", "", "table to work on (preferred over the table in the URI path)")
 	fs.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "network timeout")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
@@ -1227,6 +1309,12 @@ Commands:
   chunkbatch <cx> <cy> <version|-> SET <x> <y> <bits> | UNSET <x> <y> ...
   walflush
   metrics
+  tables
+  tableinfo <table>
+  use <table>
+  tablecreate <table> block_bits <n> [<key> <value> ...]
+  tableset <table> <option> <value> [<option> <value> ...]
+  tabledrop <table>
   shell
   version
   help
@@ -1234,6 +1322,7 @@ Commands:
 Global options:
   --uri <chunk://token@host:port/ | chunks://token@host:port/>
   --token <token>
+  --table <table>          default: the URI path (chunk://host:port/<table>), else "default"
   --timeout <duration>
   --tls-insecure
   --tls-server-name <name>
@@ -1246,6 +1335,9 @@ Examples:
   chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkset 0 0 <full_chunk_bits>
   chunk-cli --uri chunk://token@127.0.0.1:4242/ chunkstate 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ chunksetstate 0 0 <payload_bits>|<presence_bits>
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ tablecreate terrain block_bits 4 chunk_width_blocks 32
+  chunk-cli --uri chunk://token@127.0.0.1:4242/terrain get 0 0
+  chunk-cli --uri chunk://token@127.0.0.1:4242/ --table terrain chunkbin 0 0
   chunk-cli --uri chunk://token@127.0.0.1:4242/ shell
   chunk-cli --uri chunks://token@127.0.0.1:4242/ --tls-insecure info
 `)

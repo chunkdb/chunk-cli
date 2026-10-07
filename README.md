@@ -43,6 +43,9 @@ Targets the stable `chunkdb` 1.x protocol; see the engine's
   - `metrics`
   - `shell`
   - `version`
+- table commands (chunkdb 2.0+): `tables`, `tableinfo`, `use`, `tablecreate`,
+  `tableset`, `tabledrop`
+- table selection via `--table` or the URI path (`chunk://token@host:port/terrain`)
 - token auth via URI (`chunk://token@host:port/`) or `--token`
 - clear text output and explicit error messages
 
@@ -113,7 +116,8 @@ Start the interactive shell:
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ shell
 ```
 
-The shell prompt is `chunk>`. Supported shell commands:
+The shell prompt is `chunk>`, or `chunk:<table>>` once a table is selected
+(`--table`, the URI path, or `use <table>`). Supported shell commands:
 
 - `ping`
 - `info`
@@ -143,6 +147,9 @@ The shell prompt is `chunk>`. Supported shell commands:
 - `chunkbatch <cx> <cy> <version|-> SET <x> <y> <bits> | UNSET <x> <y> ...`
 - `walflush`
 - `metrics`
+- `tables`, `tableinfo <table>`, `use <table>`
+- `tablecreate <table> block_bits <n> [<key> <value> ...]`
+- `tableset <table> <option> <value> [<option> <value> ...]`, `tabledrop <table>`
 - `quit`
 - `exit`
 
@@ -201,6 +208,8 @@ Global options:
 
 - `--uri <chunk://token@host:port/ | chunks://token@host:port/>`
 - `--token <token>`
+- `--table <table>`: the table to work on; default: the URI path
+  (`chunk://token@host:port/<table>`), else the server's `default` table
 - `--timeout <duration>` (default: `5s`)
 - `--tls-insecure` (for self-signed TLS in `chunks://` mode)
 - `--tls-server-name <name>`
@@ -210,6 +219,8 @@ Auth behavior:
 - for non-`auth`/non-`shell` commands, CLI auto-runs `AUTH` when token is present in URI or `--token`
 - for `auth`, token is taken from `auth <token>` first, otherwise from URI/`--token`
 - for `shell`, token is auto-authenticated once on connect (if provided)
+- after `AUTH`, every command except `auth` runs `USE <table>` when a table
+  is given; an unknown table fails the command with `NO_TABLE`
 
 ## Command Reference
 
@@ -289,8 +300,25 @@ Auth behavior:
     even when the server runs in `relaxed` durability mode
 - `metrics`
   - sends `METRICS`; prints Prometheus text-format runtime metrics
+- `tables`
+  - sends `TABLES`; prints one table name per line
+- `tableinfo <table>`
+  - sends `TABLEINFO`; prints the table's `key=value` lines (geometry,
+    options, store id)
+- `use <table>`
+  - sends `USE`; prints the same lines as `tableinfo`. In the shell, later
+    commands work on that table; as a single command it only checks the
+    table, so use `--table` to run a command on a table
+- `tablecreate <table> block_bits <n> [<key> <value> ...]`
+  - sends `TABLECREATE`; keys are the `tableinfo` names, for example
+    `chunk_width_blocks 32 durability_mode fsync-wal`
+- `tableset <table> <option> <value> [<option> <value> ...]`
+  - sends `TABLESET`; options are `durability_mode`, `checkpoint_updates`,
+    `checkpoint_wal_bytes`, `wal_group_commit_updates`, `checkpoint_compression`
+- `tabledrop <table>`
+  - sends `TABLEDROP`; deletes the table and its data
 - `shell`
-  - starts interactive mode with prompt `chunk>`
+  - starts interactive mode with prompt `chunk>` (or `chunk:<table>>`)
 - `version`
   - prints the CLI version and exits; opens no connection
 - `help` (also `--help`, `-h`)
