@@ -191,13 +191,14 @@ func runXGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Writer) e
 type xPutRequest struct {
 	x, y      string
 	bitLength int
+	tag       string
 	// data is nil when it comes from --in and is read at run time.
 	data   []byte
 	inPath string
 }
 
 func parseXPutArgs(cmdArgs []string, stderr io.Writer) (xPutRequest, error) {
-	usage := errors.New("usage: xput <x> <y> <bits> | xput --hex --bit-length <n> <x> <y> <hex> | xput --bit-length <n> --in <file> <x> <y>")
+	usage := errors.New("usage: xput [--tag <hex>] <x> <y> <bits> | xput [--tag <hex>] --hex --bit-length <n> <x> <y> <hex> | xput [--tag <hex>] --bit-length <n> --in <file> <x> <y>")
 	fs := flag.NewFlagSet("xput", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var req xPutRequest
@@ -206,7 +207,8 @@ func parseXPutArgs(cmdArgs []string, stderr io.Writer) (xPutRequest, error) {
 	fs.BoolVar(&hexValue, "hex", false, "the value is hex bytes")
 	fs.StringVar(&bitLength, "bit-length", "", "the value's length in bits (with --hex or --in)")
 	fs.StringVar(&req.inPath, "in", "", "read the value's bytes from file")
-	if err := fs.Parse(protectNegativeArgs(cmdArgs, "bit-length", "in")); err != nil {
+	tagFlag(fs, &req.tag, "tag the write's history event")
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "bit-length", "in", "tag")); err != nil {
 		return xPutRequest{}, err
 	}
 	remaining := fs.Args()
@@ -278,6 +280,9 @@ func runXPut(s *session, cmdArgs []string, stdout io.Writer, stderr io.Writer) e
 	if err != nil {
 		return err
 	}
+	if err := s.checkTag(req.tag); err != nil {
+		return err
+	}
 	if req.inPath != "" {
 		info, err := os.Stat(req.inPath)
 		if err != nil {
@@ -298,7 +303,7 @@ func runXPut(s *session, cmdArgs []string, stdout io.Writer, stderr io.Writer) e
 		return fmt.Errorf("xput failed: a value of %d bytes exceeds the server's largest value (%d bytes: max_extra_chunk_bytes minus %d)",
 			len(req.data), limit-extraEntryHeaderBytes, extraEntryHeaderBytes)
 	}
-	resp, err := s.client.CommandWithPayload(fmt.Sprintf("XPUT %s %s %d %d", req.x, req.y, req.bitLength, len(req.data)), req.data)
+	resp, err := s.client.CommandWithPayload(fmt.Sprintf("XPUT %s %s %d%s %d", req.x, req.y, req.bitLength, tagClause(req.tag), len(req.data)), req.data)
 	if err != nil {
 		return fmt.Errorf("xput failed: %w", err)
 	}

@@ -20,6 +20,7 @@ It does not connect to 1.x servers: use `chunk-cli` 1.x with those.
 - world reads: `chunkexists`, `chunkscan`, `chunkrange`, `chunkradius`
 - versions and atomic batches: `chunkver`, `chunkput --if`, `chunkbatch`
 - per-block extra data: `xget`, `xput`, `xdel`, `chunkget --extra`, `chunkput --extra`, and `XPUT` / `XDEL` in `chunkbatch`
+- block history: `history`, `chunkhistory`, `rangehistory`, `--tag` on writes, `--at` / `--at-time` on reads
 - `ping`, `info`, `walflush`, `metrics`, `shell`, `version`
 - table commands: `tables`, `tableinfo`, `use`, `tablecreate`, `tableset`,
   `tabledrop`
@@ -125,6 +126,43 @@ $ chunk-cli --table world xget 10 4
 - `xput --hex` and `xput --in <file>` take `ceil(n / 8)` bytes with `--bit-length <n>`; the server ignores padding bits past `n`
 - `chunkget --extra --out <file>` saves a chunk's state and all its values; `chunkput --extra --in <file>` writes them back in one write
 
+## History
+
+A table with history keeps every change of every block: the revision and commit time (ms since the epoch), the block before and after (bits and extra data), and the tag the write carried. History is a table option: `tablecreate <table> block_bits <n> history on` creates a table with it, `tableset <table> history on` turns it on for an existing table, and once on it cannot be turned off. `history_max_age_ms`, `history_max_chunk_bytes` and `history_max_tag_bytes` (1 to 255, default 32) limit it; `tableinfo` shows them and `history_start`, the revision history starts at. On a table without history, the commands fail with `INVALID_ARGUMENT history is not enabled ...`.
+
+```text
+$ chunk-cli tablecreate world block_bits 4 history on
+OK
+$ chunk-cli --table world set --tag 6a6f62 10 4 1010
+OK
+$ chunk-cli --table world set 10 4 1111
+OK
+$ chunk-cli --table world unset --tag 6a6f62 10 4
+OK
+$ chunk-cli --table world history 10 4
+revision=4 time_ms=1791379725819 x=10 y=4 before=1111 after=- before_extra=- after_extra=- tag=6a6f62
+revision=3 time_ms=1791379725779 x=10 y=4 before=1010 after=1111 before_extra=- after_extra=- tag=-
+revision=2 time_ms=1791379725764 x=10 y=4 before=- after=1010 before_extra=- after_extra=- tag=6a6f62
+END
+$ chunk-cli --table world history --asc --limit 2 10 4
+revision=2 time_ms=1791379725764 x=10 y=4 before=- after=1010 before_extra=- after_extra=- tag=6a6f62
+revision=3 time_ms=1791379725779 x=10 y=4 before=1010 after=1111 before_extra=- after_extra=- tag=-
+CURSOR 3:74
+$ chunk-cli --table world history --asc --limit 2 --after 3:74 10 4
+revision=4 time_ms=1791379725819 x=10 y=4 before=1111 after=- before_extra=- after_extra=- tag=6a6f62
+END
+$ chunk-cli --table world get --at 2 10 4
+1010
+$ chunk-cli --table world get --at-time 1 10 4
+error: get failed: NOT_RETAINED start=1
+```
+
+- `--tag <hex>` tags a write's events with 1 or more bytes written as hex, at most the table's `history_max_tag_bytes`; `set`, `unset`, `mset`, `xput`, `xdel`, `chunkset`, `chunksetstate`, `chunkput` and `chunkbatch` take it. A write that changes nothing records nothing
+- `history <x> <y>`, `chunkhistory <cx> <cy>` and `rangehistory <cx0> <cy0> <cx1> <cy1>` (at most 256 chunks) print one line per event, newest first, then `END` when the window is done or `CURSOR <cursor>` when there is more: pass the cursor as `--before`, or with `--asc` as `--after`, to get the next page. A page can be short or empty and still end with a cursor
+- listing options, before the coordinates: `--limit <n>` (1 to 1024, default 100), `--asc` or `--desc`, `--after <cursor>` and `--before <cursor>` (exclusive; a `chunkver` version works as a cursor), `--since <ms>` and `--until <ms>` (commit time, inclusive), `--tag <hex>` (only events of writes with that tag)
+- in an event, `before` and `after` are the block's bits as `get` prints them, `-` when absent; extra data is `<bit_length>:<hex>`, `-` when none; `tag=-` means no tag
+- `get`, `chunk`, `chunkstate`, `chunkget`, `chunkrange` and `chunkradius` take `--at <revision>` or `--at-time <ms>` and print the blocks as they were then. A point that is not in the past fails with `OUT_OF_RANGE`; a point, or a listing, that reaches before what history keeps fails with `NOT_RETAINED start=<revision>`, the oldest revision still kept
+
 ## Interactive Shell
 
 Start the interactive shell:
@@ -191,13 +229,13 @@ Global options:
   - sends `PING`, expects simple response (`+PONG`)
 - `info`
   - sends `INFO`, prints the selected table's runtime statistics
-- `get <x> <y>`
-  - sends `GET`, prints the block's bits or `(unset)`
-- `set <x> <y> <bits>`
+- `get [--at <revision> | --at-time <ms>] <x> <y>`
+  - sends `GET`, prints the block's bits or `(unset)`; with `--at` or `--at-time` as they were then (see [History](#history))
+- `set [--tag <hex>] <x> <y> <bits>`
   - sends `SET`; validates `bits` as binary (`0`/`1`) before request
-- `unset <x> <y>`
+- `unset [--tag <hex>] <x> <y>`
   - sends `UNSET`, clears explicit block presence, prints simple response
-- `mset <x> <y> <bits> [<x> <y> <bits> ...]`
+- `mset [--tag <hex>] <x> <y> <bits> [<x> <y> <bits> ...]`
   - sends `MSET` (one round-trip for many blocks); validates each `bits`; prints simple response
   - items apply in order and are not atomic as a group: on a server error, earlier items may already be applied (use `chunkbatch` for an atomic single-chunk update)
 - `mget <x> <y> [<x> <y> ...]`
@@ -205,27 +243,27 @@ Global options:
     its bits or `(unset)`
 - `xget [--bits] <x> <y>`
   - sends `XGET`; prints `bit_length=<n>` and the value as hex, with `--bits` the value as `0`/`1` text, or `(none)` when the block has no value
-- `xput <x> <y> <bits>` | `xput --hex --bit-length <n> <x> <y> <hex>` | `xput --bit-length <n> --in <file> <x> <y>`
+- `xput [--tag <hex>] <x> <y> <bits>` | `xput [--tag <hex>] --hex --bit-length <n> <x> <y> <hex>` | `xput [--tag <hex>] --bit-length <n> --in <file> <x> <y>`
   - sends `XPUT` with the value given as `0`/`1` text or, with `--hex` or `--in`, as bytes of an explicit bit length; flags come before the coordinates. Checks the byte count against the bit length before sending; prints `OK`
-- `xdel <x> <y>`
+- `xdel [--tag <hex>] <x> <y>`
   - sends `XDEL`; prints `OK`, also when the block had no value
 - `chunkexists <cx> <cy>`
   - sends `CHUNKEXISTS`, prints `1` when the chunk has explicit presence and `0` when absent
-- `chunk <cx> <cy>`
+- `chunk [--at <revision> | --at-time <ms>] <cx> <cy>`
   - sends `CHUNKGET`, prints the payload as bit text
-- `chunkstate <cx> <cy>`
+- `chunkstate [--at <revision> | --at-time <ms>] <cx> <cy>`
   - sends `CHUNKGET ... STATE`; prints `<payload_bits>|<presence_bits>`
-- `chunkset <cx> <cy> <bits>`
+- `chunkset [--tag <hex>] <cx> <cy> <bits>`
   - sends `CHUNKPUT` with the payload; checks the bit count against the
     table's geometry before sending; prints the chunk's version
-- `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
+- `chunksetstate [--tag <hex>] <cx> <cy> <payload_bits>|<presence_bits>`
   - sends `CHUNKPUT ... STATE`; same checks and output as `chunkset`
-- `chunkget [--state] [--extra] [--zrle] [--out <file>] <cx> <cy>`
+- `chunkget [--state] [--extra] [--zrle] [--at <revision> | --at-time <ms>] [--out <file>] <cx> <cy>`
   - sends `CHUNKGET`
   - default output: byte count (and with `--zrle` the compressed size) + hex dump
   - with `--out`: writes the bytes to file and prints a summary
   - with `--extra` (implies `--state`): the bytes end with the chunk's EXTRA section; after the dump it prints `extra_bytes=<n> extra_values=<n>` and one `x=<x> y=<y> block=<index> bit_length=<n> hex=<value>` line per value
-- `chunkput [--state] [--extra] [--zrle] [--if <version>] <cx> <cy> <hex>` | `chunkput [flags] --in <file> <cx> <cy>`
+- `chunkput [--state] [--extra] [--zrle] [--if <version>] [--tag <hex>] <cx> <cy> <hex>` | `chunkput [flags] --in <file> <cx> <cy>`
   - sends `CHUNKPUT` with the bytes `chunkget` prints, given as hex after the
     coordinates or, with `--in`, read from a file; flags come before the
     coordinates. Checks the size against the table's geometry before sending;
@@ -235,18 +273,21 @@ Global options:
   - sends `CHUNKSCAN`; prints one line per array item: first `END` or
     `CURSOR <cx> <cy>` (pass those coordinates to the next call to continue),
     then one `<cx> <cy>` line per populated chunk
-- `chunkrange <cx0> <cy0> <cx1> <cy1>`
+- `chunkrange [--at <revision> | --at-time <ms>] <cx0> <cy0> <cx1> <cy1>`
   - sends `CHUNKRANGE` (max 256 chunks); prints one
     `<cx> <cy> <payload_bits>|<presence_bits>` line per populated chunk
-- `chunkradius <cx> <cy> <radius_chunks>`
+- `chunkradius [--at <revision> | --at-time <ms>] <cx> <cy> <radius_chunks>`
   - sends `CHUNKRADIUS` (populated chunks within a disc of `radius_chunks`
     around `<cx> <cy>`, max 256 chunks); same output shape as `chunkrange`
 - `chunkver <cx> <cy>`
   - sends `CHUNKVER`; prints the chunk's opaque version token
-- `chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ...`
+- `chunkbatch [--if <version>] [--tag <hex>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ...`
   - sends `CHUNKBATCH` (atomic within one chunk); prints the chunk's version
     after the batch
   - `XPUT` sets a block's extra data from `0`/`1` text, `XDEL` deletes it; operations apply in order, so a block must be present at its `XPUT`
+- `history [<options>] <x> <y>` | `chunkhistory [<options>] <cx> <cy>` | `rangehistory [<options>] <cx0> <cy0> <cx1> <cy1>`
+  - sends `HISTORY`, `CHUNKHISTORY` or `RANGEHISTORY`; prints one `revision=<n> time_ms=<ms> x=<x> y=<y> before=<bits> after=<bits> before_extra=<extra> after_extra=<extra> tag=<hex>` line per event, then `END` or `CURSOR <cursor>`
+  - options: `--limit <n>`, `--asc` | `--desc`, `--after <cursor>`, `--before <cursor>`, `--since <ms>`, `--until <ms>`, `--tag <hex>` (see [History](#history))
 - `walflush`
   - sends `WALFLUSH`; on `OK`, all previously acknowledged writes are durable
     even when the server runs in `relaxed` durability mode
@@ -255,16 +296,16 @@ Global options:
 - `tables`
   - sends `TABLES`; prints one table name per line
 - `tableinfo <table>`
-  - sends `TABLEINFO`; prints the table's `key=value` lines (geometry, options including `extra_max_block_bits` and `extra_max_chunk_bytes`, store id)
+  - sends `TABLEINFO`; prints the table's `key=value` lines (geometry, options including `extra_max_block_bits`, `extra_max_chunk_bytes` and the `history` lines, store id)
 - `use <table>`
   - sends `USE`; prints the same lines as `tableinfo`. In the shell, later
     commands work on that table; as a single command it only checks the
     table, so use `--table` to run a command on a table
 - `tablecreate <table> block_bits <n> [<key> <value> ...]`
   - sends `TABLECREATE`; keys are the `tableinfo` names, for example
-    `chunk_width_blocks 32 durability_mode fsync-wal`
+    `chunk_width_blocks 32 durability_mode fsync-wal` or `history on`
 - `tableset <table> <option> <value> [<option> <value> ...]`
-  - sends `TABLESET`; options are `durability_mode`, `checkpoint_updates`, `checkpoint_wal_bytes`, `wal_group_commit_updates`, `checkpoint_compression`, `extra_max_block_bits` and `extra_max_chunk_bytes` (the extra data limits can only be raised)
+  - sends `TABLESET`; options are `durability_mode`, `checkpoint_updates`, `checkpoint_wal_bytes`, `wal_group_commit_updates`, `checkpoint_compression`, `extra_max_block_bits` and `extra_max_chunk_bytes` (the extra data limits can only be raised), `history on`, `history_max_age_ms`, `history_max_chunk_bytes` and `history_max_tag_bytes`
 - `tabledrop <table>`
   - sends `TABLEDROP`; deletes the table and its data
 - `shell`
@@ -284,7 +325,8 @@ chunk-cli --uri chunks://mytoken@127.0.0.1:4242/ --tls-insecure info
 
 - normal responses are printed in readable form (text commands preserve server text; `chunkget` includes the byte count)
 - errors are printed as `error: ...` and process exits non-zero
-- server `-ERR ...` responses are surfaced directly
+- server `-ERR ...` responses are surfaced directly, for example `error: get failed: NOT_RETAINED start=<revision>`
 - a server without protocol 2 (chunkdb 1.x) is reported as such when connecting
 - coordinates are decimal integers with an optional `-`; negative coordinates need no `--`
+- a command's flags come before its coordinates
 - a request line longer than the server's `max_line_bytes` (64 KiB by default, for example a long `chunkbatch`) is refused before it is sent

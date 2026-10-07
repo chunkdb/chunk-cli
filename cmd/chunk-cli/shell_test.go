@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,18 +35,69 @@ type fakeTable struct {
 	extraMaxBlockBits  int
 	extraMaxChunkBytes int
 	extra              map[string]map[int]extraValue
+	// history is false for a table without history; historyStart is the
+	// first revision it keeps.
+	history            bool
+	historyStart       uint64
+	historyMaxAgeMs    uint64
+	historyMaxTagBytes int
 }
+
+// The fake's commit times: history starts at fakeHistoryStartMs, and an AT
+// TIME at or after fakeNowMs is not in the past.
+const (
+	fakeHistoryStartMs = 1700000000000
+	fakeNowMs          = 1800000000000
+)
 
 func (t *fakeTable) geometry() geometry {
 	return geometry{blockBits: t.blockBits, width: t.width, height: t.height}
 }
 
 func (t *fakeTable) info(name string) string {
+	history, startMs := "off", 0
+	if t.history {
+		history, startMs = "on", fakeHistoryStartMs
+	}
 	return fmt.Sprintf("table=%s\nstore_id=00\nblock_bits=%d\nchunk_width_blocks=%d\nchunk_height_blocks=%d\n"+
 		"large_chunk_width_chunks=8\nlarge_chunk_height_chunks=8\ndurability_mode=relaxed\n"+
 		"checkpoint_updates=1000\ncheckpoint_wal_bytes=1048576\nwal_group_commit_updates=64\ncheckpoint_compression=none\n"+
-		"extra_max_block_bits=%d\nextra_max_chunk_bytes=%d\n",
-		name, t.blockBits, t.width, t.height, t.extraMaxBlockBits, t.extraMaxChunkBytes)
+		"extra_max_block_bits=%d\nextra_max_chunk_bytes=%d\n"+
+		"history=%s\nhistory_start=%d\nhistory_start_time_ms=%d\nhistory_max_age_ms=%d\nhistory_max_chunk_bytes=0\nhistory_max_tag_bytes=%d\n",
+		name, t.blockBits, t.width, t.height, t.extraMaxBlockBits, t.extraMaxChunkBytes,
+		history, t.historyStart, startMs, t.historyMaxAgeMs, t.historyMaxTagBytes)
+}
+
+const historyDisabled = "-ERR INVALID_ARGUMENT history is not enabled on this table (set its history option)\r\n"
+
+// takeAt removes AT <revision> or AT TIME <ms> from the end of a read's
+// arguments, or returns the real server's refusal. The fake keeps no past:
+// a point that history keeps reads the present.
+func (t *fakeTable) takeAt(args []string, clock uint64) ([]string, string) {
+	n := len(args)
+	var point string
+	timed := false
+	switch {
+	case n >= 3 && args[n-3] == "AT" && args[n-2] == "TIME":
+		point, timed, args = args[n-1], true, args[:n-3]
+	case n >= 2 && args[n-2] == "AT":
+		point, args = args[n-1], args[:n-2]
+	default:
+		return args, ""
+	}
+	if !t.history {
+		return nil, historyDisabled
+	}
+	value, _ := strconv.ParseUint(point, 10, 64)
+	switch {
+	case !timed && value > clock:
+		return nil, fmt.Sprintf("-ERR OUT_OF_RANGE AT %d is not below the next revision (%d)\r\n", value, clock+1)
+	case timed && value >= fakeNowMs:
+		return nil, fmt.Sprintf("-ERR OUT_OF_RANGE AT TIME %d is not in the past\r\n", value)
+	case !timed && value < t.historyStart, timed && value < fakeHistoryStartMs:
+		return nil, fmt.Sprintf("-ERR NOT_RETAINED start=%d\r\n", t.historyStart)
+	}
+	return args, ""
 }
 
 func floorDiv(a, b int64) int64 {
@@ -103,6 +155,11 @@ type fakeServer struct {
 	legacy bool
 	// noExtraData answers HELLO like a server without extra data.
 	noExtraData bool
+	// noHistory answers HELLO like a server without block history.
+	noHistory bool
+	// historyPages are the replies to HISTORY, CHUNKHISTORY and RANGEHISTORY
+	// request lines, an array or a single "-ERR ..." item; any other is END.
+	historyPages map[string][]string
 }
 
 func newFakeTable(blockBits, width, height int) *fakeTable {
@@ -114,13 +171,15 @@ func newFakeTable(blockBits, width, height int) *fakeTable {
 }
 
 // startFakeServer serves protocol 2 on one connection at a time: `default`
-// has 2x2 blocks of 4 bits (2 payload bytes, 1 presence byte) and extra data
-// of up to 64 bits per block, `sky` 2x2 blocks of 2 bits and no extra data.
+// has 2x2 blocks of 4 bits (2 payload bytes, 1 presence byte), extra data of
+// up to 64 bits per block and history from revision 1, `sky` 2x2 blocks of 2
+// bits and neither.
 func startFakeServer(t *testing.T, server *fakeServer) string {
 	t.Helper()
 	if server.tables == nil {
 		withExtra := newFakeTable(4, 2, 2)
 		withExtra.extraMaxBlockBits, withExtra.extraMaxChunkBytes = 64, 1024
+		withExtra.history, withExtra.historyStart, withExtra.historyMaxTagBytes = true, 1, 32
 		server.tables = map[string]*fakeTable{"default": withExtra, "sky": newFakeTable(2, 2, 2)}
 	}
 	for name, table := range server.tables {
@@ -212,8 +271,8 @@ func (s *fakeServer) serve(conn net.Conn) {
 }
 
 // refusedPayload is the reply of the real server's PlanPayload to a payload
-// command it refuses unread (and then closes the connection): no table, or a
-// coordinate that is not an integer.
+// command it refuses unread (and then closes the connection): no table, a
+// coordinate that is not an integer, or a malformed TAG.
 func refusedPayload(fields []string, hasTable bool) string {
 	if !hasTable {
 		return "-ERR NO_TABLE no table selected\r\n"
@@ -222,6 +281,11 @@ func refusedPayload(fields []string, hasTable bool) string {
 		digits := strings.TrimPrefix(field, "-")
 		if digits == "" || strings.Trim(digits, "0123456789") != "" {
 			return "-ERR INVALID_ARGUMENT invalid integer: " + field + "\r\n"
+		}
+	}
+	for i := 3; i+2 < len(fields); i++ {
+		if fields[i] == "TAG" && (validateTag(fields[i+1]) != nil || len(fields[i+1]) > 2*255) {
+			return "-ERR INVALID_ARGUMENT TAG takes 1 to 255 bytes written as pairs of hex digits\r\n"
 		}
 	}
 	return ""
@@ -245,11 +309,14 @@ func (s *fakeServer) hello(fields []string) (string, *fakeTable, bool) {
 	if s.token != "" && token != s.token {
 		return "-ERR AUTH_FAILED invalid token\r\n", nil, false
 	}
-	reply := "protocol=2\nserver_version=test\ncapabilities=zrle,extra-data\nmax_line_bytes=65536\n" +
+	reply := "protocol=2\nserver_version=test\ncapabilities=zrle,extra-data,history\nmax_line_bytes=65536\n" +
 		"max_area_chunks=256\nmax_response_bytes=67108864\nmax_scan_limit=1024\nmax_batch_ops=1024\n" +
-		"max_extra_chunk_bytes=16777216\n"
+		"max_extra_chunk_bytes=16777216\nmax_tag_bytes=255\nmax_history_limit=1024\n"
 	if s.noExtraData {
 		reply = strings.Replace(strings.Replace(reply, ",extra-data", "", 1), "max_extra_chunk_bytes=16777216\n", "", 1)
+	}
+	if s.noHistory {
+		reply = strings.Replace(strings.Replace(reply, ",history", "", 1), "max_tag_bytes=255\nmax_history_limit=1024\n", "", 1)
 	}
 	table, ok := s.tables[tableName]
 	if !ok && len(fields) > 2 && strings.Contains(strings.ToUpper(strings.Join(fields, " ")), "TABLE") {
@@ -279,7 +346,7 @@ func (s *fakeServer) command(cmd string, args []string, payload []byte, table *f
 		}
 		return bulk(next.info(args[0])), table
 	case "TABLESET":
-		// The extra data options apply, so TABLEINFO shows them.
+		// The extra data and history options apply, so TABLEINFO shows them.
 		if target, ok := s.tables[args[0]]; ok {
 			for i := 1; i+1 < len(args); i += 2 {
 				value, _ := strconv.Atoi(args[i+1])
@@ -288,6 +355,14 @@ func (s *fakeServer) command(cmd string, args []string, payload []byte, table *f
 					target.extraMaxBlockBits = value
 				case "extra_max_chunk_bytes":
 					target.extraMaxChunkBytes = value
+				case "history":
+					if args[i+1] == "on" && !target.history {
+						target.history, target.historyStart, target.historyMaxTagBytes = true, s.clock+1, 32
+					}
+				case "history_max_age_ms":
+					target.historyMaxAgeMs = uint64(value)
+				case "history_max_tag_bytes":
+					target.historyMaxTagBytes = value
 				}
 			}
 		}
@@ -300,6 +375,36 @@ func (s *fakeServer) command(cmd string, args []string, payload []byte, table *f
 	}
 	g := table.geometry()
 	switch cmd {
+	case "HISTORY", "CHUNKHISTORY", "RANGEHISTORY":
+		if !table.history {
+			return historyDisabled, table
+		}
+		items, ok := s.historyPages[strings.Join(append([]string{cmd}, args...), " ")]
+		if !ok {
+			items = []string{"END"}
+		}
+		if len(items) == 1 && strings.HasPrefix(items[0], "-ERR ") {
+			return items[0] + "\r\n", table
+		}
+		reply := "*" + strconv.Itoa(len(items)) + "\r\n"
+		for _, item := range items {
+			reply += bulk(item)
+		}
+		return reply, table
+	case "GET", "CHUNKGET", "CHUNKRANGE", "CHUNKRADIUS":
+		var refused string
+		if args, refused = table.takeAt(args, s.clock); refused != "" {
+			return refused, table
+		}
+	}
+	// A write's TAG needs a table with history; the fake keeps no events.
+	if i := slices.Index(args, "TAG"); i >= 0 {
+		if !table.history {
+			return "-ERR INVALID_ARGUMENT TAG needs a table with history; this table has none (set its history option)\r\n", table
+		}
+		args = slices.Delete(slices.Clone(args), i, i+2)
+	}
+	switch cmd {
 	case "GET":
 		bits, ok := table.blocks[args[0]+":"+args[1]]
 		if !ok {
@@ -311,6 +416,11 @@ func (s *fakeServer) command(cmd string, args []string, payload []byte, table *f
 		return "+OK\r\n", table
 	case "UNSET":
 		delete(table.blocks, args[0]+":"+args[1])
+		return "+OK\r\n", table
+	case "MSET":
+		for i := 0; i+2 < len(args); i += 3 {
+			table.blocks[args[i]+":"+args[i+1]] = args[i+2]
+		}
 		return "+OK\r\n", table
 	case "MGET":
 		reply := "*" + strconv.Itoa(len(args)/2) + "\r\n"
@@ -453,6 +563,8 @@ func (s *fakeServer) command(cmd string, args []string, payload []byte, table *f
 			}
 		}
 		return "*" + strconv.Itoa(2*len(reply)) + "\r\n" + strings.Join(reply, ""), table
+	case "CHUNKRADIUS":
+		return "*0\r\n", table
 	case "CHUNKBATCH":
 		return bulk("7"), table
 	}
@@ -777,5 +889,186 @@ func TestShellWithoutExtraData(t *testing.T) {
 	}
 	if commands := strings.Join(server.recorded(), " "); commands != "HELLO" {
 		t.Fatalf("got commands %q", commands)
+	}
+}
+
+func TestShellHistory(t *testing.T) {
+	server := &fakeServer{historyPages: map[string][]string{
+		"HISTORY 10 4": {"END",
+			"3 1700000000002 10 4 1010 - 12:0d08 - 01",
+			"2 1700000000001 10 4 - 1010 - 12:0d08 6a6f62"},
+		"CHUNKHISTORY 0 0 LIMIT 2 ASC AFTER 3:74": {"CURSOR 5:1", "4 1700000000003 1 0 0001 0011 - - -"},
+		// A page can be empty and still carry a cursor.
+		"RANGEHISTORY -1 -1 0 0 DESC BEFORE 9 SINCE 1 UNTIL 2 TAG 6a6f62": {"CURSOR 9"},
+		// Blocks of chunks at the edge of the coordinate range lie beyond int64.
+		"CHUNKHISTORY 9223372036854775807 -9223372036854775808": {"END",
+			"1 5 18446744073709551615 -18446744073709551616 - 0001 - - -"},
+	}}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, strings.Join([]string{
+		"set --tag 6a6f62 10 4 1010", "unset --tag 01 -1 -2", "mset --tag ff 1 1 0001 2 2 0010",
+		"chunkset --tag 0b 0 0 1111000011110000", "chunksetstate --tag 0c 1 0 1010101010101010|1000",
+		"chunkput --state --tag 0d -1 -1 a0a10f", "xput --tag 0e 1 0 101", "xput --tag 0e --hex --bit-length 12 0 0 0d08",
+		"xdel --tag 0f 1 0", "chunkbatch --if 2 --tag 10 0 0 SET 1 1 0101",
+		"get --at 1 10 4", "get --at-time 1700000000005 -1 -2", "chunk --at 1 0 0", "chunkstate --at-time 1700000000005 0 0",
+		"chunkget --state --extra --zrle --at 2 0 0", "chunkrange --at 1 0 0 1 0", "chunkradius --at-time 1700000000005 0 0 1",
+		"get --at 99 0 0", "chunk --at 0 0 0", "get --at-time 1800000000000 0 0",
+		"history 10 4", "chunkhistory --limit 2 --asc --after 3:74 0 0",
+		"rangehistory --desc --before 9 --since 1 --until 2 --tag 6a6f62 -1 -1 0 0",
+		"chunkhistory 9223372036854775807 -9223372036854775808", "ping", "exit",
+	}, "\n")+"\n")
+
+	// Each tag in its protocol position, AT last.
+	want := []string{
+		"SET 10 4 1010 TAG 6a6f62", "UNSET -1 -2 TAG 01", "MSET 1 1 0001 2 2 0010 TAG ff",
+		"CHUNKPUT 0 0 TAG 0b 2", "CHUNKPUT 1 0 STATE TAG 0c 3", "CHUNKPUT -1 -1 STATE TAG 0d 3",
+		"XPUT 1 0 3 TAG 0e 1", "XPUT 0 0 12 TAG 0e 2", "XDEL 1 0 TAG 0f", "CHUNKBATCH 0 0 IF 2 TAG 10 SET 1 1 0101",
+		"GET 10 4 AT 1", "GET -1 -2 AT TIME 1700000000005", "CHUNKGET 0 0 AT 1", "CHUNKGET 0 0 STATE AT TIME 1700000000005",
+		"CHUNKGET 0 0 STATE EXTRA ZRLE AT 2", "CHUNKRANGE 0 0 1 0 STATE AT 1", "CHUNKRADIUS 0 0 1 STATE AT TIME 1700000000005",
+		"GET 0 0 AT 99", "CHUNKGET 0 0 AT 0", "GET 0 0 AT TIME 1800000000000",
+		"HISTORY 10 4", "CHUNKHISTORY 0 0 LIMIT 2 ASC AFTER 3:74",
+		"RANGEHISTORY -1 -1 0 0 DESC BEFORE 9 SINCE 1 UNTIL 2 TAG 6a6f62",
+		"CHUNKHISTORY 9223372036854775807 -9223372036854775808", "PING",
+	}
+	if lines := server.recordedLines(); !slices.Equal(lines[1:], want) {
+		t.Fatalf("got requests %q, want %q (stderr %q)", lines[1:], want, errOut)
+	}
+	for _, expected := range []string{
+		"chunk> OK\nchunk> OK\nchunk> OK\nchunk> 1\nchunk> 2\nchunk> 3\nchunk> OK\nchunk> OK\nchunk> OK\nchunk> 7\n",
+		"chunk> 1010\nchunk> (unset)\nchunk> 1111000011110000\nchunk> 1111000011110000|1111\nchunk> bytes=",
+		"chunk> 0 0 1111000011110000|1111\n1 0 1010101010101010|1000\nchunk> chunk> chunk> chunk> chunk> ",
+		"revision=3 time_ms=1700000000002 x=10 y=4 before=1010 after=- before_extra=12:0d08 after_extra=- tag=01\n" +
+			"revision=2 time_ms=1700000000001 x=10 y=4 before=- after=1010 before_extra=- after_extra=12:0d08 tag=6a6f62\nEND\n",
+		"chunk> revision=4 time_ms=1700000000003 x=1 y=0 before=0001 after=0011 before_extra=- after_extra=- tag=-\nCURSOR 5:1\n",
+		"chunk> CURSOR 9\n",
+		"chunk> revision=1 time_ms=5 x=18446744073709551615 y=-18446744073709551616 before=- after=0001 before_extra=- after_extra=- tag=-\nEND\n",
+		"chunk> PONG\n",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("expected %q in output %q", expected, out)
+		}
+	}
+	for _, expected := range []string{
+		"error: get failed: OUT_OF_RANGE AT 99 is not below the next revision (4)\n",
+		"error: chunkget failed: NOT_RETAINED start=1\n",
+		"error: get failed: OUT_OF_RANGE AT TIME 1800000000000 is not in the past\n",
+	} {
+		if !strings.Contains(errOut, expected) {
+			t.Fatalf("expected %q in stderr %q", expected, errOut)
+		}
+	}
+	if strings.Count(errOut, "error: ") != 3 {
+		t.Fatalf("expected 3 errors in %q", errOut)
+	}
+}
+
+// What the server would refuse unread is refused before sending; what needs
+// the table's state is the server's to refuse, and the connection survives.
+func TestShellHistoryRefusals(t *testing.T) {
+	server := &fakeServer{historyPages: map[string][]string{
+		"HISTORY 0 0":      {"CURSOR x"},
+		"HISTORY 0 1":      {"END", "1 5 0 1 - 0001 - - - extra"},
+		"CHUNKHISTORY 0 0": {},
+		"HISTORY 0 2 DESC": {"-ERR NOT_RETAINED start=7"},
+	}}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	longTag := strings.Repeat("ab", 256)
+	out, errOut := runScript(t, sess, strings.Join([]string{
+		"set --tag abc 0 0 1010", "set --tag 0g 0 0 1010", "set 0 0 1010 --tag 01", "get --at -1 0 0",
+		"get --at 1 --at-time 1 0 0", "history --asc --desc 0 0", "history --limit 0 0 0", "history --before 1: 0 0",
+		"chunkput --tag " + longTag + " 0 0 a0a1", "xput --tag " + longTag + " 0 0 1", "history --limit 1025 0 0",
+		"history 0 0", "history 0 1", "chunkhistory 0 0", "history --desc 0 2",
+		"use sky", "set --tag 01 0 0 10", "chunkput --tag 01 0 0 aa", "get --at 1 0 0", "history 0 0", "ping", "exit",
+	}, "\n")+"\n")
+	if lines := server.recordedLines(); !slices.Equal(lines[1:], []string{
+		"HISTORY 0 0", "HISTORY 0 1", "CHUNKHISTORY 0 0", "HISTORY 0 2 DESC", "USE sky", "SET 0 0 10 TAG 01", "CHUNKPUT 0 0 TAG 01 1",
+		"GET 0 0 AT 1", "HISTORY 0 0", "PING",
+	}) {
+		t.Fatalf("got requests %q (stderr %q)", lines[1:], errOut)
+	}
+	if !strings.Contains(out, "chunk:sky> PONG\n") {
+		t.Fatalf("the connection should survive: %q", out)
+	}
+	for _, expected := range []string{
+		`invalid value "abc" for flag -tag: a tag is 1 or more bytes written as pairs of hex digits`,
+		`invalid value "0g" for flag -tag`, "usage: set [--tag <hex>] <x> <y> <bits>", `invalid value "-1" for flag -at`,
+		"--at and --at-time exclude each other", "--asc and --desc exclude each other", `invalid value "0" for flag -limit`,
+		`invalid value "1:" for flag -before: a cursor is <revision> or <revision>:<block_index>`,
+		"error: a tag of 256 bytes exceeds the server's longest tag (max_tag_bytes 255)\nerror: a tag of 256 bytes",
+		"error: a limit of 1025 exceeds the server's max_history_limit (1024)",
+		`error: history failed: first item "CURSOR x" is not END or CURSOR <cursor>`,
+		`error: history failed: event "1 5 0 1 - 0001 - - - extra" has 10 fields, not 9`,
+		"error: chunkhistory failed: empty reply: no END or CURSOR item",
+		"error: history failed: NOT_RETAINED start=7\n",
+		"error: set failed: INVALID_ARGUMENT TAG needs a table with history",
+		"error: chunkput failed: INVALID_ARGUMENT TAG needs a table with history",
+		"error: get failed: INVALID_ARGUMENT history is not enabled on this table",
+		"error: history failed: INVALID_ARGUMENT history is not enabled on this table",
+	} {
+		if !strings.Contains(errOut, expected) {
+			t.Fatalf("expected %q in stderr %q", expected, errOut)
+		}
+	}
+}
+
+func TestShellWithoutHistory(t *testing.T) {
+	server := &fakeServer{noHistory: true}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, strings.Join([]string{
+		"set --tag 01 0 0 1010", "chunkput --tag 01 0 0 a0a1", "xput --tag 01 0 0 1", "chunkbatch --tag 01 0 0 SET 0 0 1010",
+		"get --at 1 0 0", "chunkget --at-time 1 0 0", "chunkrange --at 1 0 0 1 1", "history 0 0", "rangehistory 0 0 1 1",
+		"set 0 0 1010", "get 0 0", "exit",
+	}, "\n")+"\n")
+	if strings.Count(errOut, "the server does not support block history (its HELLO reply has no history capability)") != 9 {
+		t.Fatalf("expected nine refusals in %q", errOut)
+	}
+	if commands := strings.Join(server.recorded(), " "); commands != "HELLO SET GET" {
+		t.Fatalf("got commands %q", commands)
+	}
+	if !strings.Contains(out, "chunk> OK\nchunk> 1010\n") {
+		t.Fatalf("expected the untagged write and the read in %q", out)
+	}
+}
+
+func TestShellTableHistoryOptions(t *testing.T) {
+	server := &fakeServer{}
+	uri := startFakeServer(t, server)
+	sess, err := dialSession(t, uri, "")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	out, errOut := runScript(t, sess, "tablecreate world block_bits 4 history on history_max_tag_bytes 8\n"+
+		"tableinfo sky\ntableset sky history on history_max_age_ms 86400000 history_max_tag_bytes 8\ntableinfo sky\n"+
+		"use sky\nset --tag 01 0 0 10\nhistory 0 0\nexit\n")
+	if errOut != "" {
+		t.Fatalf("unexpected stderr %q", errOut)
+	}
+	lines := server.recordedLines()
+	if lines[1] != "TABLECREATE world block_bits 4 history on history_max_tag_bytes 8" ||
+		lines[3] != "TABLESET sky history on history_max_age_ms 86400000 history_max_tag_bytes 8" {
+		t.Fatalf("got requests %q", lines)
+	}
+	// tableinfo shows the history lines, off and zeros before history is
+	// enabled; the table then takes tags and lists its history.
+	for _, want := range []string{
+		"history=off\nhistory_start=0\nhistory_start_time_ms=0\nhistory_max_age_ms=0\nhistory_max_chunk_bytes=0\nhistory_max_tag_bytes=0\n",
+		"history=on\nhistory_start=1\nhistory_start_time_ms=1700000000000\nhistory_max_age_ms=86400000\nhistory_max_chunk_bytes=0\nhistory_max_tag_bytes=8\n",
+		"chunk:sky> OK\nchunk:sky> END\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output %q", want, out)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ var networkCommands = map[string]bool{
 	"chunkexists": true, "chunk": true, "chunkstate": true, "chunkset": true, "chunksetstate": true,
 	"chunkget": true, "chunkput": true, "chunkscan": true, "chunkrange": true, "chunkradius": true,
 	"chunkver": true, "chunkbatch": true, "walflush": true, "metrics": true,
+	"history": true, "chunkhistory": true, "rangehistory": true,
 	"tables": true, "tableinfo": true, "use": true, "tablecreate": true, "tableset": true, "tabledrop": true,
 	"shell": true,
 }
@@ -139,6 +141,11 @@ type session struct {
 	// maxExtraChunkBytes is HELLO's max_extra_chunk_bytes, 0 when the server
 	// has no extra data.
 	maxExtraChunkBytes int
+	// history is true when HELLO lists the history capability, with its
+	// max_tag_bytes and max_history_limit.
+	history         bool
+	maxTagBytes     int
+	maxHistoryLimit int
 }
 
 func openSession(client *chunkclient.Client, token string, table string) (*session, error) {
@@ -156,6 +163,19 @@ func openSession(client *chunkclient.Client, token string, table string) (*sessi
 			return nil, fmt.Errorf("HELLO reply has no valid max_extra_chunk_bytes: %q", text)
 		}
 		sess.maxExtraChunkBytes = limit
+	}
+	if slices.Contains(strings.Split(info["capabilities"], ","), "history") {
+		for _, field := range []struct {
+			key string
+			dst *int
+		}{{"max_tag_bytes", &sess.maxTagBytes}, {"max_history_limit", &sess.maxHistoryLimit}} {
+			limit, err := strconv.Atoi(info[field.key])
+			if err != nil || limit <= 0 {
+				return nil, fmt.Errorf("HELLO reply lists the history capability but has no valid %s: %q", field.key, info[field.key])
+			}
+			*field.dst = limit
+		}
+		sess.history = true
 	}
 	if err := sess.adopt(info); err != nil {
 		return nil, err
@@ -198,13 +218,25 @@ func (s *session) requireGeometry() (geometry, error) {
 // prints its result.
 func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stderr io.Writer) error {
 	client := s.client
+	// The --tag of a write and the --at or --at-time of a read.
+	var h historyArgs
+	if tagCommands[cmd] || pastCommands[cmd] {
+		var err error
+		if h, err = parseHistoryArgs(cmd, cmdArgs, stderr); err != nil {
+			return err
+		}
+		if err := h.check(s); err != nil {
+			return err
+		}
+		cmdArgs = h.args
+	}
 	switch cmd {
 	case "ping", "walflush", "set", "unset", "mset", "chunkexists", "xdel":
 		command := strings.ToUpper(cmd)
 		if len(cmdArgs) > 0 {
 			command += " " + strings.Join(cmdArgs, " ")
 		}
-		text, err := runSimple(client, command)
+		text, err := runSimple(client, command+tagClause(h.tag))
 		if err != nil {
 			return err
 		}
@@ -220,7 +252,7 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		}
 		printTextPayload(stdout, payload)
 	case "get":
-		payload, err := runBulkOrNull(client, fmt.Sprintf("GET %s %s", cmdArgs[0], cmdArgs[1]))
+		payload, err := runBulkOrNull(client, fmt.Sprintf("GET %s %s", cmdArgs[0], cmdArgs[1])+h.at.clause())
 		if err != nil {
 			return err
 		}
@@ -250,7 +282,7 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		if state {
 			request += " STATE"
 		}
-		data, err := runBulk(client, request)
+		data, err := runBulk(client, request+h.at.clause())
 		if err != nil {
 			return err
 		}
@@ -268,7 +300,7 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		if err != nil {
 			return fmt.Errorf("%s failed: %w", cmd, err)
 		}
-		version, err := putChunk(client, cmdArgs[0], cmdArgs[1], data, chunkPutArgs{state: cmd == "chunksetstate"})
+		version, err := putChunk(client, cmdArgs[0], cmdArgs[1], data, chunkPutArgs{state: cmd == "chunksetstate", tag: h.tag})
 		if err != nil {
 			return err
 		}
@@ -290,7 +322,7 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		if err != nil {
 			return err
 		}
-		items, err := runArray(client, strings.ToUpper(cmd)+" "+strings.Join(cmdArgs, " ")+" STATE")
+		items, err := runArray(client, strings.ToUpper(cmd)+" "+strings.Join(cmdArgs, " ")+" STATE"+h.at.clause())
 		if err != nil {
 			return err
 		}
@@ -310,11 +342,14 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		if err != nil {
 			return err
 		}
+		if err := s.checkTag(batch.tag); err != nil {
+			return err
+		}
 		request := fmt.Sprintf("CHUNKBATCH %s %s", batch.cx, batch.cy)
 		if batch.ifVersion != "" {
 			request += " IF " + batch.ifVersion
 		}
-		payload, err := runBulk(client, request+" "+strings.Join(batch.ops, " "))
+		payload, err := runBulk(client, request+tagClause(batch.tag)+" "+strings.Join(batch.ops, " "))
 		if err != nil {
 			return err
 		}
@@ -331,6 +366,8 @@ func runCommand(s *session, cmd string, cmdArgs []string, stdout io.Writer, stde
 		printTextPayload(stdout, payload)
 	case "tables", "tableinfo", "tablecreate", "tableset", "tabledrop":
 		return runTableCommand(client, cmd, cmdArgs, stdout)
+	case "history", "chunkhistory", "rangehistory":
+		return runHistory(s, cmd, cmdArgs, stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -443,6 +480,7 @@ type chunkPutArgs struct {
 	extra     bool
 	zrle      bool
 	ifVersion string
+	tag       string
 }
 
 // putChunk sends CHUNKPUT with the raw chunk bytes and returns the chunk's
@@ -466,7 +504,7 @@ func putChunk(client *chunkclient.Client, cx string, cy string, data []byte, arg
 	if args.ifVersion != "" {
 		request += " IF " + args.ifVersion
 	}
-	request += " " + strconv.Itoa(len(body))
+	request += tagClause(args.tag) + " " + strconv.Itoa(len(body))
 	resp, err := client.CommandWithPayload(request, body)
 	if err != nil {
 		return "", fmt.Errorf("chunkput failed: %w", err)
@@ -483,6 +521,7 @@ type chunkGetRequest struct {
 	extra  bool
 	zrle   bool
 	out    string
+	at     pastPoint
 }
 
 func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, error) {
@@ -493,12 +532,16 @@ func parseChunkGetArgs(cmdArgs []string, stderr io.Writer) (chunkGetRequest, err
 	fs.BoolVar(&req.extra, "extra", false, "include the EXTRA section (implies --state)")
 	fs.BoolVar(&req.zrle, "zrle", false, "transfer zrle-compressed")
 	fs.StringVar(&req.out, "out", "", "write the bytes to file")
-	if err := fs.Parse(protectNegativeArgs(cmdArgs, "out")); err != nil {
+	req.at.register(fs)
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "out", "at", "at-time")); err != nil {
 		return chunkGetRequest{}, err
 	}
 	remaining := fs.Args()
 	if len(remaining) != 2 {
-		return chunkGetRequest{}, errors.New("usage: chunkget [--state] [--extra] [--zrle] [--out <file>] <cx> <cy>")
+		return chunkGetRequest{}, errors.New("usage: chunkget [--state] [--extra] [--zrle] [--at <revision> | --at-time <ms>] [--out <file>] <cx> <cy>")
+	}
+	if err := req.at.check(); err != nil {
+		return chunkGetRequest{}, err
 	}
 	req.state = req.state || req.extra
 	req.cx, req.cy = remaining[0], remaining[1]
@@ -524,6 +567,9 @@ func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 	if err != nil {
 		return err
 	}
+	if err := s.checkPastPoint(req.at); err != nil {
+		return err
+	}
 	request := fmt.Sprintf("CHUNKGET %s %s", req.cx, req.cy)
 	want := g.payloadBytes()
 	if req.state {
@@ -544,7 +590,7 @@ func runChunkGet(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 	if req.zrle {
 		request += " ZRLE"
 	}
-	body, err := runBulk(s.client, request)
+	body, err := runBulk(s.client, request+req.at.clause())
 	if err != nil {
 		return err
 	}
@@ -611,11 +657,12 @@ func parseChunkPutArgs(cmdArgs []string, stderr io.Writer) (chunkPutRequest, err
 	fs.BoolVar(&req.args.zrle, "zrle", false, "send zrle-compressed when smaller")
 	fs.StringVar(&req.args.ifVersion, "if", "", "write only if the chunk has this version")
 	fs.StringVar(&req.inPath, "in", "", "read the bytes from file")
-	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if", "in")); err != nil {
+	tagFlag(fs, &req.args.tag, "tag the write's history events")
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if", "in", "tag")); err != nil {
 		return chunkPutRequest{}, err
 	}
 	remaining := fs.Args()
-	usage := errors.New("usage: chunkput [--state] [--extra] [--zrle] [--if <version>] <cx> <cy> <hex> | chunkput [flags] --in <file> <cx> <cy>")
+	usage := errors.New("usage: chunkput [--state] [--extra] [--zrle] [--if <version>] [--tag <hex>] <cx> <cy> <hex> | chunkput [flags] --in <file> <cx> <cy>")
 	switch {
 	case req.inPath != "" && len(remaining) == 2:
 	case req.inPath == "" && len(remaining) == 3:
@@ -664,6 +711,9 @@ func runChunkPut(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 	if err != nil {
 		return err
 	}
+	if err := s.checkTag(req.args.tag); err != nil {
+		return err
+	}
 	want := g.payloadBytes()
 	if req.args.state {
 		want += g.presenceBytes()
@@ -697,16 +747,18 @@ func runChunkPut(s *session, cmdArgs []string, stdout io.Writer, stderr io.Write
 type chunkBatchRequest struct {
 	cx, cy    string
 	ifVersion string
+	tag       string
 	ops       []string
 }
 
 func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest, error) {
-	const usage = "usage: chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ..."
+	const usage = "usage: chunkbatch [--if <version>] [--tag <hex>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ..."
 	fs := flag.NewFlagSet("chunkbatch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var req chunkBatchRequest
 	fs.StringVar(&req.ifVersion, "if", "", "apply only if the chunk has this version")
-	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if")); err != nil {
+	tagFlag(fs, &req.tag, "tag the batch's history events")
+	if err := fs.Parse(protectNegativeArgs(cmdArgs, "if", "tag")); err != nil {
 		return chunkBatchRequest{}, err
 	}
 	args := fs.Args()
@@ -762,6 +814,14 @@ func parseChunkBatchArgs(cmdArgs []string, stderr io.Writer) (chunkBatchRequest,
 }
 
 func validateCommandArgs(cmd string, cmdArgs []string) error {
+	// The --tag of a write and the --at or --at-time of a read come first.
+	if tagCommands[cmd] || pastCommands[cmd] {
+		h, err := parseHistoryArgs(cmd, cmdArgs, io.Discard)
+		if err != nil {
+			return err
+		}
+		cmdArgs = h.args
+	}
 	intArgs := func(usage string, fields ...string) error {
 		if len(cmdArgs) != len(fields) {
 			return errors.New(usage)
@@ -779,22 +839,27 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 			return fmt.Errorf("usage: %s", cmd)
 		}
 	case "get":
-		return intArgs("usage: get <x> <y>", "x", "y")
+		return intArgs("usage: get [--at <revision> | --at-time <ms>] <x> <y>", "x", "y")
 	case "unset":
-		return intArgs("usage: unset <x> <y>", "x", "y")
+		return intArgs("usage: unset [--tag <hex>] <x> <y>", "x", "y")
 	case "xdel":
-		return intArgs("usage: xdel <x> <y>", "x", "y")
+		return intArgs("usage: xdel [--tag <hex>] <x> <y>", "x", "y")
 	case "xget":
 		_, err := parseXGetArgs(cmdArgs, io.Discard)
 		return err
 	case "xput":
 		_, err := parseXPutArgs(cmdArgs, io.Discard)
 		return err
-	case "chunkexists", "chunk", "chunkstate", "chunkver":
+	case "chunkexists", "chunkver":
 		return intArgs(fmt.Sprintf("usage: %s <cx> <cy>", cmd), "cx", "cy")
+	case "chunk", "chunkstate":
+		return intArgs(fmt.Sprintf("usage: %s [--at <revision> | --at-time <ms>] <cx> <cy>", cmd), "cx", "cy")
+	case "history", "chunkhistory", "rangehistory":
+		_, err := parseHistoryListArgs(cmd, cmdArgs, io.Discard)
+		return err
 	case "set":
 		if len(cmdArgs) != 3 {
-			return errors.New("usage: set <x> <y> <bits>")
+			return errors.New("usage: set [--tag <hex>] <x> <y> <bits>")
 		}
 		if err := intArgsPrefix(cmdArgs, "x", "y"); err != nil {
 			return err
@@ -802,7 +867,7 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		return validateNonEmptyBits(cmdArgs[2])
 	case "mset":
 		if len(cmdArgs) == 0 || len(cmdArgs)%3 != 0 {
-			return errors.New("usage: mset <x> <y> <bits> [<x> <y> <bits> ...]")
+			return errors.New("usage: mset [--tag <hex>] <x> <y> <bits> [<x> <y> <bits> ...]")
 		}
 		for i := 0; i < len(cmdArgs); i += 3 {
 			if err := intArgsPrefix(cmdArgs[i:], "x", "y"); err != nil {
@@ -823,7 +888,7 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		}
 	case "chunkset":
 		if len(cmdArgs) != 3 {
-			return errors.New("usage: chunkset <cx> <cy> <bits>")
+			return errors.New("usage: chunkset [--tag <hex>] <cx> <cy> <bits>")
 		}
 		if err := intArgsPrefix(cmdArgs, "cx", "cy"); err != nil {
 			return err
@@ -831,7 +896,7 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		return validateNonEmptyBits(cmdArgs[2])
 	case "chunksetstate":
 		if len(cmdArgs) != 3 {
-			return errors.New("usage: chunksetstate <cx> <cy> <payload_bits>|<presence_bits>")
+			return errors.New("usage: chunksetstate [--tag <hex>] <cx> <cy> <payload_bits>|<presence_bits>")
 		}
 		if err := intArgsPrefix(cmdArgs, "cx", "cy"); err != nil {
 			return err
@@ -848,7 +913,7 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 		return err
 	case "chunkradius":
 		if len(cmdArgs) != 3 {
-			return errors.New("usage: chunkradius <cx> <cy> <radius_chunks>")
+			return errors.New("usage: chunkradius [--at <revision> | --at-time <ms>] <cx> <cy> <radius_chunks>")
 		}
 		if err := intArgsPrefix(cmdArgs, "cx", "cy"); err != nil {
 			return err
@@ -867,7 +932,7 @@ func validateCommandArgs(cmd string, cmdArgs []string) error {
 			return intArgsPrefix(cmdArgs[1:], "cursor_cx", "cursor_cy")
 		}
 	case "chunkrange":
-		return intArgs("usage: chunkrange <cx0> <cy0> <cx1> <cy1>", "cx0", "cy0", "cx1", "cy1")
+		return intArgs("usage: chunkrange [--at <revision> | --at-time <ms>] <cx0> <cy0> <cx1> <cy1>", "cx0", "cy0", "cx1", "cy1")
 	case "tableinfo", "use", "tabledrop":
 		if len(cmdArgs) != 1 {
 			return fmt.Errorf("usage: %s <table>", cmd)
@@ -1082,29 +1147,33 @@ Usage:
 Commands:
   ping
   info
-  get <x> <y>                      prints the bits, or (unset)
-  set <x> <y> <bits>
-  unset <x> <y>
-  mset <x> <y> <bits> [<x> <y> <bits> ...]
+  get [<at>] <x> <y>               prints the bits, or (unset)
+  set [--tag <hex>] <x> <y> <bits>
+  unset [--tag <hex>] <x> <y>
+  mset [--tag <hex>] <x> <y> <bits> [<x> <y> <bits> ...]
   mget <x> <y> [<x> <y> ...]
   xget [--bits] <x> <y>            extra data: bit length and hex, or (none)
-  xput <x> <y> <bits>
-  xput --hex --bit-length <n> <x> <y> <hex>
-  xput --bit-length <n> --in <file> <x> <y>
-  xdel <x> <y>
+  xput [--tag <hex>] <x> <y> <bits>
+  xput [--tag <hex>] --hex --bit-length <n> <x> <y> <hex>
+  xput [--tag <hex>] --bit-length <n> --in <file> <x> <y>
+  xdel [--tag <hex>] <x> <y>
   chunkexists <cx> <cy>
-  chunk <cx> <cy>                  payload as bit text
-  chunkstate <cx> <cy>             <payload_bits>|<presence_bits>
-  chunkset <cx> <cy> <bits>
-  chunksetstate <cx> <cy> <payload_bits>|<presence_bits>
-  chunkget [--state] [--extra] [--zrle] [--out <file>] <cx> <cy>
-  chunkput [--state] [--extra] [--zrle] [--if <version>] <cx> <cy> <hex>
-  chunkput [--state] [--extra] [--zrle] [--if <version>] --in <file> <cx> <cy>
+  chunk [<at>] <cx> <cy>           payload as bit text
+  chunkstate [<at>] <cx> <cy>      <payload_bits>|<presence_bits>
+  chunkset [--tag <hex>] <cx> <cy> <bits>
+  chunksetstate [--tag <hex>] <cx> <cy> <payload_bits>|<presence_bits>
+  chunkget [--state] [--extra] [--zrle] [<at>] [--out <file>] <cx> <cy>
+  chunkput [--state] [--extra] [--zrle] [--if <version>] [--tag <hex>] <cx> <cy> <hex>
+  chunkput [--state] [--extra] [--zrle] [--if <version>] [--tag <hex>] --in <file> <cx> <cy>
   chunkscan <limit> [<cursor_cx> <cursor_cy>]
-  chunkrange <cx0> <cy0> <cx1> <cy1>
-  chunkradius <cx> <cy> <radius_chunks>
+  chunkrange [<at>] <cx0> <cy0> <cx1> <cy1>
+  chunkradius [<at>] <cx> <cy> <radius_chunks>
   chunkver <cx> <cy>
-  chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ...
+  chunkbatch [--if <version>] [--tag <hex>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> | XPUT <x> <y> <bits> | XDEL <x> <y> ...
+  history [<history options>] <x> <y>
+  chunkhistory [<history options>] <cx> <cy>
+  rangehistory [<history options>] <cx0> <cy0> <cx1> <cy1>
+                                   one line per event, then END or CURSOR <cursor>
   walflush
   metrics
   tables
@@ -1116,6 +1185,14 @@ Commands:
   shell
   version
   help
+
+History (tables with history on):
+  --tag <hex>                      tags a write's history events
+  <at>                             --at <revision> | --at-time <ms>: reads the past
+  <history options>                --limit <n> --asc | --desc --after <cursor>
+                                   --before <cursor> --since <ms> --until <ms> --tag <hex>
+                                   newest first by default; for the next page pass the
+                                   cursor as --before, or with --asc as --after
 
 Global options:
   --uri <chunk://token@host:port/ | chunks://token@host:port/>

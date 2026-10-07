@@ -35,6 +35,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 2 (chunkdb
   command works on. The shell prompt shows the selected table
   (`chunk:terrain>`)
 - per-block extra data (chunkdb 2.0+): `xget [--bits]`, `xput` (`0`/`1` text, or bytes with `--hex` or `--in <file>` and `--bit-length <n>`) and `xdel`; `chunkget --extra` lists a chunk's values after the dump and `chunkput --extra` writes a state with its values; `chunkbatch` takes `XPUT <x> <y> <bits>` and `XDEL <x> <y>`. `tablecreate` and `tableset` pass `extra_max_block_bits` and `extra_max_chunk_bytes` through, and `tableinfo` shows them
+- block history (chunkdb 2.0+): `history`, `chunkhistory` and `rangehistory` print one line per event, then `END` or `CURSOR <cursor>`, with `--limit`, `--asc` / `--desc`, `--after` / `--before <cursor>`, `--since` / `--until <ms>` and `--tag <hex>`; `--tag <hex>` on `set`, `unset`, `mset`, `xput`, `xdel`, `chunkset`, `chunksetstate`, `chunkput` and `chunkbatch`; `--at <revision>` or `--at-time <ms>` on `get`, `chunk`, `chunkstate`, `chunkget`, `chunkrange` and `chunkradius`. `tablecreate` and `tableset` pass the history options through, and `tableinfo` shows them. Tags, past reads and listings are refused before sending when the server's HELLO has no `history` capability
 
 ### Fixed
 - the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
