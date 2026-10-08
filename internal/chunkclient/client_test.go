@@ -2,146 +2,306 @@ package chunkclient
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
+	"io"
+	"math"
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/chunkdb/chunk-cli/internal/chunkuri"
 )
 
-func newPipeClient(t *testing.T, handler func(server net.Conn)) *Client {
+// scriptedClient is a client whose server answers with the given bytes and
+// records what the client sent.
+type scriptedClient struct {
+	*Client
+	mu   sync.Mutex
+	sent bytes.Buffer
+	done chan struct{}
+}
+
+func newScriptedClient(t *testing.T, replies string) *scriptedClient {
 	t.Helper()
-
 	clientConn, serverConn := net.Pipe()
-
+	sc := &scriptedClient{
+		Client: &Client{
+			conn:    clientConn,
+			reader:  bufio.NewReader(clientConn),
+			writer:  bufio.NewWriter(clientConn),
+			timeout: 2 * time.Second,
+		},
+		done: make(chan struct{}),
+	}
 	go func() {
-		defer serverConn.Close()
-		handler(serverConn)
+		defer close(sc.done)
+		buf := make([]byte, 4096)
+		for {
+			n, err := serverConn.Read(buf)
+			sc.mu.Lock()
+			sc.sent.Write(buf[:n])
+			sc.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
 	}()
-
-	return &Client{
-		conn:    clientConn,
-		reader:  bufio.NewReader(clientConn),
-		writer:  bufio.NewWriter(clientConn),
-		timeout: 2 * time.Second,
-	}
+	go func() {
+		_, _ = io.WriteString(serverConn, replies)
+	}()
+	t.Cleanup(func() {
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+		<-sc.done
+	})
+	return sc
 }
 
-func TestCommandSimpleResponse(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		buf := make([]byte, 64)
-		_, _ = server.Read(buf)
-		_, _ = server.Write([]byte("+PONG\r\n"))
-	})
-	defer c.Close()
-
-	resp, err := c.Command("PING")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if resp.Kind != ResponseSimple || resp.Simple != "PONG" {
-		t.Fatalf("unexpected response: %#v", resp)
-	}
+func (sc *scriptedClient) sentText() string {
+	_ = sc.conn.Close()
+	<-sc.done
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.sent.String()
 }
 
-func TestCommandBulkResponse(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		buf := make([]byte, 64)
-		_, _ = server.Read(buf)
-		_, _ = server.Write([]byte("$3\r\nabc\r\n"))
-	})
-	defer c.Close()
-
-	resp, err := c.Command("GET 0 0")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestReadReplyTypes(t *testing.T) {
+	cases := []struct {
+		reply string
+		check func(Value) bool
+	}{
+		{"+PONG\r\n", func(v Value) bool { return v.Kind == KindSimple && v.Text == "PONG" }},
+		{":-12\r\n", func(v Value) bool { n, err := v.Int64(); return err == nil && n == -12 }},
+		{":18446744073709551615\r\n", func(v Value) bool {
+			n, err := v.Uint64()
+			_, errSigned := v.Int64()
+			return err == nil && n == math.MaxUint64 && errSigned != nil && v.Text == "18446744073709551615"
+		}},
+		{",1.5\r\n", func(v Value) bool { f, err := v.Float64(); return err == nil && f == 1.5 }},
+		{",inf\r\n", func(v Value) bool { f, err := v.Float64(); return err == nil && math.IsInf(f, 1) }},
+		{",-inf\r\n", func(v Value) bool { f, err := v.Float64(); return err == nil && math.IsInf(f, -1) }},
+		{",nan\r\n", func(v Value) bool { f, err := v.Float64(); return err == nil && math.IsNaN(f) }},
+		{"#t\r\n", func(v Value) bool { return v.Kind == KindBool && v.Bool }},
+		{"#f\r\n", func(v Value) bool { return v.Kind == KindBool && !v.Bool }},
+		{"_\r\n", func(v Value) bool { return v.Kind == KindNull }},
+		{"$4\r\na\r\n\x00\r\n", func(v Value) bool { return v.Kind == KindBulk && string(v.Bulk) == "a\r\n\x00" }},
+		{"$0\r\n\r\n", func(v Value) bool { return v.Kind == KindBulk && len(v.Bulk) == 0 }},
+		{"*0\r\n", func(v Value) bool { return v.Kind == KindArray && len(v.Items) == 0 }},
+		{"*3\r\n:1\r\n_\r\n*1\r\n$1\r\nx\r\n", func(v Value) bool {
+			return len(v.Items) == 3 && v.Items[0].Text == "1" && v.Items[1].Kind == KindNull &&
+				string(v.Items[2].Items[0].Bulk) == "x"
+		}},
+		{"%2\r\n$6\r\nchunks\r\n*0\r\n$4\r\nmore\r\n#t\r\n", func(v Value) bool {
+			more, ok := v.Lookup("more")
+			chunks, okChunks := v.Lookup("chunks")
+			return v.Kind == KindMap && ok && more.Bool && okChunks && chunks.Kind == KindArray
+		}},
 	}
-
-	if resp.Kind != ResponseBulk || string(resp.Bulk) != "abc" {
-		t.Fatalf("unexpected response: %#v", resp)
-	}
-}
-
-func TestCommandArrayResponse(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		buf := make([]byte, 64)
-		_, _ = server.Read(buf)
-		// MGET reply: *N then N bulk items
-		_, _ = server.Write([]byte("*3\r\n$4\r\n1010\r\n$4\r\n0000\r\n$4\r\n1111\r\n"))
-	})
-	defer c.Close()
-
-	resp, err := c.Command("MGET 0 0 1 0 2 0")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if resp.Kind != ResponseArray {
-		t.Fatalf("expected array response, got: %#v", resp)
-	}
-	want := []string{"1010", "0000", "1111"}
-	if len(resp.Array) != len(want) {
-		t.Fatalf("expected %d items, got %d: %#v", len(want), len(resp.Array), resp.Array)
-	}
-	for i, w := range want {
-		if string(resp.Array[i]) != w {
-			t.Fatalf("item %d: expected %q, got %q", i, w, string(resp.Array[i]))
+	for _, tc := range cases {
+		value, err := readReply(bufio.NewReader(strings.NewReader(tc.reply)))
+		if err != nil {
+			t.Errorf("%q: %v", tc.reply, err)
+			continue
+		}
+		if !tc.check(value) {
+			t.Errorf("%q: unexpected value %+v", tc.reply, value)
 		}
 	}
 }
 
-func TestCommandEmptyArrayResponse(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		buf := make([]byte, 64)
-		_, _ = server.Read(buf)
-		_, _ = server.Write([]byte("*0\r\n"))
-	})
-	defer c.Close()
-
-	resp, err := c.Command("MGET")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestReadReplyRefusesMalformed(t *testing.T) {
+	for _, reply := range []string{
+		"", "\r\n", "+OK\n", ":12a\r\n", ":99999999999999999999\r\n", ",Inf\r\n", ",0x1p2\r\n", ",\r\n",
+		"#x\r\n", "_x\r\n", "$-1\r\n", "$3\r\nab\r\n", "$2\r\nabcd", "*-1\r\n", "*2\r\n:1\r\n",
+		"*1\r\n-ERR X y\r\n", "!3\r\nabc\r\n", "%1\r\n$1\r\nk\r\n",
+	} {
+		if value, err := readReply(bufio.NewReader(strings.NewReader(reply))); err == nil {
+			t.Errorf("%q: expected an error, got %+v", reply, value)
+		}
 	}
-	if resp.Kind != ResponseArray || len(resp.Array) != 0 {
-		t.Fatalf("expected empty array response, got: %#v", resp)
-	}
-}
-
-func TestCommandServerError(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		buf := make([]byte, 64)
-		_, _ = server.Read(buf)
-		_, _ = server.Write([]byte("-ERR AUTH_REQUIRED use AUTH <token>\r\n"))
-	})
-	defer c.Close()
-
-	_, err := c.Command("INFO")
-	if err == nil {
-		t.Fatalf("expected server error")
-	}
-
-	if _, ok := err.(*ServerError); !ok {
-		t.Fatalf("expected ServerError, got %T", err)
+	deep := strings.Repeat("*1\r\n", maxNesting+2) + ":1\r\n"
+	if _, err := readReply(bufio.NewReader(strings.NewReader(deep))); err == nil {
+		t.Error("expected an error for deep nesting")
 	}
 }
 
-func TestDialChunkAndCommand(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+func TestServerErrorCodes(t *testing.T) {
+	sc := newScriptedClient(t, "-ERR VERSION_MISMATCH current=1043\r\n-ERR SYNTAX column 1: unknown statement 'X'\r\n")
+	_, err := sc.Do("SET BLOCK 0 0 IN t a = 1 IF VERSION 1")
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) || serverErr.Code != "VERSION_MISMATCH" {
+		t.Fatalf("got %v", err)
 	}
-	defer ln.Close()
+	if current, ok := serverErr.CurrentVersion(); !ok || current != 1043 {
+		t.Fatalf("current version %d, %v", current, ok)
+	}
+	if err.Error() != "VERSION_MISMATCH current=1043" {
+		t.Fatalf("message %q", err.Error())
+	}
+	_, err = sc.Do("X")
+	if !errors.As(err, &serverErr) || serverErr.Code != "SYNTAX" || serverErr.Message != "column 1: unknown statement 'X'" {
+		t.Fatalf("got %#v", err)
+	}
+	if _, ok := serverErr.CurrentVersion(); ok {
+		t.Fatal("a SYNTAX error has no current version")
+	}
+	if sc.Broken() != nil {
+		t.Fatalf("server errors must not break the connection: %v", sc.Broken())
+	}
+}
 
+func TestParameterFrames(t *testing.T) {
+	sc := newScriptedClient(t, ":7\r\n")
+	value, err := sc.Do("SET BLOCK 10 4 IN world sign = $1, chest = $2, blob = $3", []byte("hello"), nil, []byte("a\r\n\x00"))
+	if err != nil || value.Text != "7" {
+		t.Fatalf("got %+v, %v", value, err)
+	}
+	want := "SET BLOCK 10 4 IN world sign = $1, chest = $2, blob = $3\r\n$5\r\nhello\r\n$-1\r\n$4\r\na\r\n\x00\r\n"
+	if got := sc.sentText(); got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+func TestRequestChecks(t *testing.T) {
+	sc := newScriptedClient(t, "")
+	sc.info = &ServerInfo{Protocol: 3, MaxLineBytes: 64, MaxParameters: 2}
+	for _, tc := range []struct {
+		statement  string
+		parameters [][]byte
+		want       string
+	}{
+		{"PING\r\nPING", nil, "single line"},
+		{"GET BLOCK 0 0 FROM t\n", nil, "single line"},
+		{"  ", nil, "empty statement"},
+		{"SET CHUNK 0 0 IN t $1", nil, "1 parameter(s)"},
+		{"PING", [][]byte{{1}}, "0 parameter(s)"},
+		{"SET BLOCK 0 0 IN t a = '$1'", [][]byte{{1}}, "0 parameter(s)"},
+		{"SET BLOCK 0 0 IN t a = $1, b = $2, c = $3", make([][]byte, 3), "at most 2"},
+		{"SET BLOCK 0 0 IN t a = '" + strings.Repeat("x", 64) + "'", nil, "at most 64 bytes"},
+	} {
+		_, err := sc.Do(tc.statement, tc.parameters...)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: got %v, want %q", tc.statement, err, tc.want)
+		}
+	}
+	if got := sc.sentText(); got != "" {
+		t.Fatalf("refused requests must send nothing, sent %q", got)
+	}
+}
+
+func TestParameterCount(t *testing.T) {
+	for statement, want := range map[string]int{
+		"PING":                                  0,
+		"SET CHUNK 0 0 IN t $1":                 1,
+		"SET BLOCK 0 0 IN t a = $1, b = $2":     2,
+		"SET BLOCK 0 0 IN t a = 'it''s $1'":     0,
+		"SET BLOCK 0 0 IN t a = 'x', b = $1":    1,
+		"SET BLOCK 0 0 IN t a = x'00', b = $1 ": 1,
+	} {
+		if got := ParameterCount(statement); got != want {
+			t.Errorf("%q: got %d, want %d", statement, got, want)
+		}
+	}
+}
+
+func TestPipelineKeepsOrder(t *testing.T) {
+	sc := newScriptedClient(t, "+PONG\r\n-ERR NO_TABLE table 'x' does not exist\r\n:5\r\n")
+	replies, err := sc.Pipeline([]Request{
+		{Statement: "PING"},
+		{Statement: "DESCRIBE x"},
+		{Statement: "SET CHUNK 0 0 IN t $1", Parameters: [][]byte{{9}}},
+	})
+	if err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if replies[0].Value.Text != "PONG" || replies[1].Err == nil || replies[1].Err.Code != "NO_TABLE" || replies[2].Value.Text != "5" {
+		t.Fatalf("unexpected replies %+v", replies)
+	}
+	if got, want := sc.sentText(), "PING\r\nDESCRIBE x\r\nSET CHUNK 0 0 IN t $1\r\n$1\r\n\x09\r\n"; got != want {
+		t.Fatalf("sent %q, want %q", got, want)
+	}
+}
+
+func TestMalformedReplyBreaksConnection(t *testing.T) {
+	sc := newScriptedClient(t, "?what\r\n+PONG\r\n")
+	if _, err := sc.Do("PING"); err == nil {
+		t.Fatal("expected an error")
+	}
+	if sc.Broken() == nil {
+		t.Fatal("expected the connection to be broken")
+	}
+	if _, err := sc.Do("PING"); err == nil || !strings.Contains(err.Error(), "unusable") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+const helloReply = "%7\r\n$8\r\nprotocol\r\n:3\r\n$14\r\nserver_version\r\n$5\r\n2.0.0\r\n$14\r\nmax_line_bytes\r\n:65536\r\n" +
+	"$14\r\nmax_parameters\r\n:65535\r\n$15\r\nmax_area_chunks\r\n:256\r\n$18\r\nmax_response_bytes\r\n:67108864\r\n" +
+	"$14\r\nmax_scan_limit\r\n:1024\r\n"
+
+func TestHello(t *testing.T) {
+	sc := newScriptedClient(t, helloReply)
+	info, err := sc.Hello("secret")
+	if err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	want := ServerInfo{Protocol: 3, ServerVersion: "2.0.0", MaxLineBytes: 65536, MaxParameters: 65535,
+		MaxAreaChunks: 256, MaxResponseBytes: 67108864, MaxScanLimit: 1024}
+	if *info != want || sc.Info() != info {
+		t.Fatalf("got %+v", info)
+	}
+	if got := sc.sentText(); got != "HELLO 3 AUTH secret\r\n" {
+		t.Fatalf("sent %q", got)
+	}
+
+	plain := newScriptedClient(t, helloReply)
+	if _, err := plain.Hello(""); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if got := plain.sentText(); got != "HELLO 3\r\n" {
+		t.Fatalf("sent %q", got)
+	}
+}
+
+func TestHelloRefusals(t *testing.T) {
+	cases := []struct {
+		reply, token, want string
+	}{
+		{"-ERR PROTOCOL expected HELLO 2\r\n", "", "older chunkdb protocol"},
+		{"-ERR UNKNOWN_COMMAND HELLO\r\n", "", "chunkdb 1.x"},
+		{"-ERR AUTH_REQUIRED use AUTH <token>\r\n", "tok", "chunkdb 1.x"},
+		{"-ERR AUTH_REQUIRED use HELLO 3 AUTH <token>\r\n", "", "AUTH_REQUIRED"},
+		{"-ERR AUTH_FAILED invalid token\r\n", "x", "AUTH_FAILED"},
+		{"+OK\r\n", "", "expected a map"},
+		{strings.Replace(helloReply, ":3\r\n", ":4\r\n", 1), "", "protocol 4"},
+		{strings.Replace(helloReply, "max_scan_limit", "max_scan_limiX", 1), "", "no max_scan_limit"},
+	}
+	for _, tc := range cases {
+		sc := newScriptedClient(t, tc.reply)
+		_, err := sc.Hello(tc.token)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("reply %q: got %v, want %q", tc.reply, err, tc.want)
+		}
+	}
+	sc := newScriptedClient(t, helloReply)
+	if _, err := sc.Hello("a b"); err == nil || !strings.Contains(err.Error(), "spaces") {
+		t.Fatalf("token with a space: got %v", err)
+	}
+}
+
+// helloServer accepts one connection, answers HELLO and PING, and closes.
+func helloServer(t *testing.T, ln net.Listener) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -150,80 +310,106 @@ func TestDialChunkAndCommand(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-
-		line, _ := bufio.NewReader(conn).ReadString('\n')
-		if strings.HasPrefix(line, "PING") {
-			_, _ = conn.Write([]byte("+PONG\r\n"))
+		reader := bufio.NewReader(conn)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "HELLO 3"):
+				_, _ = io.WriteString(conn, helloReply)
+			case line == "PING\r\n":
+				_, _ = io.WriteString(conn, "+PONG\r\n")
+			default:
+				_, _ = io.WriteString(conn, "-ERR SYNTAX unexpected\r\n")
+			}
 		}
 	}()
+	return done
+}
 
-	addr := ln.Addr().(*net.TCPAddr)
-	parsed, err := chunkuri.Parse(fmt.Sprintf("chunk://127.0.0.1:%d/", addr.Port))
-	if err != nil {
-		t.Fatalf("parse uri: %v", err)
-	}
-
-	c, err := Dial(Config{URI: parsed, Timeout: 2 * time.Second})
+func dialAndPing(t *testing.T, cfg Config) {
+	t.Helper()
+	c, err := Dial(cfg)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
+	if _, err := c.Hello(""); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	value, err := c.Do("PING")
+	if err != nil || value.Kind != KindSimple || value.Text != "PONG" {
+		t.Fatalf("got %+v, %v", value, err)
+	}
+}
 
-	resp, err := c.Command("PING")
+func TestDialChunk(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("command: %v", err)
+		t.Fatalf("listen: %v", err)
 	}
-	if resp.Kind != ResponseSimple || resp.Simple != "PONG" {
-		t.Fatalf("unexpected response: %#v", resp)
-	}
+	defer ln.Close()
+	done := helloServer(t, ln)
 
+	parsed, err := chunkuri.Parse(fmt.Sprintf("chunk://127.0.0.1:%d/", ln.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("parse uri: %v", err)
+	}
+	dialAndPing(t, Config{URI: parsed, Timeout: 2 * time.Second})
 	<-done
 }
 
-func TestDialChunksAndCommand(t *testing.T) {
+func TestDialChunks(t *testing.T) {
 	cert := mustSelfSignedCert(t)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
 	if err != nil {
 		t.Fatalf("tls listen: %v", err)
 	}
 	defer ln.Close()
+	done := helloServer(t, ln)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		line, _ := bufio.NewReader(conn).ReadString('\n')
-		if strings.HasPrefix(line, "PING") {
-			_, _ = conn.Write([]byte("+PONG\r\n"))
-		}
-	}()
-
-	addr := ln.Addr().(*net.TCPAddr)
-	parsed, err := chunkuri.Parse(fmt.Sprintf("chunks://127.0.0.1:%d/", addr.Port))
+	parsed, err := chunkuri.Parse(fmt.Sprintf("chunks://127.0.0.1:%d/", ln.Addr().(*net.TCPAddr).Port))
 	if err != nil {
 		t.Fatalf("parse uri: %v", err)
 	}
+	dialAndPing(t, Config{URI: parsed, Timeout: 2 * time.Second, TLSInsecure: true})
+	<-done
+}
 
-	c, err := Dial(Config{URI: parsed, Timeout: 2 * time.Second, TLSInsecure: true})
+func TestTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	parsed, err := chunkuri.Parse(fmt.Sprintf("chunk://127.0.0.1:%d/", ln.Addr().(*net.TCPAddr).Port))
+	if err != nil {
+		t.Fatalf("parse uri: %v", err)
+	}
+	c, err := Dial(Config{URI: parsed, Timeout: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
-
-	resp, err := c.Command("PING")
-	if err != nil {
-		t.Fatalf("command: %v", err)
+	defer func() { (<-accepted).Close() }()
+	start := time.Now()
+	_, err = c.Hello("")
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected a timeout, got %v", err)
 	}
-	if resp.Kind != ResponseSimple || resp.Simple != "PONG" {
-		t.Fatalf("unexpected response: %#v", resp)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the timeout took %v", elapsed)
 	}
-
-	<-done
 }
 
 func mustSelfSignedCert(t *testing.T) tls.Certificate {
@@ -256,84 +442,5 @@ func mustSelfSignedCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{
 		Certificate: [][]byte{der},
 		PrivateKey:  priv,
-	}
-}
-
-func TestCommandNullResponses(t *testing.T) {
-	c := newPipeClient(t, func(server net.Conn) {
-		reader := bufio.NewReader(server)
-		_, _ = reader.ReadString('\n')
-		_, _ = server.Write([]byte("$-1\r\n"))
-		_, _ = reader.ReadString('\n')
-		_, _ = server.Write([]byte("*3\r\n$4\r\n1010\r\n$-1\r\n$0\r\n\r\n"))
-	})
-	defer c.Close()
-
-	resp, err := c.Command("GET 0 0")
-	if err != nil || resp.Kind != ResponseNull {
-		t.Fatalf("expected a null response, got %#v, %v", resp, err)
-	}
-	resp, err = c.Command("MGET 0 0 1 0 2 0")
-	if err != nil || resp.Kind != ResponseArray || len(resp.Array) != 3 {
-		t.Fatalf("unexpected response: %#v, %v", resp, err)
-	}
-	if string(resp.Array[0]) != "1010" || resp.Array[1] != nil || resp.Array[2] == nil || len(resp.Array[2]) != 0 {
-		t.Fatalf("a null item must be nil and an empty one non-nil: %#v", resp.Array)
-	}
-}
-
-func TestHello(t *testing.T) {
-	sent := make(chan string, 1)
-	c := newPipeClient(t, func(server net.Conn) {
-		line, _ := bufio.NewReader(server).ReadString('\n')
-		sent <- line
-		body := "protocol=2\nserver_version=test\ntable=terrain\nblock_bits=4\n"
-		_, _ = fmt.Fprintf(server, "$%d\r\n%s\r\n", len(body), body)
-	})
-	defer c.Close()
-
-	info, err := c.Hello("secret", "terrain")
-	if err != nil {
-		t.Fatalf("hello: %v", err)
-	}
-	if got := <-sent; got != "HELLO 2 AUTH secret TABLE terrain\r\n" {
-		t.Fatalf("sent %q", got)
-	}
-	if info["table"] != "terrain" || info["block_bits"] != "4" || info["server_version"] != "test" {
-		t.Fatalf("unexpected info %v", info)
-	}
-}
-
-func TestHelloRefusals(t *testing.T) {
-	cases := map[string]string{
-		"-ERR UNKNOWN_COMMAND HELLO\r\n":     "does not speak protocol 2",
-		"-ERR AUTH_FAILED invalid token\r\n": "AUTH_FAILED",
-		"$11\r\nprotocol=3\n\r\n":            `protocol "3"`,
-		"+OK\r\n":                            "expected bulk HELLO reply",
-	}
-	for reply, want := range cases {
-		c := newPipeClient(t, func(server net.Conn) {
-			_, _ = bufio.NewReader(server).ReadString('\n')
-			_, _ = server.Write([]byte(reply))
-		})
-		_, err := c.Hello("", "")
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("reply %q: got %v, want %q", reply, err, want)
-		}
-		_ = c.Close()
-	}
-
-	// A 1.x server that requires a token answers AUTH_REQUIRED even to a
-	// HELLO with a token; without a token the reply stays an auth error.
-	for token, want := range map[string]string{"tok": "does not speak protocol 2", "": "AUTH_REQUIRED"} {
-		c := newPipeClient(t, func(server net.Conn) {
-			_, _ = bufio.NewReader(server).ReadString('\n')
-			_, _ = server.Write([]byte("-ERR AUTH_REQUIRED use AUTH <token>\r\n"))
-		})
-		_, err := c.Hello(token, "")
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("token %q: got %v, want %q", token, err, want)
-		}
-		_ = c.Close()
 	}
 }

@@ -2,29 +2,10 @@
 
 `chunk-cli` is the command-line client for [`chunkdb`](https://github.com/chunkdb/chunkdb), a specialized chunk/grid storage engine.
 
-It provides direct terminal access to the chunk protocol for operational checks, debugging, and scripting.
+It sends [CQL](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md) statements, one-shot or from an interactive shell, and prints the replies for people or, with `--json`, for scripts.
 
-Speaks `chunkdb` protocol 2, which chunkdb 2.0 servers serve; see the engine's
-[compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
-It does not connect to 1.x servers: use `chunk-cli` 1.x with those.
-
-## Features
-
-- connection URIs:
-  - `chunk://` (plain TCP)
-  - `chunks://` (TLS)
-- block commands: `get`, `set`, `unset`, `mset`, `mget`
-- chunks as bit text: `chunk`, `chunkstate`, `chunkset`, `chunksetstate`
-- chunks as raw bytes: `chunkget`, `chunkput` (hex or file, optional zrle
-  transfer and version check)
-- world reads: `chunkexists`, `chunkscan`, `chunkrange`, `chunkradius`
-- versions and atomic batches: `chunkver`, `chunkput --if`, `chunkbatch`
-- `ping`, `info`, `walflush`, `metrics`, `shell`, `version`
-- table commands: `tables`, `tableinfo`, `use`, `tablecreate`, `tableset`,
-  `tabledrop`
-- table selection via `--table` or the URI path (`chunk://token@host:port/terrain`)
-- token via URI (`chunk://token@host:port/`) or `--token`
-- clear text output and explicit error messages
+Speaks `chunkdb` protocol 3; see the engine's [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
+A server of an earlier protocol is reported as such when connecting.
 
 ## Installation
 
@@ -47,199 +28,115 @@ go install ./cmd/chunk-cli
 
 ## Quick Start
 
-Default URI is `chunk://127.0.0.1:4242/`.
+Default URI is `chunk://127.0.0.1:4242/`. A statement is the arguments after the options, joined by spaces; quote it so the shell keeps quotes and `$` as they are.
 
 ```bash
-chunk-cli ping
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ info
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ set 0 0 1111000011110000
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ get 0 0
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ unset 0 0
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkstate 0 0
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkget --state --out chunk.bin 0 0
-chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ chunkput --state --in chunk.bin 1 0
+chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ PING
+chunk-cli "CREATE TABLE world (id u16 REQUIRED, light u4 DEFAULT 15, name text(32) NULL) CHUNK 16 x 16"
+chunk-cli "SET BLOCK 10 4 IN world id = 7, name = 'door'"
+chunk-cli "GET BLOCK 10 4 FROM world"
+chunk-cli --blocks "GET CHUNK 0 0 FROM world"
+chunk-cli "DESCRIBE world"
 ```
 
-Every command opens a connection with `HELLO 2`, which carries the token and
-the table. A wrong token, a missing token, or an unknown table fails the
-command before it runs.
+`SET BLOCK`, `DELETE BLOCK` and `SET CHUNK` print the chunk version after the write; `IF VERSION <v>` writes only while the chunk still has that version, otherwise the statement fails with `VERSION_MISMATCH current=<v>`.
 
-Block notes:
+## Output
 
-- `get <x> <y>` prints the bits, or `(unset)` for a block without a value;
-  `mget` prints one such line per block
-- `set <x> <y> 000...0` is distinct from `unset <x> <y>`
+Values print as the CQL literals that write them: numbers, `true`/`false`, `NULL`, text as `'it''s'`, bytes as `x'0d0a'`, bits as `b'10110'` (the first digit is the lowest bit).
 
-Chunk notes:
+```text
+$ chunk-cli "GET BLOCK 10 4 FROM world"
+id = 7
+light = 15
+name = 'door'
+$ chunk-cli "GET BLOCK 99 99 FROM world"
+NULL
+$ chunk-cli --blocks "GET CHUNK 0 0 FROM world COLUMNS id"
+version = 2
+schema_version = 1
+present = 1 of 256 blocks
+block 10 4
+  id = 7
+$ chunk-cli "SHOW TABLES"
+1) default
+2) world
+$ chunk-cli "SCAN CHUNKS FROM world"
+chunks:
+  1) [0, 0]
+more = false
+```
 
-- the chunk commands use the selected table's geometry, which the server
-  reports when the connection opens or on `use`
-- `chunk <cx> <cy>` prints the payload as bit text; an absent chunk prints
-  zero bits, so use `chunkexists` or `chunkstate` to tell it from an all-zero
-  chunk
-- `chunkstate <cx> <cy>` prints `<payload_bits>|<presence_bits>`, the
-  per-block presence included
-- `chunkset <cx> <cy> <bits>` replaces the chunk and makes every block present;
-  `<bits>` must be a full chunk-sized payload. `chunksetstate` writes mixed
-  present/absent state. Both print the chunk's version after the write
-- `chunkget` / `chunkput` move the raw bytes: the payload, and with `--state`
-  the presence bitmap after it. Bit `i` of the chunk is bit `i % 8` of byte
-  `i / 8`. `--zrle` transfers compressed (a `chunkput` is sent compressed only
-  when that is smaller)
-- `chunkput --if <version>` and `chunkbatch --if <version>` apply only while
-  the chunk still has that version, as printed by `chunkver` or by the last
-  write; otherwise they fail with `VERSION_MISMATCH current=<version>`
+- `GET BLOCK` prints one `column = value` line per column, or `NULL` for an absent block.
+- `GET CHUNK` prints the chunk version, the schema version (as `DESCRIBE` reports it) and how many blocks are present; with `--blocks` also every present block, by its world coordinates, with its values. `GET AREA` prints the same per chunk under `chunk <cx> <cy>`.
+- `DESCRIBE` prints the columns as `CREATE TABLE` writes them, then the options.
+- Maps print as `key = value` lines, arrays as numbered rows, an empty array as `(empty)`.
+- Chunks are decoded with the table's columns, which the CLI reads with `DESCRIBE` in the same round trip.
+
+With `--json` each reply is one line of JSON: a block is an object of its columns (`null` when absent), integers are exact numbers, `inf`, `-inf` and `nan` are strings, bytes are hex strings, bits strings of `0` and `1`.
+
+```text
+$ chunk-cli --json "GET BLOCK 10 4 FROM world"
+{"id":7,"light":15,"name":"door"}
+$ chunk-cli --json --blocks "GET CHUNK 0 0 FROM world COLUMNS id"
+{"version":2,"schema_version":1,"present":1,"block_count":256,"blocks":[{"x":10,"y":4,"values":{"id":7}}]}
+```
+
+Errors print as `error: <CODE> <message>` on stderr and the exit status is 1.
+
+## Copying Chunks
+
+`--out <file>` writes a reply's bytes to a file; for `GET CHUNK` that is the chunk form, every column included. `--in <file>` sends a file as the parameter `$1`, which `SET CHUNK` takes:
+
+```bash
+chunk-cli --out chunk.bin "GET CHUNK 0 0 FROM world"
+chunk-cli --in chunk.bin 'SET CHUNK 4 4 IN world $1'
+```
+
+The file is sent as it is. It carries the schema version of the table when it was dumped: if the table's columns changed since (`ALTER TABLE`), `SET CHUNK` fails with `SCHEMA_MISMATCH current=<v>` and nothing changes; dump the chunk again.
 
 ## Interactive Shell
-
-Start the interactive shell:
 
 ```bash
 chunk-cli --uri chunk://mytoken@127.0.0.1:4242/ shell
 ```
 
-The shell prompt is `chunk>`, or `chunk:<table>>` once a table is selected
-(`--table`, the URI path, or `use <table>`). The shell accepts every network
-command from the reference below, plus:
-
-- `quit`: sends `QUIT` and exits
-- `exit`: exits locally
-
-Example session:
+The shell reads one statement per line with the prompt `chunk>`; a line may start with `--json`, `--blocks`, `--in <file>` or `--out <file>`. `exit` or `quit` leaves the shell, `help` lists this. A failed statement prints its error and the shell goes on.
 
 ```text
-chunk> ping
+chunk> PING
 PONG
-chunk> get 0 0
-(unset)
-chunk> set 0 0 1111000011110000
-OK
-chunk> get 0 0
-1111000011110000
-chunk> chunkexists 0 0
-1
-chunk> chunkver 0 0
-3
-chunk> chunkstate 0 0
-<payload_bits>|<presence_bits>
-chunk> chunkget --state 0 0
-bytes=<n>
-<hex dump>
-chunk> use terrain
-table=terrain
-...
-chunk:terrain> quit
-BYE
+chunk> SET BLOCK 0 0 IN world id = 1
+2
+chunk> --json GET BLOCK 0 0 FROM world COLUMNS id
+{"id":1}
+chunk> exit
 ```
 
 ## Usage
 
 ```bash
-chunk-cli [global options] <command> [command args]
+chunk-cli [options] <CQL statement>
+chunk-cli [options] shell
+chunk-cli version | help
 ```
 
-Global options:
+Options:
 
 - `--uri <chunk://token@host:port/ | chunks://token@host:port/>`
 - `--token <token>`: preferred over the token in the URI
-- `--table <table>`: the table to work on; default: the URI path
-  (`chunk://token@host:port/<table>`), else the server's `default` table
 - `--timeout <duration>` (default: `5s`)
 - `--tls-insecure` (for self-signed TLS in `chunks://` mode)
 - `--tls-server-name <name>`
+- `--json`: print replies as JSON
+- `--blocks`: print the values of every present block of a chunk
+- `--in <file>`: send the file as the parameter `$1`
+- `--out <file>`: write the reply's bytes to the file
 
-## Command Reference
-
-- `ping`
-  - sends `PING`, expects simple response (`+PONG`)
-- `info`
-  - sends `INFO`, prints the selected table's runtime statistics
-- `get <x> <y>`
-  - sends `GET`, prints the block's bits or `(unset)`
-- `set <x> <y> <bits>`
-  - sends `SET`; validates `bits` as binary (`0`/`1`) before request
-- `unset <x> <y>`
-  - sends `UNSET`, clears explicit block presence, prints simple response
-- `mset <x> <y> <bits> [<x> <y> <bits> ...]`
-  - sends `MSET` (one round-trip for many blocks); validates each `bits`; prints simple response
-  - items apply in order and are not atomic as a group: on a server error, earlier items may already be applied (use `chunkbatch` for an atomic single-chunk update)
-- `mget <x> <y> [<x> <y> ...]`
-  - sends `MGET` (one round-trip for many blocks); prints one line per block:
-    its bits or `(unset)`
-- `chunkexists <cx> <cy>`
-  - sends `CHUNKEXISTS`, prints `1` when the chunk has explicit presence and `0` when absent
-- `chunk <cx> <cy>`
-  - sends `CHUNKGET`, prints the payload as bit text
-- `chunkstate <cx> <cy>`
-  - sends `CHUNKGET ... STATE`; prints `<payload_bits>|<presence_bits>`
-- `chunkset <cx> <cy> <bits>`
-  - sends `CHUNKPUT` with the payload; checks the bit count against the
-    table's geometry before sending; prints the chunk's version
-- `chunksetstate <cx> <cy> <payload_bits>|<presence_bits>`
-  - sends `CHUNKPUT ... STATE`; same checks and output as `chunkset`
-- `chunkget [--state] [--zrle] [--out <file>] <cx> <cy>`
-  - sends `CHUNKGET`
-  - default output: byte count (and with `--zrle` the compressed size) + hex dump
-  - with `--out`: writes the bytes to file and prints a summary
-- `chunkput [--state] [--zrle] [--if <version>] <cx> <cy> <hex>` |
-  `chunkput [flags] --in <file> <cx> <cy>`
-  - sends `CHUNKPUT` with the bytes `chunkget` prints, given as hex after the
-    coordinates or, with `--in`, read from a file; flags come before the
-    coordinates. Checks the size against the table's geometry before sending;
-    prints the chunk's version
-- `chunkscan <limit> [<cursor_cx> <cursor_cy>]`
-  - sends `CHUNKSCAN`; prints one line per array item: first `END` or
-    `CURSOR <cx> <cy>` (pass those coordinates to the next call to continue),
-    then one `<cx> <cy>` line per populated chunk
-- `chunkrange <cx0> <cy0> <cx1> <cy1>`
-  - sends `CHUNKRANGE` (max 256 chunks); prints one
-    `<cx> <cy> <payload_bits>|<presence_bits>` line per populated chunk
-- `chunkradius <cx> <cy> <radius_chunks>`
-  - sends `CHUNKRADIUS` (populated chunks within a disc of `radius_chunks`
-    around `<cx> <cy>`, max 256 chunks); same output shape as `chunkrange`
-- `chunkver <cx> <cy>`
-  - sends `CHUNKVER`; prints the chunk's opaque version token
-- `chunkbatch [--if <version>] <cx> <cy> SET <x> <y> <bits> | UNSET <x> <y> ...`
-  - sends `CHUNKBATCH` (atomic within one chunk); prints the chunk's version
-    after the batch
-- `walflush`
-  - sends `WALFLUSH`; on `OK`, all previously acknowledged writes are durable
-    even when the server runs in `relaxed` durability mode
-- `metrics`
-  - sends `METRICS`; prints Prometheus text-format runtime metrics
-- `tables`
-  - sends `TABLES`; prints one table name per line
-- `tableinfo <table>`
-  - sends `TABLEINFO`; prints the table's `key=value` lines (geometry,
-    options, store id)
-- `use <table>`
-  - sends `USE`; prints the same lines as `tableinfo`. In the shell, later
-    commands work on that table; as a single command it only checks the
-    table, so use `--table` to run a command on a table
-- `tablecreate <table> block_bits <n> [<key> <value> ...]`
-  - sends `TABLECREATE`; keys are the `tableinfo` names, for example
-    `chunk_width_blocks 32 durability_mode fsync-wal`
-- `tableset <table> <option> <value> [<option> <value> ...]`
-  - sends `TABLESET`; options are `durability_mode`, `checkpoint_updates`,
-    `checkpoint_wal_bytes`, `wal_group_commit_updates`, `checkpoint_compression`
-- `tabledrop <table>`
-  - sends `TABLEDROP`; deletes the table and its data
-- `shell`
-  - starts interactive mode with prompt `chunk>` (or `chunk:<table>>`)
-- `version`
-  - prints the CLI version and exits; opens no connection
-- `help` (also `--help`, `-h`)
-  - prints usage, commands, and global options; opens no connection
+Statements are single lines. Values are written as literals in the statement; a statement with `$` parameters needs `--in`. Statements name their table, so the URI path is not used.
 
 ## TLS (`chunks://`) Example
 
 ```bash
-chunk-cli --uri chunks://mytoken@127.0.0.1:4242/ --tls-insecure info
+chunk-cli --uri chunks://mytoken@127.0.0.1:4242/ --tls-insecure PING
 ```
-
-## Output and Errors
-
-- normal responses are printed in readable form (text commands preserve server text; `chunkget` includes the byte count)
-- errors are printed as `error: ...` and process exits non-zero
-- server `-ERR ...` responses are surfaced directly
-- a server without protocol 2 (chunkdb 1.x) is reported as such when connecting

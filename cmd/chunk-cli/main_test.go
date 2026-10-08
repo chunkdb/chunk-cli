@@ -1,127 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
+	"io"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/chunkdb/chunk-cli/internal/chunkclient"
 )
 
-func TestValidateBits(t *testing.T) {
-	if err := validateBits("010101"); err != nil {
-		t.Fatalf("expected valid bit string, got %v", err)
-	}
-	if err := validateBits("01a01"); err == nil {
-		t.Fatalf("expected error for non-binary bit string")
-	}
-}
-
-func TestValidateCommandArgs(t *testing.T) {
-	cases := []struct {
-		name    string
-		cmd     string
-		args    []string
-		wantErr bool
-	}{
-		{name: "ping ok", cmd: "ping", args: nil, wantErr: false},
-		{name: "tables ok", cmd: "tables", args: nil, wantErr: false},
-		{name: "tables extra", cmd: "tables", args: []string{"x"}, wantErr: true},
-		{name: "use ok", cmd: "use", args: []string{"terrain"}, wantErr: false},
-		{name: "use missing name", cmd: "use", args: nil, wantErr: true},
-		{name: "tableinfo ok", cmd: "tableinfo", args: []string{"terrain"}, wantErr: false},
-		{name: "tabledrop extra", cmd: "tabledrop", args: []string{"a", "b"}, wantErr: true},
-		{name: "tablecreate ok", cmd: "tablecreate", args: []string{"terrain", "block_bits", "4"}, wantErr: false},
-		{name: "tablecreate odd pairs", cmd: "tablecreate", args: []string{"terrain", "block_bits"}, wantErr: true},
-		{name: "tableset ok", cmd: "tableset", args: []string{"terrain", "checkpoint_updates", "3"}, wantErr: false},
-		{name: "tableset no option", cmd: "tableset", args: []string{"terrain"}, wantErr: true},
-		{name: "ping extra", cmd: "ping", args: []string{"x"}, wantErr: true},
-		{name: "get ok", cmd: "get", args: []string{"1", "2"}, wantErr: false},
-		{name: "get bad int", cmd: "get", args: []string{"a", "2"}, wantErr: true},
-		{name: "set ok", cmd: "set", args: []string{"1", "2", "0101"}, wantErr: false},
-		{name: "set bad bits", cmd: "set", args: []string{"1", "2", "01x1"}, wantErr: true},
-		{name: "set empty bits", cmd: "set", args: []string{"1", "2", ""}, wantErr: true},
-		{name: "unset ok", cmd: "unset", args: []string{"1", "2"}, wantErr: false},
-		{name: "unset bad int", cmd: "unset", args: []string{"1", "b"}, wantErr: true},
-		{name: "mset one triple ok", cmd: "mset", args: []string{"1", "2", "0101"}, wantErr: false},
-		{name: "mset two triples ok", cmd: "mset", args: []string{"1", "2", "0101", "3", "4", "1010"}, wantErr: false},
-		{name: "mset wrong arity", cmd: "mset", args: []string{"1", "2"}, wantErr: true},
-		{name: "mset empty", cmd: "mset", args: nil, wantErr: true},
-		{name: "mset bad bits", cmd: "mset", args: []string{"1", "2", "01x1"}, wantErr: true},
-		{name: "mset bad int", cmd: "mset", args: []string{"a", "2", "0101"}, wantErr: true},
-		{name: "mget one pair ok", cmd: "mget", args: []string{"1", "2"}, wantErr: false},
-		{name: "mget two pairs ok", cmd: "mget", args: []string{"1", "2", "3", "4"}, wantErr: false},
-		{name: "mget wrong arity", cmd: "mget", args: []string{"1", "2", "3"}, wantErr: true},
-		{name: "mget empty", cmd: "mget", args: nil, wantErr: true},
-		{name: "mget bad int", cmd: "mget", args: []string{"1", "b"}, wantErr: true},
-		{name: "chunkexists ok", cmd: "chunkexists", args: []string{"0", "0"}, wantErr: false},
-		{name: "chunkexists bad int", cmd: "chunkexists", args: []string{"a", "0"}, wantErr: true},
-		{name: "chunkset ok", cmd: "chunkset", args: []string{"0", "0", "0101"}, wantErr: false},
-		{name: "chunkset bad bits", cmd: "chunkset", args: []string{"0", "0", "01x1"}, wantErr: true},
-		{name: "chunkstate ok", cmd: "chunkstate", args: []string{"0", "0"}, wantErr: false},
-		{name: "chunkstate bad int", cmd: "chunkstate", args: []string{"0", "x"}, wantErr: true},
-		{name: "chunksetstate ok", cmd: "chunksetstate", args: []string{"0", "0", "0101|1010"}, wantErr: false},
-		{name: "chunksetstate missing separator", cmd: "chunksetstate", args: []string{"0", "0", "01011010"}, wantErr: true},
-		{name: "chunk ok", cmd: "chunk", args: []string{"0", "0"}, wantErr: false},
-		{name: "chunkget ok", cmd: "chunkget", args: []string{"--state", "--zrle", "--out", "x", "1", "2"}, wantErr: false},
-		{name: "chunkget bad int", cmd: "chunkget", args: []string{"1", "y"}, wantErr: true},
-		{name: "chunkget unknown flag", cmd: "chunkget", args: []string{"--raw", "1", "2"}, wantErr: true},
-		{name: "chunkput hex ok", cmd: "chunkput", args: []string{"1", "2", "a0a1"}, wantErr: false},
-		{name: "chunkput flags ok", cmd: "chunkput", args: []string{"--state", "--zrle", "--if", "7", "1", "2", "a0a1ff"}, wantErr: false},
-		{name: "chunkput file ok", cmd: "chunkput", args: []string{"--in", "x", "1", "2"}, wantErr: false},
-		{name: "chunkput bad version", cmd: "chunkput", args: []string{"--if", "-1", "1", "2", "a0"}, wantErr: true},
-		{name: "chunkput bad hex", cmd: "chunkput", args: []string{"1", "2", "zz"}, wantErr: true},
-		{name: "chunkput bad int", cmd: "chunkput", args: []string{"x", "2", "a0"}, wantErr: true},
-		{name: "chunkput missing payload", cmd: "chunkput", args: []string{"1", "2"}, wantErr: true},
-		{name: "chunkput in and hex", cmd: "chunkput", args: []string{"--in", "x", "1", "2", "a0"}, wantErr: true},
-		{name: "shell ok", cmd: "shell", args: nil, wantErr: false},
-		{name: "shell extra", cmd: "shell", args: []string{"ping"}, wantErr: true},
-		{name: "chunkscan ok", cmd: "chunkscan", args: []string{"10"}, wantErr: false},
-		{name: "chunkscan cursor ok", cmd: "chunkscan", args: []string{"10", "-1", "2"}, wantErr: false},
-		{name: "chunkscan bad limit", cmd: "chunkscan", args: []string{"-1"}, wantErr: true},
-		{name: "chunkscan wrong arity", cmd: "chunkscan", args: []string{"10", "1"}, wantErr: true},
-		{name: "chunkrange ok", cmd: "chunkrange", args: []string{"-1", "-1", "1", "1"}, wantErr: false},
-		{name: "chunkrange wrong arity", cmd: "chunkrange", args: []string{"0", "0", "1"}, wantErr: true},
-		{name: "chunkradius ok", cmd: "chunkradius", args: []string{"0", "0", "2"}, wantErr: false},
-		{name: "chunkradius bad radius", cmd: "chunkradius", args: []string{"0", "0", "-2"}, wantErr: true},
-		{name: "chunkver ok", cmd: "chunkver", args: []string{"0", "0"}, wantErr: false},
-		{name: "chunkver bad int", cmd: "chunkver", args: []string{"a", "0"}, wantErr: true},
-		{name: "chunkbatch set ok", cmd: "chunkbatch", args: []string{"0", "0", "SET", "1", "2", "0101"}, wantErr: false},
-		{name: "chunkbatch versioned mixed ok", cmd: "chunkbatch", args: []string{"--if", "7", "0", "0", "SET", "1", "2", "0101", "UNSET", "3", "4"}, wantErr: false},
-		{name: "chunkbatch bad version", cmd: "chunkbatch", args: []string{"--if", "x", "0", "0", "UNSET", "1", "2"}, wantErr: true},
-		{name: "chunkbatch old placeholder", cmd: "chunkbatch", args: []string{"0", "0", "-", "SET", "1", "2", "0101"}, wantErr: true},
-		{name: "chunkbatch bad op", cmd: "chunkbatch", args: []string{"0", "0", "NOPE", "1", "2"}, wantErr: true},
-		{name: "chunkbatch truncated set", cmd: "chunkbatch", args: []string{"0", "0", "SET", "1", "2"}, wantErr: true},
-		{name: "chunkbatch missing ops", cmd: "chunkbatch", args: []string{"0", "0"}, wantErr: true},
-		{name: "walflush ok", cmd: "walflush", args: nil, wantErr: false},
-		{name: "walflush extra", cmd: "walflush", args: []string{"x"}, wantErr: true},
-		{name: "metrics ok", cmd: "metrics", args: nil, wantErr: false},
-		{name: "metrics extra", cmd: "metrics", args: []string{"x"}, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateCommandArgs(tc.cmd, tc.args)
-			if tc.wantErr && err == nil {
-				t.Fatalf("expected error")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 func TestParseGlobalFlagsDefaults(t *testing.T) {
-	opts, args, err := parseGlobalFlags([]string{"ping"})
+	opts, args, err := parseGlobalFlags([]string{"PING"}, io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.URI != "chunk://127.0.0.1:4242/" {
-		t.Fatalf("unexpected default uri: %q", opts.URI)
+	if opts.URI != "chunk://127.0.0.1:4242/" || opts.Timeout != 5*time.Second || opts.Statement != (statementOptions{}) {
+		t.Fatalf("unexpected defaults: %+v", opts)
 	}
-	if opts.Timeout != 5*time.Second {
-		t.Fatalf("unexpected default timeout: %v", opts.Timeout)
-	}
-	if len(args) != 1 || args[0] != "ping" {
+	if len(args) != 1 || args[0] != "PING" {
 		t.Fatalf("unexpected remaining args: %#v", args)
 	}
 }
@@ -133,51 +33,159 @@ func TestParseGlobalFlagsCustomValues(t *testing.T) {
 		"--timeout", "3s",
 		"--tls-insecure",
 		"--tls-server-name", "example.com",
-		"--table", "terrain",
-		"get", "1", "2",
-	})
+		"--json", "--blocks", "--in", "a.bin", "--out", "b.bin",
+		"GET", "BLOCK", "-1", "2", "FROM", "world",
+	}, io.Discard)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if opts.URI != "chunks://token@example.com:9999/" {
-		t.Fatalf("unexpected uri: %q", opts.URI)
+	if opts.URI != "chunks://token@example.com:9999/" || opts.TokenOverride != "override" || opts.Timeout != 3*time.Second ||
+		!opts.TLSInsecure || opts.TLSServerName != "example.com" {
+		t.Fatalf("unexpected options: %+v", opts)
 	}
-	if opts.TokenOverride != "override" {
-		t.Fatalf("unexpected token: %q", opts.TokenOverride)
+	if opts.Statement != (statementOptions{json: true, blocks: true, in: "a.bin", out: "b.bin"}) {
+		t.Fatalf("unexpected statement options: %+v", opts.Statement)
 	}
-	if opts.Timeout != 3*time.Second {
-		t.Fatalf("unexpected timeout: %v", opts.Timeout)
-	}
-	if !opts.TLSInsecure {
-		t.Fatalf("expected tls-insecure to be true")
-	}
-	if opts.TLSServerName != "example.com" {
-		t.Fatalf("unexpected tls server name: %q", opts.TLSServerName)
-	}
-	if opts.Table != "terrain" {
-		t.Fatalf("unexpected table: %q", opts.Table)
-	}
-	if len(args) != 3 || args[0] != "get" || args[1] != "1" || args[2] != "2" {
+	if strings.Join(args, " ") != "GET BLOCK -1 2 FROM world" {
 		t.Fatalf("unexpected remaining args: %#v", args)
 	}
 }
 
-func TestParseGlobalFlagsHelp(t *testing.T) {
-	_, _, err := parseGlobalFlags([]string{"--help"})
-	if err == nil {
-		t.Fatalf("expected help error")
-	}
-	if err != flag.ErrHelp {
+func TestParseGlobalFlagsErrors(t *testing.T) {
+	if _, _, err := parseGlobalFlags([]string{"--help"}, io.Discard); !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("expected flag.ErrHelp, got %v", err)
+	}
+	// Statements name their table; --table is gone.
+	if _, _, err := parseGlobalFlags([]string{"--table", "x", "PING"}, io.Discard); err == nil {
+		t.Fatal("expected an error for --table")
 	}
 }
 
-func TestCommandVerb(t *testing.T) {
-	if got := commandVerb("GET 10 12"); got != "get" {
-		t.Fatalf("unexpected verb: %q", got)
+func TestRunLocalCommands(t *testing.T) {
+	for _, tc := range []struct {
+		args       []string
+		code       int
+		out, error string
+	}{
+		{[]string{"version"}, 0, version + "\n", ""},
+		{[]string{"help"}, 0, "Usage:", ""},
+		{[]string{"--help"}, 0, "Usage:", ""},
+		{nil, 1, "", "Usage:"},
+		{[]string{"--uri", "http://x/", "PING"}, 1, "", "error: unsupported scheme"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(tc.args, strings.NewReader(""), &stdout, &stderr)
+		if code != tc.code || !strings.Contains(stdout.String(), tc.out) || !strings.Contains(stderr.String(), tc.error) {
+			t.Errorf("%v: got %d, %q, %q", tc.args, code, stdout.String(), stderr.String())
+		}
 	}
-	if got := commandVerb(""); got != "command" {
-		t.Fatalf("unexpected fallback verb: %q", got)
+}
+
+func TestClassify(t *testing.T) {
+	cases := map[string]statementInfo{
+		"GET BLOCK 10 4 FROM world":                        {kind: statementGetBlock, table: "world"},
+		"get block -1 4 from world columns id, name":       {kind: statementGetBlock, table: "world", columns: []string{"id", "name"}},
+		"GET CHUNK -2 3 FROM world COLUMNS a":              {kind: statementGetChunk, table: "world", columns: []string{"a"}, cx: -2, cy: 3},
+		"GET AREA 0 0 TO 1 1 FROM w":                       {kind: statementGetArea, table: "w"},
+		"GET AREA AROUND 0 0 RADIUS 2 FROM w COLUMNS a,b":  {kind: statementGetArea, table: "w", columns: []string{"a", "b"}},
+		"DESCRIBE world":                                   {kind: statementDescribe, table: "world"},
+		"SET BLOCK 0 0 IN world name = 'GET BLOCK FROM x'": {},
+		"GET CHUNK x 0 FROM world":                         {},
+		"GET BLOCK 0 0 FROM":                               {},
+		"GET BLOCK 0 0 FROM w LIMIT":                       {},
+		"SHOW TABLES":                                      {},
+		"PING":                                             {},
+		"":                                                 {},
+		"DESCRIBE":                                         {},
+		"GET BLOCK 0 0 FROM w COLUMNS":                     {},
+		"GET SOMETHING 0 0 FROM w":                         {},
+	}
+	for statement, want := range cases {
+		if got := classify(statement); !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: got %+v, want %+v", statement, got, want)
+		}
+	}
+}
+
+func TestParseLineOptions(t *testing.T) {
+	defaults := statementOptions{json: true}
+	opts, statement, err := parseLineOptions("--blocks --out a.bin  GET CHUNK 0 0 FROM w  ", defaults)
+	if err != nil || statement != "GET CHUNK 0 0 FROM w" || opts != (statementOptions{json: true, blocks: true, out: "a.bin"}) {
+		t.Fatalf("got %+v, %q, %v", opts, statement, err)
+	}
+	opts, statement, err = parseLineOptions("--in c.bin SET CHUNK 1 0 IN w $1", statementOptions{})
+	if err != nil || statement != "SET CHUNK 1 0 IN w $1" || opts.in != "c.bin" {
+		t.Fatalf("got %+v, %q, %v", opts, statement, err)
+	}
+	opts, statement, err = parseLineOptions("SET BLOCK 0 0 IN w name = '--json  x'", defaults)
+	if err != nil || statement != "SET BLOCK 0 0 IN w name = '--json  x'" || opts != defaults {
+		t.Fatalf("got %+v, %q, %v", opts, statement, err)
+	}
+	for _, line := range []string{"--json", "--in", "--out ", "--bogus PING"} {
+		if _, _, err := parseLineOptions(line, defaults); err == nil {
+			t.Errorf("%q: expected an error", line)
+		}
+	}
+}
+
+func TestFormatValue(t *testing.T) {
+	typ := func(text string) *chunkclient.ColumnType {
+		parsed, err := chunkclient.ParseColumnType(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &parsed
+	}
+	bulk := func(s string) chunkclient.Value {
+		return chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte(s)}
+	}
+	for _, tc := range []struct {
+		value chunkclient.Value
+		typ   *chunkclient.ColumnType
+		want  string
+	}{
+		{chunkclient.Value{Kind: chunkclient.KindNull}, typ("u8"), "NULL"},
+		{chunkclient.Value{Kind: chunkclient.KindBool, Bool: true}, typ("bool"), "true"},
+		{chunkclient.Value{Kind: chunkclient.KindInteger, Text: "18446744073709551615"}, typ("u64"), "18446744073709551615"},
+		{chunkclient.Value{Kind: chunkclient.KindDouble, Text: "-inf"}, typ("f64"), "-inf"},
+		{bulk("it's"), typ("text(8)"), "'it''s'"},
+		{bulk("a\nb"), typ("text(8)"), `"a\nb"`},
+		{bulk("\x00\r\n"), typ("bytes(8)"), "x'000d0a'"},
+		{bulk(""), typ("bytes(8)"), "x''"},
+		{bulk("\x05"), typ("bits(5)"), "b'10100'"},
+		{bulk("default"), nil, "default"},
+		{bulk("\xff"), nil, "x'ff'"},
+		{chunkclient.Value{Kind: chunkclient.KindSimple, Text: "OK"}, nil, "OK"},
+	} {
+		if got := formatValue(tc.value, tc.typ); got != tc.want {
+			t.Errorf("formatValue(%+v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestPrintReply(t *testing.T) {
+	scan := chunkclient.Value{Kind: chunkclient.KindMap, Map: []chunkclient.MapEntry{
+		{Key: chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte("chunks")}, Value: chunkclient.Value{Kind: chunkclient.KindArray, Items: []chunkclient.Value{
+			{Kind: chunkclient.KindArray, Items: []chunkclient.Value{{Kind: chunkclient.KindInteger, Text: "0"}, {Kind: chunkclient.KindInteger, Text: "-1"}}},
+		}}},
+		{Key: chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte("more")}, Value: chunkclient.Value{Kind: chunkclient.KindBool}},
+	}}
+	var out bytes.Buffer
+	if err := printReply(&out, scan, statementOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "chunks:\n  1) [0, -1]\nmore = false\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := printReply(&out, scan, statementOptions{json: true}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"chunks":[[0,-1]],"more":false}` + "\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := printReply(&out, chunkclient.Value{Kind: chunkclient.KindArray}, statementOptions{}); err != nil || out.String() != "(empty)\n" {
+		t.Fatalf("got %q, %v", out.String(), err)
 	}
 }
