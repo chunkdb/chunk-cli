@@ -11,8 +11,8 @@ func TestParseChunkURI(t *testing.T) {
 	if parsed.Secure {
 		t.Fatalf("expected insecure URI")
 	}
-	if parsed.Token != "token" {
-		t.Fatalf("unexpected token: %q", parsed.Token)
+	if parsed.User != "token" || parsed.Password != "" {
+		t.Fatalf("unexpected user: %q %q", parsed.User, parsed.Password)
 	}
 	if parsed.Host != "localhost" {
 		t.Fatalf("unexpected host: %q", parsed.Host)
@@ -58,5 +58,31 @@ func TestParseTablePath(t *testing.T) {
 	}
 	if _, err := Parse("chunk://t@h:1/a/b"); err == nil {
 		t.Fatal("expected an error for a two-segment path")
+	}
+}
+
+func TestParseCredentials(t *testing.T) {
+	cases := []struct {
+		raw, user, password string
+	}{
+		{"chunk://h:1/", "", ""},
+		{"chunk://bot@h:1/", "bot", ""},
+		{"chunk://bot:pw@h:1/", "bot", "pw"},
+		{"chunks://bot:p%3Aw%40x%2Fy%25@h:1/", "bot", "p:w@x/y%"},
+		{"chunk://b%6Ft:@h:1/", "bot", ""},
+	}
+	for _, tc := range cases {
+		parsed, err := Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.raw, err)
+		}
+		if parsed.User != tc.user || parsed.Password != tc.password || parsed.Host != "h" {
+			t.Fatalf("Parse(%q) = %+v, want user %q, password %q", tc.raw, parsed, tc.user, tc.password)
+		}
+	}
+	for _, raw := range []string{"chunk://:pw@h:1/", "chunk://bot:%zz@h:1/"} {
+		if _, err := Parse(raw); err == nil {
+			t.Fatalf("Parse(%q): expected an error", raw)
+		}
 	}
 }

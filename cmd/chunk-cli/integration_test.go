@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,13 +24,40 @@ import (
 // These tests run the CLI against a chunkdb server binary named by
 // CHUNKDB_SERVER_BIN (built with TLS); they are skipped without one.
 
-const testToken = "chunk-token"
+// The administrator the test servers create; the password needs escaping in
+// a URI.
+const (
+	adminUser     = "admin"
+	adminPassword = "admin pw:/@%"
+)
 
 type testServer struct {
-	uri string
+	// uri logs in as the administrator (or without a user with --auth none).
+	uri     string
+	scheme  string
+	address string
 }
 
+// uriFor returns the server's URI with the login of user (none when empty).
+func (s *testServer) uriFor(user, password string) string {
+	u := neturl.URL{Scheme: s.scheme, Host: s.address, Path: "/"}
+	switch {
+	case user != "" && password != "":
+		u.User = neturl.UserPassword(user, password)
+	case user != "":
+		u.User = neturl.User(user)
+	}
+	return u.String()
+}
+
+// startServer starts a server with an administrator.
 func startServer(t *testing.T, tls bool) *testServer {
+	return startServerWith(t, tls, true)
+}
+
+// startServerWith starts a server with an administrator, or with --auth none
+// when users is false.
+func startServerWith(t *testing.T, tls, users bool) *testServer {
 	t.Helper()
 	binary := os.Getenv("CHUNKDB_SERVER_BIN")
 	if binary == "" {
@@ -43,12 +71,18 @@ func startServer(t *testing.T, tls bool) *testServer {
 	port := listener.Addr().(*net.TCPAddr).Port
 	_ = listener.Close()
 
-	scheme := "chunk"
+	s := &testServer{scheme: "chunk", address: "127.0.0.1:" + strconv.Itoa(port)}
 	if tls {
-		scheme = "chunks"
+		s.scheme = "chunks"
 	}
-	uri := scheme + "://" + testToken + "@127.0.0.1:" + strconv.Itoa(port) + "/"
-	args := []string{"--listen-uri", uri, "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", "4", "--log-level", "warn"}
+	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", "4", "--log-level", "warn"}
+	if users {
+		args = append(args, "--admin-user", adminUser, "--admin-password-file", writePasswordFile(t, adminPassword))
+		s.uri = s.uriFor(adminUser, adminPassword)
+	} else {
+		args = append(args, "--auth", "none")
+		s.uri = s.uriFor("", "")
+	}
 	if tls {
 		cert, key := writeTLSFixture(t)
 		args = append(args, "--tls-cert", cert, "--tls-key", key)
@@ -75,19 +109,27 @@ func startServer(t *testing.T, tls bool) *testServer {
 		}
 	})
 
-	address := "127.0.0.1:" + strconv.Itoa(port)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", s.address, 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return &testServer{uri: uri}
+			return s
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("server did not start on %s: %s", address, output.String())
+			t.Fatalf("server did not start on %s: %s", s.address, output.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func writePasswordFile(t *testing.T, password string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte(password+"\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
 }
 
 func writeTLSFixture(t *testing.T) (string, string) {
@@ -130,8 +172,14 @@ func writeTLSFixture(t *testing.T) (string, string) {
 // stdout and stderr.
 func (s *testServer) cli(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
+	return s.cliAt(t, s.uri, stdin, args...)
+}
+
+// cliAt runs chunk-cli with the URI.
+func (s *testServer) cliAt(t *testing.T, uri, stdin string, args ...string) (int, string, string) {
+	t.Helper()
 	var stdout, stderr bytes.Buffer
-	code := run(append([]string{"--uri", s.uri, "--tls-insecure"}, args...), strings.NewReader(stdin), &stdout, &stderr)
+	code := run(append([]string{"--uri", uri, "--tls-insecure"}, args...), strings.NewReader(stdin), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -428,23 +476,26 @@ func TestCLIShell(t *testing.T) {
 }
 
 func TestCLIConnection(t *testing.T) {
+	t.Setenv(passwordEnv, "")
 	s := startServer(t, false)
-	wrong := strings.Replace(s.uri, testToken, "wrong", 1)
-	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--uri", wrong, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 1 ||
-		!strings.Contains(stderr.String(), "connecting failed: AUTH_FAILED") {
-		t.Fatalf("wrong token: %d %q", code, stderr.String())
+	expect := func(name, uri string, code int, out, errText string, args ...string) {
+		t.Helper()
+		gotCode, gotOut, gotErr := s.cliAt(t, uri, "", args...)
+		if gotCode != code || gotOut != out || !strings.Contains(gotErr, errText) {
+			t.Fatalf("%s: got exit %d, stdout %q, stderr %q", name, gotCode, gotOut, gotErr)
+		}
 	}
-	stderr.Reset()
-	if code := run([]string{"--uri", wrong, "--token", testToken, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 0 || stdout.String() != "PONG\n" {
-		t.Fatalf("--token: %d %q %q", code, stdout.String(), stderr.String())
-	}
-	stderr.Reset()
-	anonymous := strings.Replace(s.uri, testToken+"@", "", 1)
-	if code := run([]string{"--uri", anonymous, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 1 ||
-		!strings.Contains(stderr.String(), "AUTH_REQUIRED") {
-		t.Fatalf("no token: %d %q", code, stderr.String())
-	}
+	expect("URI login", s.uri, 0, "PONG\n", "", "PING")
+	expect("--user and --password-file", s.uriFor("", ""), 0, "PONG\n", "", "--user", adminUser, "--password-file", writePasswordFile(t, adminPassword), "PING")
+	expect("--password-file over the URI", s.uriFor(adminUser, "wrong"), 0, "PONG\n", "", "--password-file", writePasswordFile(t, adminPassword), "PING")
+	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password\n", "PING")
+	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password\n", "PING")
+	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED", "PING")
+	expect("no user", s.uriFor("", ""), 1, "", "(log in with --user or chunk://user:password@host/)", "PING")
+	expect("no password", s.uriFor(adminUser, ""), 1, "", "error: no password for user admin", "PING")
+	t.Setenv(passwordEnv, adminPassword)
+	expect(passwordEnv, s.uriFor(adminUser, ""), 0, "PONG\n", "", "PING")
+	t.Setenv(passwordEnv, "")
 
 	secure := startServer(t, true)
 	if out := secure.ok(t, "PING"); out != "PONG\n" {
@@ -455,9 +506,90 @@ func TestCLIConnection(t *testing.T) {
 	if out := secure.ok(t, "GET BLOCK 0 0 FROM world COLUMNS blob"); out != "blob = x'0d0a00'\n" {
 		t.Fatalf("TLS GET BLOCK: %q", out)
 	}
-	stderr.Reset()
+	if code, _, errOut := secure.cliAt(t, secure.uriFor(adminUser, "wrong"), "", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
+		t.Fatalf("TLS wrong password: %d %q", code, errOut)
+	}
+	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--uri", secure.uri, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 1 ||
 		!strings.Contains(stderr.String(), "certificate") {
 		t.Fatalf("TLS without --tls-insecure: %d %q", code, stderr.String())
+	}
+
+	// A server without users logs in without a user.
+	open := startServerWith(t, false, false)
+	if out := open.ok(t, "PING"); out != "PONG\n" {
+		t.Fatalf("--auth none PING: %q", out)
+	}
+	if code, _, errOut := open.cliAt(t, open.uriFor(adminUser, adminPassword), "", "PING"); code != 1 || !strings.Contains(errOut, "runs without users") {
+		t.Fatalf("--auth none with a user: %d %q", code, errOut)
+	}
+}
+
+func TestCLIUsers(t *testing.T) {
+	t.Setenv(passwordEnv, "")
+	s := startServer(t, false)
+	s.ok(t, createWorld)
+	s.ok(t, "SET BLOCK 0 0 IN world id = 3")
+
+	botPassword := writePasswordFile(t, "bot: first@")
+	if out := s.ok(t, "--new-password-file", botPassword, "CREATE USER bot PASSWORD"); out != "OK\n" {
+		t.Fatalf("CREATE USER: %q", out)
+	}
+	if out := s.ok(t, "GRANT READ ON world TO bot"); out != "OK\n" {
+		t.Fatalf("GRANT: %q", out)
+	}
+	if out := s.ok(t, "--json", "SHOW USERS"); !strings.Contains(out, `{"name":"bot","manages_users":false,"grants":{"world":"READ"}}`) {
+		t.Fatalf("SHOW USERS: %q", out)
+	}
+
+	bot := func(password string, args ...string) (int, string, string) {
+		t.Helper()
+		return s.cliAt(t, s.uriFor("bot", password), "", args...)
+	}
+	if code, out, errOut := bot("bot: first@", "GET BLOCK 0 0 FROM world COLUMNS id"); code != 0 || out != "id = 3\n" {
+		t.Fatalf("bot reads: %d %q %q", code, out, errOut)
+	}
+	for statement, want := range map[string]string{
+		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED WRITE on world\n",
+		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED MANAGES USERS",
+		"SHOW METRICS":                  "error: PERMISSION_DENIED ADMIN on *",
+	} {
+		if code, out, errOut := bot("bot: first@", statement); code != 1 || out != "" || !strings.HasPrefix(errOut, want) {
+			t.Fatalf("bot %s: %d %q %q", statement, code, out, errOut)
+		}
+	}
+
+	// A user changes their own password.
+	if code, out, errOut := bot("bot: first@", "--new-password-file", writePasswordFile(t, "second"), "ALTER USER bot PASSWORD"); code != 0 || out != "OK\n" {
+		t.Fatalf("own ALTER USER: %d %q %q", code, out, errOut)
+	}
+	if code, _, errOut := bot("bot: first@", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
+		t.Fatalf("old password: %d %q", code, errOut)
+	}
+	if code, out, _ := bot("second", "PING"); code != 0 || out != "PONG\n" {
+		t.Fatalf("new password: %d %q", code, out)
+	}
+
+	// Without the right the table reads as missing.
+	s.ok(t, "REVOKE READ ON world FROM bot")
+	if code, _, errOut := bot("second", "GET BLOCK 0 0 FROM world"); code != 1 || !strings.Contains(errOut, "NO_TABLE") {
+		t.Fatalf("after REVOKE: %d %q", code, errOut)
+	}
+
+	s.fails(t, "PASSWORD needs --new-password-file", "CREATE USER carol PASSWORD")
+	s.fails(t, "--in cannot be used with PASSWORD", "--in", botPassword, "--new-password-file", botPassword, "CREATE USER carol PASSWORD")
+	s.fails(t, "empty", "--new-password-file", writePasswordFile(t, ""), "CREATE USER carol PASSWORD")
+
+	// In the shell, with a line option; a user who manages users.
+	script := "--new-password-file " + writePasswordFile(t, "carol") + " CREATE USER carol PASSWORD MANAGES USERS\nDROP USER bot\nexit\n"
+	if code, out, errOut := s.cli(t, script, "shell"); code != 0 || out != "chunk> OK\nchunk> OK\nchunk> " || errOut != "" {
+		t.Fatalf("shell: %d %q %q", code, out, errOut)
+	}
+	if code, out, errOut := s.cliAt(t, s.uriFor("carol", "carol"), "", "--json", "SHOW USERS"); code != 0 ||
+		!strings.Contains(out, `{"name":"carol","manages_users":true,"grants":{}}`) || strings.Contains(out, `"bot"`) {
+		t.Fatalf("carol SHOW USERS: %d %q %q", code, out, errOut)
+	}
+	if code, _, errOut := bot("second", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
+		t.Fatalf("dropped user: %d %q", code, errOut)
 	}
 }

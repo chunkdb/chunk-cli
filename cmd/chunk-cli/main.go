@@ -18,7 +18,8 @@ const version = "1.2.0"
 
 type globalOptions struct {
 	URI           string
-	TokenOverride string
+	User          string
+	PasswordFile  string
 	Timeout       time.Duration
 	TLSInsecure   bool
 	TLSServerName string
@@ -62,7 +63,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
-	client, err := connect(opts)
+	term := console{in: stdin, out: stderr}
+	client, err := connect(opts, term)
 	if err != nil {
 		return fail(err)
 	}
@@ -71,9 +73,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}()
 
 	if shell {
-		err = runShell(client, stdin, stdout, stderr, opts.Statement)
+		err = runShell(client, term, stdout, opts.Statement)
 	} else {
-		err = execute(client, strings.Join(rest, " "), opts.Statement, stdout)
+		err = execute(client, strings.Join(rest, " "), opts.Statement, stdout, term)
 	}
 	if err != nil {
 		return fail(err)
@@ -81,15 +83,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// connect opens the connection and sends HELLO 3.
-func connect(opts globalOptions) (*chunkclient.Client, error) {
+// connect opens the connection and logs in with HELLO 3.
+func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
 	parsedURI, err := chunkuri.Parse(opts.URI)
 	if err != nil {
 		return nil, err
 	}
-	token := parsedURI.Token
-	if opts.TokenOverride != "" {
-		token = opts.TokenOverride
+	login, err := loginFor(opts, parsedURI, term)
+	if err != nil {
+		return nil, err
 	}
 	client, err := chunkclient.Dial(chunkclient.Config{
 		URI:           parsedURI,
@@ -100,8 +102,11 @@ func connect(opts globalOptions) (*chunkclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := client.Hello(token); err != nil {
+	if _, err := client.Hello(login); err != nil {
 		_ = client.Close()
+		if login.User == "" && errors.Is(err, chunkclient.ErrAuthRequired) {
+			return nil, fmt.Errorf("connecting failed: %w (log in with --user or chunk://user:password@host/)", err)
+		}
 		return nil, fmt.Errorf("connecting failed: %w", err)
 	}
 	return client, nil
@@ -109,8 +114,9 @@ func connect(opts globalOptions) (*chunkclient.Client, error) {
 
 // runShell reads one statement per line. A server error is printed and the
 // shell goes on; an error that leaves the connection unusable ends it.
-func runShell(client *chunkclient.Client, input io.Reader, stdout, stderr io.Writer, defaults statementOptions) error {
-	scanner := bufio.NewScanner(input)
+func runShell(client *chunkclient.Client, term console, stdout io.Writer, defaults statementOptions) error {
+	stderr := term.out
+	scanner := bufio.NewScanner(term.in)
 	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
 	for {
 		if _, err := fmt.Fprint(stdout, "chunk> "); err != nil {
@@ -134,7 +140,7 @@ func runShell(client *chunkclient.Client, input io.Reader, stdout, stderr io.Wri
 		}
 		opts, statement, err := parseLineOptions(line, defaults)
 		if err == nil {
-			err = execute(client, statement, opts, stdout)
+			err = execute(client, statement, opts, stdout, term)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -152,8 +158,9 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.SetOutput(stderr)
 	fs.Usage = func() {}
 
-	fs.StringVar(&opts.URI, "uri", "chunk://127.0.0.1:4242/", "connection URI: chunk://token@host:port/ or chunks://token@host:port/")
-	fs.StringVar(&opts.TokenOverride, "token", "", "token override (preferred over token in URI)")
+	fs.StringVar(&opts.URI, "uri", "chunk://127.0.0.1:4242/", "connection URI: chunk://user:password@host:port/ or chunks://user:password@host:port/")
+	fs.StringVar(&opts.User, "user", "", "the user to log in as (preferred over the URI's user)")
+	fs.StringVar(&opts.PasswordFile, "password-file", "", "read the login password from the file's first line")
 	fs.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "network timeout")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
@@ -161,6 +168,7 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.BoolVar(&opts.Statement.blocks, "blocks", false, "print the values of every present block of a chunk")
 	fs.StringVar(&opts.Statement.in, "in", "", "send the file as parameter $1")
 	fs.StringVar(&opts.Statement.out, "out", "", "write the reply's bytes to the file")
+	fs.StringVar(&opts.Statement.newPasswordFile, "new-password-file", "", "the password of CREATE USER / ALTER USER ... PASSWORD")
 
 	if err := fs.Parse(args); err != nil {
 		return globalOptions{}, nil, err
@@ -169,7 +177,9 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 }
 
 const shellHelp = `Type one CQL statement per line; exit or quit leaves the shell.
-A line may start with --json, --blocks, --in <file> or --out <file>.
+A line may start with --json, --blocks, --in <file>, --out <file> or
+--new-password-file <file>. CREATE USER <name> PASSWORD and ALTER USER <name>
+PASSWORD ask for the password and send its verifier.
 `
 
 func printUsage(w io.Writer) {
@@ -181,8 +191,10 @@ Usage:
   chunk-cli version | help
 
 Options:
-  --uri <chunk://token@host:port/ | chunks://token@host:port/>
-  --token <token>
+  --uri <chunk://user:password@host:port/ | chunks://user:password@host:port/>
+  --user <name>             the user to log in as (preferred over the URI's)
+  --password-file <file>    the login password, from the file's first line
+                            (also CHUNKDB_PASSWORD; asked for on a terminal)
   --timeout <duration>      (default 5s)
   --tls-insecure
   --tls-server-name <name>
@@ -190,6 +202,9 @@ Options:
   --blocks                  print the values of every present block of a chunk
   --in <file>               send the file as parameter $1 (SET CHUNK ... $1)
   --out <file>              write the reply's bytes to the file (GET CHUNK)
+  --new-password-file <file>
+                            the password of CREATE USER <name> PASSWORD and
+                            ALTER USER <name> PASSWORD (asked for on a terminal)
 
 Examples:
   chunk-cli "CREATE TABLE world (id u16, name text(32) NULL) CHUNK 16 x 16"
@@ -198,6 +213,8 @@ Examples:
   chunk-cli --blocks "GET CHUNK 0 0 FROM world"
   chunk-cli --out chunk.bin "GET CHUNK 0 0 FROM world"
   chunk-cli --in chunk.bin 'SET CHUNK 1 0 IN world $1'
-  chunk-cli --uri chunks://token@db.example:4242/ shell
+  chunk-cli --uri chunks://admin@db.example:4242/ shell
+  chunk-cli --new-password-file bot.password "CREATE USER bot PASSWORD"
+  chunk-cli "GRANT READ ON world TO bot"
 `)
 }

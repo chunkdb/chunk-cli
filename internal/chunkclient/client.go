@@ -2,6 +2,7 @@ package chunkclient
 
 import (
 	"bufio"
+	"crypto/hmac"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -23,7 +24,8 @@ type Config struct {
 // ProtocolVersion is the chunkdb protocol this client speaks.
 const ProtocolVersion = 3
 
-// ServerInfo is the HELLO reply: the protocol and the server's limits.
+// ServerInfo is the HELLO reply: the protocol, the server's limits and the
+// login's server signature.
 type ServerInfo struct {
 	Protocol         uint64
 	ServerVersion    string
@@ -32,6 +34,9 @@ type ServerInfo struct {
 	MaxAreaChunks    uint64
 	MaxResponseBytes uint64
 	MaxScanLimit     uint64
+	// ServerSignature is the SCRAM server-final message of a login
+	// (v=<signature>), empty without a user.
+	ServerSignature string
 }
 
 // Request is one statement and its parameter frames ($1 … $n). A nil
@@ -117,34 +122,85 @@ func (c *Client) Info() *ServerInfo {
 	return c.info
 }
 
-// Hello sends `HELLO 3 [AUTH <token>]`, the first line of a connection, and
-// returns the server's limits.
-func (c *Client) Hello(token string) (*ServerInfo, error) {
+// Login is the user a connection logs in as; an empty User logs in without
+// one (a server started with --auth none).
+type Login struct {
+	User     string
+	Password string
+}
+
+// Hello sends HELLO 3, the first line of a connection, and returns the
+// server's limits. With a user it logs in with SCRAM-SHA-256: `HELLO 3 USER
+// <name> $1` with the client-first message, then `AUTH $1` with the proof;
+// the password never crosses the network, and the server must prove that it
+// holds the user's verifier.
+func (c *Client) Hello(login Login) (*ServerInfo, error) {
 	line := "HELLO " + strconv.Itoa(ProtocolVersion)
-	if token != "" {
-		if strings.ContainsFunc(token, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-			return nil, errors.New("the token must not contain spaces or control characters")
+	if login.User == "" {
+		reply, err := c.helloStep(Request{Statement: line}, false)
+		if err != nil {
+			return nil, err
 		}
-		line += " AUTH " + token
+		return c.acceptHello(reply, "")
 	}
-	replies, err := c.roundTrip([]Request{{Statement: line}})
+
+	scram, err := startLogin(login.User, login.Password)
 	if err != nil {
 		return nil, err
 	}
-	if serverErr := replies[0].Err; serverErr != nil {
-		switch {
-		case serverErr.Code == "PROTOCOL" && strings.Contains(serverErr.Message, "HELLO 2"):
-			return nil, fmt.Errorf("the server speaks an older chunkdb protocol (%s); this chunk-cli needs protocol %d", serverErr.Message, ProtocolVersion)
-		// A 1.x server does not know HELLO; one that requires a token
-		// answers AUTH_REQUIRED although HELLO carried it.
-		case serverErr.Code == "UNKNOWN_COMMAND" || (serverErr.Code == "AUTH_REQUIRED" && token != ""):
-			return nil, fmt.Errorf("the server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs a server with protocol %d", ProtocolVersion, ProtocolVersion)
-		}
-		return nil, serverErr
+	reply, err := c.helloStep(Request{Statement: line + " USER " + login.User + " $1", Parameters: [][]byte{[]byte(scram.first)}}, true)
+	if err != nil {
+		return nil, err
 	}
-	info, err := parseServerInfo(replies[0].Value)
+	serverFirst, ok := strings.CutPrefix(reply.Text, "SCRAM ")
+	if reply.Kind != KindSimple || !ok {
+		return nil, fmt.Errorf("HELLO reply: expected +SCRAM <server-first message>, got a %s", reply.Kind)
+	}
+	clientFinal, signature, err := scram.finish(serverFirst)
+	if err != nil {
+		return nil, err
+	}
+	reply, err = c.helloStep(Request{Statement: "AUTH $1", Parameters: [][]byte{[]byte(clientFinal)}}, true)
+	if err != nil {
+		return nil, err
+	}
+	return c.acceptHello(reply, signature)
+}
+
+// helloStep sends one line of the login and returns its reply; a server
+// error is returned as a *ServerError, explained when it comes from a server
+// of another protocol.
+func (c *Client) helloStep(request Request, withUser bool) (Value, error) {
+	replies, err := c.roundTrip([]Request{request})
+	if err != nil {
+		return Value{}, err
+	}
+	serverErr := replies[0].Err
+	if serverErr == nil {
+		return replies[0].Value, nil
+	}
+	switch {
+	case serverErr.Code == "PROTOCOL" && strings.Contains(serverErr.Message, "HELLO 2"):
+		return Value{}, fmt.Errorf("the server speaks an older chunkdb protocol (%s); this chunk-cli needs protocol %d", serverErr.Message, ProtocolVersion)
+	// A 1.x server does not know HELLO; one that requires a token answers
+	// AUTH_REQUIRED, which a server with users never answers to a login.
+	case serverErr.Code == "UNKNOWN_COMMAND" || (serverErr.Code == "AUTH_REQUIRED" && withUser):
+		return Value{}, fmt.Errorf("the server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs a server with protocol %d", ProtocolVersion, ProtocolVersion)
+	}
+	return Value{}, serverErr
+}
+
+// acceptHello reads the HELLO map; after a login its server_signature must
+// be the one computed from the password.
+func (c *Client) acceptHello(reply Value, wantSignature string) (*ServerInfo, error) {
+	info, err := parseServerInfo(reply)
 	if err != nil {
 		return nil, fmt.Errorf("HELLO reply: %w", err)
+	}
+	if wantSignature != "" && !hmac.Equal([]byte(info.ServerSignature), []byte(wantSignature)) {
+		err := errors.New("the server could not prove it knows the password (wrong SCRAM server signature)")
+		c.broken = err
+		return nil, err
 	}
 	c.info = info
 	return info, nil
@@ -160,6 +216,15 @@ func parseServerInfo(reply Value) (*ServerInfo, error) {
 		return nil, errors.New("no server_version")
 	}
 	info.ServerVersion = string(version.Bulk)
+	signature, ok := reply.Lookup("server_signature")
+	switch {
+	case !ok:
+		return nil, errors.New("no server_signature")
+	case signature.Kind == KindBulk:
+		info.ServerSignature = string(signature.Bulk)
+	case signature.Kind != KindNull:
+		return nil, fmt.Errorf("server_signature: expected a bulk string or null, got %s", signature.Kind)
+	}
 	for _, field := range []struct {
 		key string
 		dst *uint64

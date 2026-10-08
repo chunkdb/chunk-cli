@@ -22,6 +22,12 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   `DROP TABLE`, `SHOW TABLES` and `DESCRIBE`; the shell's `quit` now exits
   locally like `exit`
 - bit-string block values, bit-text chunks and zrle transfer are removed
+- users replace the token: the CLI logs in with a user and password
+  (SCRAM-SHA-256), from `chunk://user:password@host/` (percent-decoded),
+  `--user`, `--password-file`, `CHUNKDB_PASSWORD` or a prompt without echo
+  on a terminal; without a user it logs in without one (`--auth none`
+  servers). A server that cannot prove it knows the password fails the
+  connection. `--token` and the token in the URI are removed
 
 ### Added
 - replies print for people: a block as `column = value` lines, values as CQL
@@ -33,6 +39,10 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
 - `--out <file>` writes a reply's bytes (a `GET CHUNK` chunk form) to a file,
   `--in <file>` sends a file as the parameter `$1` of `SET CHUNK`; in the
   shell these options, `--json` and `--blocks` may start a line
+- `CREATE USER <name> PASSWORD [MANAGES USERS]` and `ALTER USER <name>
+  PASSWORD` read the new password from `--new-password-file <file>` or ask
+  for it on the terminal, and send its verifier as `VERIFIER $1`
+- `AUTH_REQUIRED` explains how to log in
 
 ## 1.2.0 - 2026-09-03
 

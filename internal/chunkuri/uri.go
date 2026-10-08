@@ -14,8 +14,11 @@ type Parsed struct {
 	Scheme string
 	Host   string
 	Port   int
-	Token  string
-	Secure bool
+	// User and Password are the login of chunk://user:password@host/,
+	// percent-decoded.
+	User     string
+	Password string
+	Secure   bool
 	// Table is the table the path names (chunk://host:4242/terrain), empty
 	// for / (the server's default table).
 	Table string
@@ -45,9 +48,13 @@ func Parse(raw string) (Parsed, error) {
 		port = parsed
 	}
 
-	token := ""
+	user, password, hasPassword := "", "", false
 	if u.User != nil {
-		token = u.User.Username()
+		user = u.User.Username()
+		password, hasPassword = u.User.Password()
+	}
+	if user == "" && hasPassword {
+		return Parsed{}, fmt.Errorf("the uri has a password but no user")
 	}
 
 	table := strings.TrimPrefix(u.Path, "/")
@@ -56,12 +63,13 @@ func Parse(raw string) (Parsed, error) {
 	}
 
 	return Parsed{
-		Scheme: u.Scheme,
-		Host:   host,
-		Port:   port,
-		Token:  token,
-		Secure: u.Scheme == "chunks",
-		Table:  table,
+		Scheme:   u.Scheme,
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Secure:   u.Scheme == "chunks",
+		Table:    table,
 	}, nil
 }
 

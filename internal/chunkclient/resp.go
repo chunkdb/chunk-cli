@@ -114,6 +114,24 @@ func (e *ServerError) Error() string {
 	return e.Code + " " + e.Message
 }
 
+// The server errors of logins and rights, for errors.Is: a *ServerError
+// matches the one with its code.
+var (
+	// ErrAuthRequired: the server needs a user to log in.
+	ErrAuthRequired = &ServerError{Code: "AUTH_REQUIRED"}
+	// ErrAuthFailed: the user or password is wrong.
+	ErrAuthFailed = &ServerError{Code: "AUTH_FAILED"}
+	// ErrPermissionDenied: the user lacks the right a statement needs.
+	ErrPermissionDenied = &ServerError{Code: "PERMISSION_DENIED"}
+)
+
+// Is reports whether target is one of the code errors above with this
+// error's code.
+func (e *ServerError) Is(target error) bool {
+	codeErr, ok := target.(*ServerError)
+	return ok && codeErr.Message == "" && codeErr.Code == e.Code
+}
+
 // CurrentVersion returns the chunk version of a VERSION_MISMATCH error.
 func (e *ServerError) CurrentVersion() (uint64, bool) {
 	if e.Code != "VERSION_MISMATCH" {

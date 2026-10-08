@@ -21,6 +21,9 @@ type statementOptions struct {
 	// out is a file the reply's bytes are written to (a chunk form of GET
 	// CHUNK).
 	out string
+	// newPasswordFile holds the password of CREATE USER / ALTER USER ...
+	// PASSWORD.
+	newPasswordFile string
 }
 
 // statementKind is what the CLI needs to know of a statement to print its
@@ -126,8 +129,9 @@ func classify(statement string) statementInfo {
 }
 
 // parseLineOptions takes the options at the start of a shell line
-// (`--json`, `--blocks`, `--in <file>`, `--out <file>`) and returns them with
-// the statement that follows, unchanged.
+// (`--json`, `--blocks`, `--in <file>`, `--out <file>`,
+// `--new-password-file <file>`) and returns them with the statement that
+// follows, unchanged.
 func parseLineOptions(line string, defaults statementOptions) (statementOptions, string, error) {
 	opts := defaults
 	rest := strings.TrimSpace(line)
@@ -139,15 +143,18 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 			opts.json = true
 		case "--blocks":
 			opts.blocks = true
-		case "--in", "--out":
+		case "--in", "--out", "--new-password-file":
 			file, remaining, _ := strings.Cut(after, " ")
 			if file == "" {
 				return opts, "", fmt.Errorf("%s needs a file", word)
 			}
-			if word == "--in" {
+			switch word {
+			case "--in":
 				opts.in = file
-			} else {
+			case "--out":
 				opts.out = file
+			default:
+				opts.newPasswordFile = file
 			}
 			after = strings.TrimSpace(remaining)
 		default:
@@ -162,9 +169,22 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 }
 
 // execute sends one statement and prints its reply.
-func execute(client *chunkclient.Client, statement string, opts statementOptions, stdout io.Writer) error {
+func execute(client *chunkclient.Client, statement string, opts statementOptions, stdout io.Writer, term console) error {
 	var parameters [][]byte
-	if opts.in != "" {
+	if rewritten, user, ok := passwordStatement(statement); ok {
+		if opts.in != "" {
+			return errors.New("--in cannot be used with PASSWORD, whose verifier is the parameter $1")
+		}
+		password, err := newPassword(opts, user, term)
+		if err != nil {
+			return err
+		}
+		verifier, err := chunkclient.Verifier(password, chunkclient.MinIterations)
+		if err != nil {
+			return err
+		}
+		statement, parameters = rewritten, [][]byte{[]byte(verifier)}
+	} else if opts.in != "" {
 		data, err := os.ReadFile(opts.in)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", opts.in, err)

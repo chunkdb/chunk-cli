@@ -246,13 +246,21 @@ func TestMalformedReplyBreaksConnection(t *testing.T) {
 	}
 }
 
-const helloReply = "%7\r\n$8\r\nprotocol\r\n:3\r\n$14\r\nserver_version\r\n$5\r\n2.0.0\r\n$14\r\nmax_line_bytes\r\n:65536\r\n" +
+const helloFields = "$8\r\nprotocol\r\n:3\r\n$14\r\nserver_version\r\n$5\r\n2.0.0\r\n$14\r\nmax_line_bytes\r\n:65536\r\n" +
 	"$14\r\nmax_parameters\r\n:65535\r\n$15\r\nmax_area_chunks\r\n:256\r\n$18\r\nmax_response_bytes\r\n:67108864\r\n" +
-	"$14\r\nmax_scan_limit\r\n:1024\r\n"
+	"$14\r\nmax_scan_limit\r\n:1024\r\n$16\r\nserver_signature\r\n"
+
+// helloReply is the HELLO map of a login without a user.
+const helloReply = "%8\r\n" + helloFields + "_\r\n"
+
+// helloReplySigned is the HELLO map of a login, with its server signature.
+func helloReplySigned(signature string) string {
+	return "%8\r\n" + helloFields + fmt.Sprintf("$%d\r\n%s\r\n", len(signature), signature)
+}
 
 func TestHello(t *testing.T) {
 	sc := newScriptedClient(t, helloReply)
-	info, err := sc.Hello("secret")
+	info, err := sc.Hello(Login{})
 	if err != nil {
 		t.Fatalf("hello: %v", err)
 	}
@@ -261,42 +269,40 @@ func TestHello(t *testing.T) {
 	if *info != want || sc.Info() != info {
 		t.Fatalf("got %+v", info)
 	}
-	if got := sc.sentText(); got != "HELLO 3 AUTH secret\r\n" {
-		t.Fatalf("sent %q", got)
-	}
-
-	plain := newScriptedClient(t, helloReply)
-	if _, err := plain.Hello(""); err != nil {
-		t.Fatalf("hello: %v", err)
-	}
-	if got := plain.sentText(); got != "HELLO 3\r\n" {
+	if got := sc.sentText(); got != "HELLO 3\r\n" {
 		t.Fatalf("sent %q", got)
 	}
 }
 
 func TestHelloRefusals(t *testing.T) {
 	cases := []struct {
-		reply, token, want string
+		reply, user, want string
+		is                error
 	}{
-		{"-ERR PROTOCOL expected HELLO 2\r\n", "", "older chunkdb protocol"},
-		{"-ERR UNKNOWN_COMMAND HELLO\r\n", "", "chunkdb 1.x"},
-		{"-ERR AUTH_REQUIRED use AUTH <token>\r\n", "tok", "chunkdb 1.x"},
-		{"-ERR AUTH_REQUIRED use HELLO 3 AUTH <token>\r\n", "", "AUTH_REQUIRED"},
-		{"-ERR AUTH_FAILED invalid token\r\n", "x", "AUTH_FAILED"},
-		{"+OK\r\n", "", "expected a map"},
-		{strings.Replace(helloReply, ":3\r\n", ":4\r\n", 1), "", "protocol 4"},
-		{strings.Replace(helloReply, "max_scan_limit", "max_scan_limiX", 1), "", "no max_scan_limit"},
+		{"-ERR PROTOCOL expected HELLO 2\r\n", "", "older chunkdb protocol", nil},
+		{"-ERR UNKNOWN_COMMAND HELLO\r\n", "", "chunkdb 1.x", nil},
+		{"-ERR AUTH_REQUIRED use AUTH <token>\r\n", "bot", "chunkdb 1.x", nil},
+		{"-ERR AUTH_REQUIRED use HELLO 3 USER <name> $1\r\n", "", "AUTH_REQUIRED", ErrAuthRequired},
+		{"-ERR AUTH_FAILED temporary auth ban\r\n", "bot", "AUTH_FAILED", ErrAuthFailed},
+		{"+OK\r\n", "", "expected a map", nil},
+		{"+OK\r\n", "bot", "expected +SCRAM", nil},
+		{"+SCRAM r=x,s=AAAA,i=4096\r\n", "bot", "does not continue the client nonce", nil},
+		{strings.Replace(helloReply, ":3\r\n", ":4\r\n", 1), "", "protocol 4", nil},
+		{strings.Replace(helloReply, "max_scan_limit", "max_scan_limiX", 1), "", "no max_scan_limit", nil},
+		{"%7\r\n" + strings.TrimSuffix(helloFields, "$16\r\nserver_signature\r\n"), "", "no server_signature", nil},
 	}
 	for _, tc := range cases {
 		sc := newScriptedClient(t, tc.reply)
-		_, err := sc.Hello(tc.token)
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
+		_, err := sc.Hello(Login{User: tc.user, Password: "pw"})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || (tc.is != nil && !errors.Is(err, tc.is)) {
 			t.Errorf("reply %q: got %v, want %q", tc.reply, err, tc.want)
 		}
 	}
-	sc := newScriptedClient(t, helloReply)
-	if _, err := sc.Hello("a b"); err == nil || !strings.Contains(err.Error(), "spaces") {
-		t.Fatalf("token with a space: got %v", err)
+	for _, user := range []string{"a b", "a,b", "a=b", "a\x00"} {
+		sc := newScriptedClient(t, helloReply)
+		if _, err := sc.Hello(Login{User: user, Password: "pw"}); err == nil || !strings.Contains(err.Error(), "must not contain") {
+			t.Errorf("user %q: got %v", user, err)
+		}
 	}
 }
 
@@ -336,7 +342,7 @@ func dialAndPing(t *testing.T, cfg Config) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
-	if _, err := c.Hello(""); err != nil {
+	if _, err := c.Hello(Login{}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
 	value, err := c.Do("PING")
@@ -402,7 +408,7 @@ func TestTimeout(t *testing.T) {
 	defer c.Close()
 	defer func() { (<-accepted).Close() }()
 	start := time.Now()
-	_, err = c.Hello("")
+	_, err = c.Hello(Login{})
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("expected a timeout, got %v", err)

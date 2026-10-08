@@ -28,8 +28,10 @@ func TestParseGlobalFlagsDefaults(t *testing.T) {
 
 func TestParseGlobalFlagsCustomValues(t *testing.T) {
 	opts, args, err := parseGlobalFlags([]string{
-		"--uri", "chunks://token@example.com:9999/",
-		"--token", "override",
+		"--uri", "chunks://bot@example.com:9999/",
+		"--user", "admin",
+		"--password-file", "pw.txt",
+		"--new-password-file", "new.txt",
 		"--timeout", "3s",
 		"--tls-insecure",
 		"--tls-server-name", "example.com",
@@ -39,11 +41,11 @@ func TestParseGlobalFlagsCustomValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.URI != "chunks://token@example.com:9999/" || opts.TokenOverride != "override" || opts.Timeout != 3*time.Second ||
+	if opts.URI != "chunks://bot@example.com:9999/" || opts.User != "admin" || opts.PasswordFile != "pw.txt" || opts.Timeout != 3*time.Second ||
 		!opts.TLSInsecure || opts.TLSServerName != "example.com" {
 		t.Fatalf("unexpected options: %+v", opts)
 	}
-	if opts.Statement != (statementOptions{json: true, blocks: true, in: "a.bin", out: "b.bin"}) {
+	if opts.Statement != (statementOptions{json: true, blocks: true, in: "a.bin", out: "b.bin", newPasswordFile: "new.txt"}) {
 		t.Fatalf("unexpected statement options: %+v", opts.Statement)
 	}
 	if strings.Join(args, " ") != "GET BLOCK -1 2 FROM world" {
@@ -58,6 +60,10 @@ func TestParseGlobalFlagsErrors(t *testing.T) {
 	// Statements name their table; --table is gone.
 	if _, _, err := parseGlobalFlags([]string{"--table", "x", "PING"}, io.Discard); err == nil {
 		t.Fatal("expected an error for --table")
+	}
+	// Users replace the token.
+	if _, _, err := parseGlobalFlags([]string{"--token", "x", "PING"}, io.Discard); err == nil {
+		t.Fatal("expected an error for --token")
 	}
 }
 
@@ -121,7 +127,11 @@ func TestParseLineOptions(t *testing.T) {
 	if err != nil || statement != "SET BLOCK 0 0 IN w name = '--json  x'" || opts != defaults {
 		t.Fatalf("got %+v, %q, %v", opts, statement, err)
 	}
-	for _, line := range []string{"--json", "--in", "--out ", "--bogus PING"} {
+	opts, statement, err = parseLineOptions("--new-password-file pw.txt ALTER USER bot PASSWORD", statementOptions{})
+	if err != nil || statement != "ALTER USER bot PASSWORD" || opts.newPasswordFile != "pw.txt" {
+		t.Fatalf("got %+v, %q, %v", opts, statement, err)
+	}
+	for _, line := range []string{"--json", "--in", "--out ", "--new-password-file", "--bogus PING"} {
 		if _, _, err := parseLineOptions(line, defaults); err == nil {
 			t.Errorf("%q: expected an error", line)
 		}
