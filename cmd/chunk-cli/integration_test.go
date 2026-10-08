@@ -225,7 +225,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 	s.ok(t, "SET BLOCK 4 4 IN world id = 7")
 
 	out := s.ok(t, "GET CHUNK 0 0 FROM world")
-	if !strings.HasPrefix(out, "version = ") || !strings.HasSuffix(out, "\npresent = 2 of 4 blocks\n") {
+	if !strings.HasPrefix(out, "version = ") || !strings.HasSuffix(out, "\nschema_version = 1\npresent = 2 of 4 blocks\n") {
 		t.Fatalf("GET CHUNK: %q", out)
 	}
 	out = s.ok(t, "--blocks", "GET CHUNK 0 0 FROM world COLUMNS name, id, blob")
@@ -288,6 +288,10 @@ func TestCLIChunksAndAreas(t *testing.T) {
 	s.fails(t, "reply of bytes", "--out", file, "PING")
 	s.fails(t, "no such file", "--in", filepath.Join(t.TempDir(), "missing"), "SET CHUNK 5 5 IN world $1")
 	s.fails(t, "0 parameter(s)", "--in", file, "PING")
+
+	// After the table's columns changed, the dumped form no longer fits.
+	s.ok(t, "ALTER TABLE world ADD COLUMN extra u8")
+	s.fails(t, "SCHEMA_MISMATCH current=2", "--in", file, "SET CHUNK 6 6 IN world $1")
 }
 
 func TestCLITablesAndAlter(t *testing.T) {
@@ -353,7 +357,7 @@ func TestCLITextColumnsAfterAlter(t *testing.T) {
 	s.ok(t, "SET BLOCK 1 0 IN v a = 2, label = 'new', raw = x'0d0a'")
 	s.ok(t, "SET BLOCK 0 1 IN v a = 3, b = x'ff', label = 'l3'")
 
-	want := "present = 3 of 4 blocks\n" +
+	want := "schema_version = 4\npresent = 3 of 4 blocks\n" +
 		"block 0 0\n  a = 1\n  b = x'0102'\n  label = NULL\n  raw = NULL\n" +
 		"block 1 0\n  a = 2\n  b = x''\n  label = 'new'\n  raw = x'0d0a'\n" +
 		"block 0 1\n  a = 3\n  b = x'ff'\n  label = 'l3'\n  raw = NULL\n"
@@ -364,7 +368,11 @@ func TestCLITextColumnsAfterAlter(t *testing.T) {
 	if out := s.ok(t, "--blocks", "GET CHUNK 0 0 FROM v COLUMNS raw, label"); !strings.HasSuffix(out, want) {
 		t.Fatalf("GET CHUNK COLUMNS after ADD/DROP: got %q, want suffix %q", out, want)
 	}
-	if out := s.ok(t, "--blocks", "GET AREA 0 0 TO 0 0 FROM v COLUMNS label"); !strings.Contains(out, "  block 1 0\n    label = 'new'\n") {
+	if out := s.ok(t, "--json", "GET CHUNK 0 0 FROM v"); !strings.Contains(out, `,"schema_version":4,"present":3,`) {
+		t.Fatalf("GET CHUNK --json: %q", out)
+	}
+	if out := s.ok(t, "--blocks", "GET AREA 0 0 TO 0 0 FROM v COLUMNS label"); !strings.Contains(out, "  schema_version = 4\n") ||
+		!strings.Contains(out, "  block 1 0\n    label = 'new'\n") {
 		t.Fatalf("GET AREA after ADD/DROP: %q", out)
 	}
 }

@@ -105,11 +105,13 @@ func TestParseDescribe(t *testing.T) {
 // formW is GET CHUNK 0 0 FROM w after
 // SET BLOCK 1 0 IN w id = 5, name = 'hi', blob = x'00ff', f = 1.5, as the
 // server sent it.
-const formW = "\x02\x00\x00\x00\x00\x00\x00\x00\x02\x00\x14\x00\x00\x00\xf0\x00\x00\x00\x00\x00\x00\x00\xc0?\x00\x00\x00\x00\x00\x00\x00\x00" +
+const formW = "\x02\x00\x00\x00\x00\x00\x00\x00" +
+	"\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x14\x00\x00\x00\xf0\x00\x00\x00\x00\x00\x00\x00\xc0?\x00\x00\x00\x00\x00\x00\x00\x00" +
 	"\x02\x04\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00hi\x05\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00\x00\xff"
 
 // formWColumns is GET CHUNK 0 0 FROM w COLUMNS name, light.
-const formWColumns = "\x02\x00\x00\x00\x00\x00\x00\x00\x02\xf0\x00\x04\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00hi"
+const formWColumns = "\x02\x00\x00\x00\x00\x00\x00\x00" +
+	"\x01\x00\x00\x00\x00\x00\x00\x00\x02\xf0\x00\x04\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00hi"
 
 func values(chunk *Chunk, column int) string {
 	out := make([]string, len(chunk.Values[column]))
@@ -138,7 +140,7 @@ func TestDecodeChunkFormFromServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if chunk.Version != 2 || chunk.PresentCount() != 1 || !chunk.Present[1] || len(chunk.Columns) != 5 {
+	if chunk.Version != 2 || chunk.SchemaVersion != 1 || chunk.PresentCount() != 1 || !chunk.Present[1] || len(chunk.Columns) != 5 {
 		t.Fatalf("unexpected chunk %+v", chunk)
 	}
 	for column, want := range []string{"NULL 5 NULL NULL", "NULL 15 NULL NULL", "NULL 1.5 NULL NULL", "NULL 'hi' NULL NULL", "NULL '\x00\xff' NULL NULL"} {
@@ -162,6 +164,12 @@ func TestDecodeChunkFormFromServer(t *testing.T) {
 // chunkFormBuilder writes chunk forms for a 2 x 2 chunk.
 type chunkFormBuilder struct {
 	bytes.Buffer
+}
+
+// header writes the chunk version and the schema version.
+func (b *chunkFormBuilder) header(version, schemaVersion uint64) {
+	_ = binary.Write(&b.Buffer, binary.LittleEndian, version)
+	_ = binary.Write(&b.Buffer, binary.LittleEndian, schemaVersion)
 }
 
 func (b *chunkFormBuilder) u32(v uint32) {
@@ -202,11 +210,11 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 		col(t, "s", "i4", false), col(t, "ok", "bool", true), col(t, "d", "f64", false),
 		col(t, "flags", "bits(3)", false), col(t, "label", "text(8)", false), col(t, "raw", "bytes(4)", true))
 	var b chunkFormBuilder
-	b.Write([]byte{7, 0, 0, 0, 0, 0, 0, 0}) // version 7
-	b.WriteByte(0b1101)                     // blocks 0, 2, 3 present
-	b.Write([]byte{0x8f, 0x07})             // s: -1, -8, 7, 0
-	b.WriteByte(0b0101)                     // ok values: true, false, true, false
-	b.WriteByte(0b1001)                     // ok validity: blocks 0 and 3
+	b.header(7, 1)
+	b.WriteByte(0b1101)         // blocks 0, 2, 3 present
+	b.Write([]byte{0x8f, 0x07}) // s: -1, -8, 7, 0
+	b.WriteByte(0b0101)         // ok values: true, false, true, false
+	b.WriteByte(0b1001)         // ok validity: blocks 0 and 3
 	for _, bits := range []uint64{0x3ff8000000000000, 0, 0x7ff0000000000000, 0xc000000000000000} {
 		_ = binary.Write(&b.Buffer, binary.LittleEndian, bits) // d: 1.5, 0, inf, -2
 	}
@@ -244,7 +252,7 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 		"partial entry": append(append([]byte{}, full...), 1, 2, 3),
 		"absent block": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full[:47]) // version, presence and payload
+			e.Write(full[:55]) // versions, presence and payload
 			e.entry(5, 1, "x")
 			return e.Bytes()
 		}(),
@@ -271,7 +279,8 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 	schema := testSchema(t, 4, withID(col(t, "a", "u4", false), 1), withID(col(t, "c", "text(4)", true), 3),
 		withID(col(t, "d", "bytes(4)", false), 4))
 	var b chunkFormBuilder
-	b.Write([]byte{9, 0, 0, 0, 0, 0, 0, 0, 0b0011, 0x21, 0x00})
+	b.header(9, 4)
+	b.Write([]byte{0b0011, 0x21, 0x00})
 	b.entry(3, 0, "x")
 	b.entry(4, 0, "zz")
 	b.entry(4, 1, "y")
@@ -287,11 +296,17 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 
 	// COLUMNS d: only its entries follow the presence.
 	var d chunkFormBuilder
-	d.Write([]byte{9, 0, 0, 0, 0, 0, 0, 0, 0b0011})
+	d.header(9, 4)
+	d.WriteByte(0b0011)
 	d.entry(4, 1, "y")
 	chunk, err = DecodeChunkForm(schema, []string{"d"}, d.Bytes())
 	if err != nil || values(chunk, 0) != "'' 'y' NULL NULL" {
 		t.Fatalf("got %+v, %v", chunk, err)
+	}
+	// A form of another schema version is refused.
+	older := testSchema(t, 3, schema.Columns...)
+	if _, err := DecodeChunkForm(older, nil, b.Bytes()); err == nil || !strings.Contains(err.Error(), "schema version 4") {
+		t.Fatalf("schema version mismatch: got %v", err)
 	}
 	if _, err := DecodeChunkForm(schema, []string{"d"}, []byte{1, 2, 3}); err == nil {
 		t.Fatal("expected an error for a form without version and presence")
@@ -309,7 +324,8 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 		"fixed only":     {nil, 1, testSchema(t, 2, col(t, "a", "u4", false))},
 	} {
 		var e chunkFormBuilder
-		e.Write([]byte{9, 0, 0, 0, 0, 0, 0, 0, 0b0011})
+		e.header(9, form.schema.Version)
+		e.WriteByte(0b0011)
 		if form.columns == nil {
 			e.Write([]byte{0x21, 0x00})
 		}

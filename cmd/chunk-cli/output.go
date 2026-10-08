@@ -298,7 +298,8 @@ func blockXY(chunk *chunkclient.Chunk, cx, cy int64, i int) (int64, int64) {
 }
 
 func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, blocks bool, indent string) {
-	fmt.Fprintf(out, "%sversion = %d\n%spresent = %d of %d blocks\n", indent, chunk.Version, indent, chunk.PresentCount(), len(chunk.Present))
+	fmt.Fprintf(out, "%sversion = %d\n%sschema_version = %d\n%spresent = %d of %d blocks\n",
+		indent, chunk.Version, indent, chunk.SchemaVersion, indent, chunk.PresentCount(), len(chunk.Present))
 	if !blocks {
 		return
 	}
@@ -405,6 +406,7 @@ func jsonValue(v chunkclient.Value, typ *chunkclient.ColumnType) any {
 func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool) orderedMap {
 	fields := orderedMap{
 		{"version", chunk.Version},
+		{"schema_version", chunk.SchemaVersion},
 		{"present", chunk.PresentCount()},
 		{"block_count", len(chunk.Present)},
 	}

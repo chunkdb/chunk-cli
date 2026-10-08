@@ -54,6 +54,7 @@ $ chunk-cli "GET BLOCK 99 99 FROM world"
 NULL
 $ chunk-cli --blocks "GET CHUNK 0 0 FROM world COLUMNS id"
 version = 2
+schema_version = 1
 present = 1 of 256 blocks
 block 10 4
   id = 7
@@ -67,7 +68,7 @@ more = false
 ```
 
 - `GET BLOCK` prints one `column = value` line per column, or `NULL` for an absent block.
-- `GET CHUNK` prints the chunk version and how many blocks are present; with `--blocks` also every present block, by its world coordinates, with its values. `GET AREA` prints the same per chunk under `chunk <cx> <cy>`.
+- `GET CHUNK` prints the chunk version, the schema version (as `DESCRIBE` reports it) and how many blocks are present; with `--blocks` also every present block, by its world coordinates, with its values. `GET AREA` prints the same per chunk under `chunk <cx> <cy>`.
 - `DESCRIBE` prints the columns as `CREATE TABLE` writes them, then the options.
 - Maps print as `key = value` lines, arrays as numbered rows, an empty array as `(empty)`.
 - Chunks are decoded with the table's columns, which the CLI reads with `DESCRIBE` in the same round trip.
@@ -78,7 +79,7 @@ With `--json` each reply is one line of JSON: a block is an object of its column
 $ chunk-cli --json "GET BLOCK 10 4 FROM world"
 {"id":7,"light":15,"name":"door"}
 $ chunk-cli --json --blocks "GET CHUNK 0 0 FROM world COLUMNS id"
-{"version":2,"present":1,"block_count":256,"blocks":[{"x":10,"y":4,"values":{"id":7}}]}
+{"version":2,"schema_version":1,"present":1,"block_count":256,"blocks":[{"x":10,"y":4,"values":{"id":7}}]}
 ```
 
 Errors print as `error: <CODE> <message>` on stderr and the exit status is 1.
@@ -92,7 +93,7 @@ chunk-cli --out chunk.bin "GET CHUNK 0 0 FROM world"
 chunk-cli --in chunk.bin 'SET CHUNK 4 4 IN world $1'
 ```
 
-The file must match the table's current columns and chunk size.
+The file is sent as it is. It carries the schema version of the table when it was dumped: if the table's columns changed since (`ALTER TABLE`), `SET CHUNK` fails with `SCHEMA_MISMATCH current=<v>` and nothing changes; dump the chunk again.
 
 ## Interactive Shell
 

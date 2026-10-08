@@ -12,8 +12,10 @@ import (
 type Chunk struct {
 	// Version is the chunk version the form carries.
 	Version uint64
-	Width   int
-	Height  int
+	// SchemaVersion is the schema version the form's columns follow.
+	SchemaVersion uint64
+	Width         int
+	Height        int
 	// Present has one entry per block, row by row.
 	Present []bool
 	// Columns are the columns the form holds: the COLUMNS of the read in
@@ -35,19 +37,29 @@ func (c *Chunk) PresentCount() int {
 	return count
 }
 
-// DecodeChunkForm decodes a chunk form: the version (u64 little-endian), the
-// presence bitmap, per fixed-width column of the form its values and, for a
-// NULL column, its validity bits (each padded to a byte), then entries of
-// column id (u32, as DESCRIBE reports it), block index (u32), length (u32)
-// and the bytes. columns are
-// the COLUMNS of the read, or empty for every column.
+// formHeaderBytes is the chunk version and the schema version (u64 each).
+const formHeaderBytes = 16
+
+// DecodeChunkForm decodes a chunk form: the chunk version and the schema
+// version (u64 little-endian each), the presence bitmap, per fixed-width
+// column of the form its values and, for a NULL column, its validity bits
+// (each padded to a byte), then entries of column id (u32, as DESCRIBE
+// reports it), block index (u32), length (u32) and the bytes. columns are
+// the COLUMNS of the read, or empty for every column. A form of another
+// schema version than schema's is refused.
 func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, error) {
 	chunk := &Chunk{Width: schema.ChunkWidth, Height: schema.ChunkHeight}
 	blocks := schema.BlockCount()
 	maskBytes := (blocks + 7) / 8
 
-	if len(form) < 8+maskBytes {
-		return nil, fmt.Errorf("the chunk form has %d bytes, a chunk of table %s needs at least %d", len(form), schema.Table, 8+maskBytes)
+	if len(form) < formHeaderBytes+maskBytes {
+		return nil, fmt.Errorf("the chunk form has %d bytes, a chunk of table %s needs at least %d", len(form), schema.Table, formHeaderBytes+maskBytes)
+	}
+	chunk.Version = binary.LittleEndian.Uint64(form)
+	chunk.SchemaVersion = binary.LittleEndian.Uint64(form[8:])
+	if chunk.SchemaVersion != schema.Version {
+		return nil, fmt.Errorf("the chunk form follows schema version %d of table %s, DESCRIBE reported version %d (the table changed in between; read again)",
+			chunk.SchemaVersion, schema.Table, schema.Version)
 	}
 	if len(columns) == 0 {
 		chunk.Columns = schema.Columns
@@ -61,8 +73,8 @@ func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, err
 		}
 	}
 
-	// The fixed part: version, presence, then the sections.
-	need := 8 + maskBytes
+	// The fixed part: versions, presence, then the sections.
+	need := formHeaderBytes + maskBytes
 	for _, column := range chunk.Columns {
 		need += sectionBytes(column, blocks)
 	}
@@ -70,14 +82,13 @@ func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, err
 		return nil, fmt.Errorf("the chunk form has %d bytes, the schema of table %s (version %d) needs at least %d",
 			len(form), schema.Table, schema.Version, need)
 	}
-	chunk.Version = binary.LittleEndian.Uint64(form)
-	presence := form[8 : 8+maskBytes]
+	presence := form[formHeaderBytes : formHeaderBytes+maskBytes]
 	chunk.Present = make([]bool, blocks)
 	for i := range blocks {
 		chunk.Present[i] = bit(presence, i)
 	}
 
-	offset := 8 + maskBytes
+	offset := formHeaderBytes + maskBytes
 	chunk.Values = make([][]Value, len(chunk.Columns))
 	var varColumns []int
 	for index, column := range chunk.Columns {
