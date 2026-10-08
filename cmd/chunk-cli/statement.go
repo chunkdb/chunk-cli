@@ -173,7 +173,7 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts statementOptions, stdout io.Writer, term console) (err error) {
 	inTxn := txn != nil && txn.open
 	if txn != nil {
-		defer func() { err = txn.ended(err) }()
+		defer func() { err = txn.ended(client, statement, err) }()
 		if control := txnControlOf(statement); control != txnNone {
 			return txn.control(client, control, statement, opts, stdout)
 		}

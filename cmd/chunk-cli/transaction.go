@@ -44,7 +44,7 @@ func isWrite(statement string) bool {
 // server keeps one transaction per connection, so the shell follows the
 // replies: a BEGIN that succeeds opens it; COMMIT and ROLLBACK end it
 // whatever they answer, unless the statement did not parse; a CONFLICT
-// ends it.
+// ends it (with a ROLLBACK unless it came from COMMIT).
 type shellTxn struct {
 	open bool
 }
@@ -74,12 +74,20 @@ func (t *shellTxn) control(client *chunkclient.Client, control txnControl, state
 }
 
 // ended reports a CONFLICT, which ends the transaction without writing
-// anything.
-func (t *shellTxn) ended(err error) error {
+// anything. A CONFLICT from COMMIT closes it; one from another statement
+// leaves it on the connection, answering CONFLICT to every statement, until
+// the ROLLBACK sent here.
+func (t *shellTxn) ended(client *chunkclient.Client, statement string, err error) error {
 	var serverErr *chunkclient.ServerError
-	if errors.As(err, &serverErr) && serverErr.Code == "CONFLICT" {
-		t.open = false
-		return fmt.Errorf("%w (the transaction ended and wrote nothing; run it again from BEGIN)", err)
+	if !errors.As(err, &serverErr) || serverErr.Code != "CONFLICT" {
+		return err
 	}
-	return err
+	t.open = false
+	if txnControlOf(statement) != txnCommit {
+		if _, rollbackErr := client.Do(string(txnRollback)); rollbackErr != nil {
+			t.open = client.Broken() == nil
+			return fmt.Errorf("%w (the transaction ended and wrote nothing, but ROLLBACK failed: %v)", err, rollbackErr)
+		}
+	}
+	return fmt.Errorf("%w (the transaction ended and wrote nothing; run it again from BEGIN)", err)
 }

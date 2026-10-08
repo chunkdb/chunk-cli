@@ -780,11 +780,28 @@ func TestCLITransactions(t *testing.T) {
 		t.Fatalf("COMMIT again: %q, %q", out, errOut)
 	}
 
-	// A CONFLICT inside the transaction ends it too.
+	// A CONFLICT from a statement inside the transaction ends it too: the
+	// shell sends ROLLBACK, after which statements run on their own again.
 	sh.expect("BEGIN", "OK\nchunk*> ", "")
-	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 12\nchunk*> ", "")
+	sh.expect("SET BLOCK 0 0 IN world id = 50", "(applies at COMMIT)\nchunk*> ", "")
+	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 50\nchunk*> ", "")
 	s.ok(t, "ALTER TABLE world ADD COLUMN extra i8 NULL")
-	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "chunk> ", "error: CONFLICT table_changed")
+	_, errOut = sh.send("GET BLOCK 0 0 FROM world COLUMNS id")
+	if !strings.HasPrefix(errOut, "error: CONFLICT table_changed") ||
+		!strings.HasSuffix(errOut, "(the transaction ended and wrote nothing; run it again from BEGIN)\n") {
+		t.Fatalf("CONFLICT from a statement: %q", errOut)
+	}
+	sh.expect("PING", "PONG\nchunk> ", "")
+	if out, errOut := sh.send("SET BLOCK 1 1 IN world id = 31"); errOut != "" || strings.Contains(out, "COMMIT") || !strings.HasSuffix(out, "\nchunk> ") {
+		t.Fatalf("a write after the CONFLICT: %q, %q", out, errOut)
+	}
+	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT no transaction is open")
+	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
+		t.Fatalf("the transaction applied after its CONFLICT: %q", out)
+	}
+	if out := s.ok(t, "GET BLOCK 1 1 FROM world COLUMNS id"); out != "id = 31\n" {
+		t.Fatalf("the write after the CONFLICT: %q", out)
+	}
 
 	// ROLLBACK discards the writes; COMMIT of nothing gives no version.
 	sh.expect("BEGIN", "OK\nchunk*> ", "")
