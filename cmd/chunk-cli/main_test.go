@@ -78,6 +78,10 @@ func TestRunLocalCommands(t *testing.T) {
 		{[]string{"--help"}, 0, "Usage:", ""},
 		{nil, 1, "", "Usage:"},
 		{[]string{"--uri", "http://x/", "PING"}, 1, "", "error: unsupported scheme"},
+		// A one-shot statement cannot hold a transaction; nothing connects.
+		{[]string{"--uri", "http://x/", "BEGIN"}, 1, "", "error: BEGIN runs in the shell (chunk-cli shell)"},
+		{[]string{"--uri", "http://x/", "commit"}, 1, "", "error: COMMIT runs in the shell"},
+		{[]string{"--uri", "http://x/", "ROLLBACK"}, 1, "", "error: ROLLBACK runs in the shell"},
 	} {
 		var stdout, stderr bytes.Buffer
 		code := run(tc.args, strings.NewReader(""), &stdout, &stderr)
@@ -109,6 +113,36 @@ func TestClassify(t *testing.T) {
 	for statement, want := range cases {
 		if got := classify(statement); !reflect.DeepEqual(got, want) {
 			t.Errorf("%q: got %+v, want %+v", statement, got, want)
+		}
+	}
+}
+
+func TestTxnStatements(t *testing.T) {
+	for statement, want := range map[string]txnControl{
+		"BEGIN":                             txnBegin,
+		" begin ":                           txnBegin,
+		"Commit":                            txnCommit,
+		"ROLLBACK":                          txnRollback,
+		"COMMIT x":                          txnCommit,
+		"BEGINS":                            txnNone,
+		"PING":                              txnNone,
+		"":                                  txnNone,
+		"SET BLOCK 0 0 IN w name = 'BEGIN'": txnNone,
+	} {
+		if got := txnControlOf(statement); got != want {
+			t.Errorf("txnControlOf(%q) = %q, want %q", statement, got, want)
+		}
+	}
+	for statement, want := range map[string]bool{
+		"SET BLOCK 0 0 IN w a = 1": true,
+		"set chunk 0 0 in w $1":    true,
+		"DELETE BLOCK 0 0 FROM w":  true,
+		"GET BLOCK 0 0 FROM w":     false,
+		"CREATE TABLE w (a u8)":    false,
+		"":                         false,
+	} {
+		if got := isWrite(statement); got != want {
+			t.Errorf("isWrite(%q) = %v, want %v", statement, got, want)
 		}
 	}
 }

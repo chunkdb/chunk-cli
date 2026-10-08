@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	neturl "net/url"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -591,5 +593,219 @@ func TestCLIUsers(t *testing.T) {
 	}
 	if code, _, errOut := bot("second", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
 		t.Fatalf("dropped user: %d %q", code, errOut)
+	}
+}
+
+// shellSession drives `chunk-cli shell` one line at a time, so that other
+// connections can act between the lines of a transaction.
+type shellSession struct {
+	t      *testing.T
+	stdin  *io.PipeWriter
+	stdout *promptWriter
+	stderr *lockedBuffer
+	done   chan int
+}
+
+// promptWriter collects the shell's stdout and signals every prompt.
+type promptWriter struct {
+	lockedBuffer
+	prompts chan struct{}
+}
+
+func (w *promptWriter) Write(p []byte) (int, error) {
+	n, err := w.lockedBuffer.Write(p)
+	if bytes.HasSuffix(p, []byte("> ")) {
+		w.prompts <- struct{}{}
+	}
+	return n, err
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (s *testServer) startShell(t *testing.T) *shellSession {
+	t.Helper()
+	stdin, writer := io.Pipe()
+	sh := &shellSession{
+		t:      t,
+		stdin:  writer,
+		stdout: &promptWriter{prompts: make(chan struct{}, 4)},
+		stderr: &lockedBuffer{},
+		done:   make(chan int, 1),
+	}
+	go func() {
+		sh.done <- run([]string{"--uri", s.uri, "--tls-insecure", "shell"}, stdin, sh.stdout, sh.stderr)
+	}()
+	sh.waitPrompt()
+	return sh
+}
+
+func (sh *shellSession) waitPrompt() {
+	sh.t.Helper()
+	select {
+	case <-sh.stdout.prompts:
+	case code := <-sh.done:
+		sh.t.Fatalf("the shell exited %d: %q, %q", code, sh.stdout.String(), sh.stderr.String())
+	case <-time.After(10 * time.Second):
+		sh.t.Fatalf("no prompt: %q, %q", sh.stdout.String(), sh.stderr.String())
+	}
+}
+
+// send writes a line and returns the stdout up to the next prompt, the
+// prompt included, and the stderr in between.
+func (sh *shellSession) send(line string) (string, string) {
+	sh.t.Helper()
+	outStart, errStart := len(sh.stdout.String()), len(sh.stderr.String())
+	if _, err := io.WriteString(sh.stdin, line+"\n"); err != nil {
+		sh.t.Fatalf("write %q: %v", line, err)
+	}
+	sh.waitPrompt()
+	return sh.stdout.String()[outStart:], sh.stderr.String()[errStart:]
+}
+
+// expect sends a line and checks its output, and that its stderr holds
+// errText (nothing when empty).
+func (sh *shellSession) expect(line, out, errText string) {
+	sh.t.Helper()
+	gotOut, gotErr := sh.send(line)
+	if gotOut != out || (errText == "" && gotErr != "") || !strings.Contains(gotErr, errText) {
+		sh.t.Fatalf("%q: got stdout %q, stderr %q; want %q and an error with %q", line, gotOut, gotErr, out, errText)
+	}
+}
+
+// exit leaves the shell and returns its exit status.
+func (sh *shellSession) exit() int {
+	sh.t.Helper()
+	if _, err := io.WriteString(sh.stdin, "exit\n"); err != nil {
+		sh.t.Fatalf("write exit: %v", err)
+	}
+	select {
+	case code := <-sh.done:
+		return code
+	case <-time.After(10 * time.Second):
+		sh.t.Fatalf("the shell did not exit: %q", sh.stdout.String())
+		return -1
+	}
+}
+
+func TestCLITransactions(t *testing.T) {
+	s := startServer(t, false)
+	s.ok(t, createWorld)
+	s.ok(t, "SET BLOCK 0 0 IN world id = 1")
+	s.ok(t, "SET BLOCK 2 2 IN world id = 2")
+	s.fails(t, "BEGIN runs in the shell (chunk-cli shell)", "BEGIN")
+	versionOf := func(cx, cy int) string {
+		t.Helper()
+		var chunk struct {
+			Version json.Number `json:"version"`
+		}
+		out := s.ok(t, "--json", "GET CHUNK "+strconv.Itoa(cx)+" "+strconv.Itoa(cy)+" FROM world COLUMNS id")
+		if err := json.Unmarshal([]byte(out), &chunk); err != nil {
+			t.Fatalf("GET CHUNK %d %d: %v in %q", cx, cy, err, out)
+		}
+		return chunk.Version.String()
+	}
+
+	sh := s.startShell(t)
+	// A commit applies the writes to two chunks with one version; reads
+	// inside see the transaction's own writes, decoded with the columns
+	// DESCRIBE reads on the same connection.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("SET BLOCK 0 0 IN world id = 10", "(applies at COMMIT)\nchunk*> ", "")
+	sh.expect("SET BLOCK 2 2 IN world id = 20", "(applies at COMMIT)\nchunk*> ", "")
+	sh.expect("--json SET BLOCK 3 3 IN world id = 21", "null\nchunk*> ", "")
+	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 10\nchunk*> ", "")
+	sh.expect("--json GET BLOCK 2 2 FROM world COLUMNS id", `{"id":20}`+"\nchunk*> ", "")
+	if out, errOut := sh.send("--blocks GET AREA 0 0 TO 1 1 FROM world COLUMNS id"); errOut != "" ||
+		!strings.Contains(out, "chunk 0 0\n") || !strings.Contains(out, "  block 3 3\n    id = 21\n") || !strings.HasSuffix(out, "chunk*> ") {
+		t.Fatalf("GET AREA in a transaction: %q, %q", out, errOut)
+	}
+	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 1\n" {
+		t.Fatalf("a write is seen before COMMIT: %q", out)
+	}
+	// DESCRIBE runs inside a transaction.
+	if out, errOut := sh.send("DESCRIBE world"); errOut != "" || !strings.HasPrefix(out, "table = world\n") || !strings.HasSuffix(out, "chunk*> ") {
+		t.Fatalf("DESCRIBE in a transaction: %q, %q", out, errOut)
+	}
+	// Refused statements leave the transaction open.
+	sh.expect("SHOW TABLES", "chunk*> ", "error: INVALID_ARGUMENT inside a transaction")
+	sh.expect("SET BLOCK 0 0 IN world id = 11 IF VERSION 1", "chunk*> ", "error: INVALID_ARGUMENT IF VERSION")
+	sh.expect("COMMIT now", "chunk*> ", "error: SYNTAX")
+	sh.expect("BEGIN", "chunk*> ", "error: INVALID_ARGUMENT a transaction is already open")
+	out, errOut := sh.send("COMMIT")
+	committed, ok := strings.CutSuffix(out, "\nchunk> ")
+	if errOut != "" || !ok {
+		t.Fatalf("COMMIT: %q, %q", out, errOut)
+	}
+	if first, second := versionOf(0, 0), versionOf(1, 1); first != committed || second != committed {
+		t.Fatalf("COMMIT printed %s, the chunks have %s and %s", committed, first, second)
+	}
+	if out := s.ok(t, "GET BLOCK 2 2 FROM world COLUMNS id"); out != "id = 20\n" {
+		t.Fatalf("after COMMIT: %q", out)
+	}
+
+	// Reads see the snapshot; a plain write to a chunk the transaction read
+	// makes COMMIT a CONFLICT that writes nothing.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 10\nchunk*> ", "")
+	s.ok(t, "SET BLOCK 1 1 IN world id = 30")
+	sh.expect("GET BLOCK 1 1 FROM world COLUMNS id", "NULL\nchunk*> ", "")
+	sh.expect("SET BLOCK 0 0 IN world id = 12", "(applies at COMMIT)\nchunk*> ", "")
+	sh.expect("COMMIT", "chunk> ", "error: CONFLICT chunk_changed")
+	if !strings.Contains(sh.stderr.String(), "(the transaction ended and wrote nothing; run it again from BEGIN)\n") {
+		t.Fatalf("CONFLICT: %q", sh.stderr.String())
+	}
+	if out := s.ok(t, "--blocks", "GET AREA 0 0 TO 0 0 FROM world COLUMNS id"); !strings.Contains(out, "block 0 0\n    id = 10\n") {
+		t.Fatalf("after CONFLICT: %q", out)
+	}
+	// Run again, it commits.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("GET BLOCK 1 1 FROM world COLUMNS id", "id = 30\nchunk*> ", "")
+	sh.expect("SET BLOCK 0 0 IN world id = 12", "(applies at COMMIT)\nchunk*> ", "")
+	if out, errOut := sh.send("COMMIT"); errOut != "" || !strings.HasSuffix(out, "\nchunk> ") {
+		t.Fatalf("COMMIT again: %q, %q", out, errOut)
+	}
+
+	// A CONFLICT inside the transaction ends it too.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 12\nchunk*> ", "")
+	s.ok(t, "ALTER TABLE world ADD COLUMN extra i8 NULL")
+	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "chunk> ", "error: CONFLICT table_changed")
+
+	// ROLLBACK discards the writes; COMMIT of nothing gives no version.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("DELETE BLOCK 0 0 FROM world", "(applies at COMMIT)\nchunk*> ", "")
+	sh.expect("ROLLBACK", "OK\nchunk> ", "")
+	sh.expect("ROLLBACK", "OK\nchunk> ", "")
+	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT no transaction is open")
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("COMMIT", "(nothing written)\nchunk> ", "")
+	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
+		t.Fatalf("after ROLLBACK: %q", out)
+	}
+
+	// Leaving the shell closes its connection, which rolls the open
+	// transaction back.
+	sh.expect("BEGIN", "OK\nchunk*> ", "")
+	sh.expect("SET BLOCK 0 0 IN world id = 77", "(applies at COMMIT)\nchunk*> ", "")
+	if code := sh.exit(); code != 0 {
+		t.Fatalf("exit: %d, %q", code, sh.stderr.String())
+	}
+	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
+		t.Fatalf("after leaving the shell: %q", out)
 	}
 }

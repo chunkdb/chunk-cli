@@ -169,6 +169,36 @@ chunk> --json GET BLOCK 0 0 FROM world COLUMNS id
 chunk> exit
 ```
 
+## Transactions
+
+In the shell, `BEGIN` starts a [transaction](https://github.com/chunkdb/chunkdb/blob/main/docs/TRANSACTIONS.md) on the shell's connection and the prompt turns `chunk*>`. Its reads see one snapshot of one table, its writes print `(applies at COMMIT)`, and `COMMIT` applies them together and prints the version every written chunk now has (`(nothing written)` without writes).
+
+```text
+chunk> BEGIN
+OK
+chunk*> GET BLOCK 10 4 FROM world COLUMNS id
+id = 7
+chunk*> SET BLOCK 10 4 IN world id = 8
+(applies at COMMIT)
+chunk*> SET BLOCK 300 7 IN world id = 9
+(applies at COMMIT)
+chunk*> COMMIT
+5
+chunk>
+```
+
+`ROLLBACK` discards the writes; leaving the shell or losing the connection does too. Inside a transaction only `GET`, `SET`, `DELETE`, `DESCRIBE` and `PING` run, without `IF VERSION`; other statements fail with `INVALID_ARGUMENT` and the transaction stays open.
+
+If another write changed a chunk the transaction read or wrote, `COMMIT` (or a statement inside) fails with `CONFLICT` and nothing is written; run the transaction again from `BEGIN`. The CLI does not retry.
+
+```text
+chunk*> COMMIT
+error: CONFLICT chunk_changed a chunk the transaction read or wrote changed after its snapshot (the transaction ended and wrote nothing; run it again from BEGIN)
+chunk>
+```
+
+A one-shot statement closes its connection, so `BEGIN`, `COMMIT` and `ROLLBACK` there fail with an error that points to the shell.
+
 ## Usage
 
 ```bash

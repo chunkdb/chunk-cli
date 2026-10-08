@@ -63,6 +63,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
+	statement := strings.Join(rest, " ")
+	if control := txnControlOf(statement); !shell && control != txnNone {
+		return fail(fmt.Errorf("%s runs in the shell (chunk-cli shell): a transaction lives on one connection, and a one-shot statement closes its connection", control))
+	}
+
 	term := console{in: stdin, out: stderr}
 	client, err := connect(opts, term)
 	if err != nil {
@@ -75,7 +80,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if shell {
 		err = runShell(client, term, stdout, opts.Statement)
 	} else {
-		err = execute(client, strings.Join(rest, " "), opts.Statement, stdout, term)
+		err = execute(client, nil, statement, opts.Statement, stdout, term)
 	}
 	if err != nil {
 		return fail(err)
@@ -114,12 +119,20 @@ func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
 
 // runShell reads one statement per line. A server error is printed and the
 // shell goes on; an error that leaves the connection unusable ends it.
+// BEGIN, COMMIT and ROLLBACK run on the shell's connection, and the prompt
+// shows an open transaction; leaving the shell closes the connection, which
+// rolls an open transaction back.
 func runShell(client *chunkclient.Client, term console, stdout io.Writer, defaults statementOptions) error {
 	stderr := term.out
+	txn := &shellTxn{}
 	scanner := bufio.NewScanner(term.in)
 	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
 	for {
-		if _, err := fmt.Fprint(stdout, "chunk> "); err != nil {
+		prompt := "chunk> "
+		if txn.open {
+			prompt = "chunk*> "
+		}
+		if _, err := fmt.Fprint(stdout, prompt); err != nil {
 			return fmt.Errorf("write prompt: %w", err)
 		}
 		if !scanner.Scan() {
@@ -140,7 +153,7 @@ func runShell(client *chunkclient.Client, term console, stdout io.Writer, defaul
 		}
 		opts, statement, err := parseLineOptions(line, defaults)
 		if err == nil {
-			err = execute(client, statement, opts, stdout, term)
+			err = execute(client, txn, statement, opts, stdout, term)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -180,6 +193,8 @@ const shellHelp = `Type one CQL statement per line; exit or quit leaves the shel
 A line may start with --json, --blocks, --in <file>, --out <file> or
 --new-password-file <file>. CREATE USER <name> PASSWORD and ALTER USER <name>
 PASSWORD ask for the password and send its verifier.
+BEGIN starts a transaction (the prompt turns chunk*>): its reads see one
+snapshot, its writes apply together at COMMIT, ROLLBACK discards them.
 `
 
 func printUsage(w io.Writer) {
