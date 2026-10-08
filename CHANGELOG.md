@@ -3,43 +3,36 @@
 All notable changes to this project will be documented in this file.
 
 This CLI follows [Semantic Versioning](https://semver.org/). Version 1.x
-speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 2 (chunkdb
+speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
 2.0); see the engine's
 [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
 ## Unreleased
 
 ### Breaking
-- Protocol 2 (chunkdb 2.0). Every connection opens with `HELLO 2`, which
-  carries the token and the table; a wrong or missing token or an unknown
-  table fails the command, and a 1.x server is reported as such. The `auth`
-  command (also in the shell) is removed
-- `get` and `mget` print `(unset)` for a block without a value; `exists` is
-  removed
-- `chunk`, `chunkstate`, `chunkset` and `chunksetstate` keep their bit-text
-  form but run over `CHUNKGET` / `CHUNKPUT` with the table's geometry;
-  `chunkset` and `chunksetstate` print the chunk's version instead of `OK`
-- `chunkget [--state] [--zrle] [--out <file>]` replaces `chunkbin`,
-  `chunkbinstate`, `chunkbinc` and `chunkbincstate`; `chunkput [--state]
-  [--zrle] [--if <version>]` (hex or `--in <file>`) replaces `chunksetbin`,
-  `chunksetbinstate` and `chunkcas`
-- `chunkbatch` takes `--if <version>` before the coordinates instead of a
-  `<version|->` argument
-- `chunkrange` / `chunkradius` print the same lines as before, built from the
-  binary reply
+- Protocol 3 (chunkdb 2.0): the CLI sends CQL statements. `chunk-cli
+  [options] "<statement>"` runs one statement, `shell` reads one per line.
+  Every connection opens with `HELLO 3`; a server of an earlier protocol is
+  reported as such
+- the commands of protocol 2 and 1.x are removed: `get`, `set`, `unset`,
+  `mset`, `mget`, `chunk*`, `info`, `walflush`, `metrics`, the table
+  commands, `use`, `auth`, and the `--table` option. Their statements are
+  `GET` / `SET` / `DELETE BLOCK`, `GET` / `SET CHUNK`, `GET AREA`,
+  `SCAN CHUNKS`, `FLUSH WAL`, `SHOW METRICS`, `CREATE` / `ALTER` /
+  `DROP TABLE`, `SHOW TABLES` and `DESCRIBE`; the shell's `quit` now exits
+  locally like `exit`
+- bit-string block values, bit-text chunks and zrle transfer are removed
 
 ### Added
-- tables (chunkdb 2.0+): `tables`, `tableinfo`, `use`, `tablecreate`,
-  `tableset` and `tabledrop`, in the shell as well; `--table <table>` or the
-  URI path (`chunk://token@host:port/terrain`) selects the table every
-  command works on. The shell prompt shows the selected table
-  (`chunk:terrain>`)
-
-### Fixed
-- the usage text printed by `help` / `--help` gave `chunksetbin <cx> <cy> <hex>
-  | --in <file>`, a form the argument parser rejects: `--in` has to precede the
-  coordinates. It now shows both accepted forms, and lists `help` itself among
-  the commands
+- replies print for people: a block as `column = value` lines, values as CQL
+  literals (`NULL`, `'text'`, `x'bytes'`, `b'bits'`), maps as `key = value`
+  lines, arrays as numbered rows; `GET CHUNK` and `GET AREA` print a summary
+  of each chunk, decoded with the table's columns, and with `--blocks` the
+  values of every present block
+- `--json` prints each reply as one line of JSON
+- `--out <file>` writes a reply's bytes (a `GET CHUNK` chunk form) to a file,
+  `--in <file>` sends a file as the parameter `$1` of `SET CHUNK`; in the
+  shell these options, `--json` and `--blocks` may start a line
 
 ## 1.2.0 - 2026-09-03
 

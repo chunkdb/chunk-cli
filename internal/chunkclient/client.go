@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -21,34 +20,32 @@ type Config struct {
 	TLSServerName string
 }
 
-type ResponseKind int
-
-const (
-	ResponseSimple ResponseKind = iota + 1
-	ResponseBulk
-	ResponseArray
-	// ResponseNull is `$-1`: no value (an unset block).
-	ResponseNull
-)
-
 // ProtocolVersion is the chunkdb protocol this client speaks.
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
-type Response struct {
-	Kind   ResponseKind
-	Simple string
-	Bulk   []byte
-	// Array items; a null item (`$-1`) is nil, an empty one a non-nil
-	// empty slice.
-	Array [][]byte
+// ServerInfo is the HELLO reply: the protocol and the server's limits.
+type ServerInfo struct {
+	Protocol         uint64
+	ServerVersion    string
+	MaxLineBytes     uint64
+	MaxParameters    uint64
+	MaxAreaChunks    uint64
+	MaxResponseBytes uint64
+	MaxScanLimit     uint64
 }
 
-type ServerError struct {
-	Message string
+// Request is one statement and its parameter frames ($1 … $n). A nil
+// parameter is sent as NULL.
+type Request struct {
+	Statement  string
+	Parameters [][]byte
 }
 
-func (e *ServerError) Error() string {
-	return e.Message
+// Reply is the outcome of one pipelined request: a value, or the server's
+// error for that statement.
+type Reply struct {
+	Value Value
+	Err   *ServerError
 }
 
 type Client struct {
@@ -56,6 +53,10 @@ type Client struct {
 	reader  *bufio.Reader
 	writer  *bufio.Writer
 	timeout time.Duration
+	info    *ServerInfo
+	// broken is the transport or framing error that left the connection
+	// unusable.
+	broken error
 }
 
 func Dial(cfg Config) (*Client, error) {
@@ -106,165 +107,225 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// Hello sends `HELLO 2 [AUTH <token>] [TABLE <name>]`, the first command on a
-// connection, and returns the reply's key=value lines.
-func (c *Client) Hello(token string, table string) (map[string]string, error) {
-	command := "HELLO " + strconv.Itoa(ProtocolVersion)
+// Broken returns the error that left the connection unusable, or nil.
+func (c *Client) Broken() error {
+	return c.broken
+}
+
+// Info returns the HELLO reply, or nil before Hello.
+func (c *Client) Info() *ServerInfo {
+	return c.info
+}
+
+// Hello sends `HELLO 3 [AUTH <token>]`, the first line of a connection, and
+// returns the server's limits.
+func (c *Client) Hello(token string) (*ServerInfo, error) {
+	line := "HELLO " + strconv.Itoa(ProtocolVersion)
 	if token != "" {
-		command += " AUTH " + token
-	}
-	if table != "" {
-		command += " TABLE " + table
-	}
-	resp, err := c.Command(command)
-	if err != nil {
-		// A 1.x server does not know HELLO; one that requires a token answers
-		// AUTH_REQUIRED although HELLO carried it, which a protocol 2 server
-		// never does.
-		var serverErr *ServerError
-		if errors.As(err, &serverErr) && (strings.HasPrefix(serverErr.Message, "UNKNOWN_COMMAND") ||
-			(strings.HasPrefix(serverErr.Message, "AUTH_REQUIRED") && token != "")) {
-			return nil, fmt.Errorf("server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs chunkdb 2.0 or later", ProtocolVersion)
+		if strings.ContainsFunc(token, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			return nil, errors.New("the token must not contain spaces or control characters")
 		}
+		line += " AUTH " + token
+	}
+	replies, err := c.roundTrip([]Request{{Statement: line}})
+	if err != nil {
 		return nil, err
 	}
-	if resp.Kind != ResponseBulk {
-		return nil, fmt.Errorf("expected bulk HELLO reply")
+	if serverErr := replies[0].Err; serverErr != nil {
+		switch {
+		case serverErr.Code == "PROTOCOL" && strings.Contains(serverErr.Message, "HELLO 2"):
+			return nil, fmt.Errorf("the server speaks an older chunkdb protocol (%s); this chunk-cli needs protocol %d", serverErr.Message, ProtocolVersion)
+		// A 1.x server does not know HELLO; one that requires a token
+		// answers AUTH_REQUIRED although HELLO carried it.
+		case serverErr.Code == "UNKNOWN_COMMAND" || (serverErr.Code == "AUTH_REQUIRED" && token != ""):
+			return nil, fmt.Errorf("the server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs a server with protocol %d", ProtocolVersion, ProtocolVersion)
+		}
+		return nil, serverErr
 	}
-	info := ParseInfo(resp.Bulk)
-	if info["protocol"] != strconv.Itoa(ProtocolVersion) {
-		return nil, fmt.Errorf("server replied with protocol %q, expected %d", info["protocol"], ProtocolVersion)
+	info, err := parseServerInfo(replies[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("HELLO reply: %w", err)
+	}
+	c.info = info
+	return info, nil
+}
+
+func parseServerInfo(reply Value) (*ServerInfo, error) {
+	if reply.Kind != KindMap {
+		return nil, fmt.Errorf("expected a map, got %s", reply.Kind)
+	}
+	info := &ServerInfo{}
+	version, ok := reply.Lookup("server_version")
+	if !ok || version.Kind != KindBulk {
+		return nil, errors.New("no server_version")
+	}
+	info.ServerVersion = string(version.Bulk)
+	for _, field := range []struct {
+		key string
+		dst *uint64
+	}{
+		{"protocol", &info.Protocol},
+		{"max_line_bytes", &info.MaxLineBytes},
+		{"max_parameters", &info.MaxParameters},
+		{"max_area_chunks", &info.MaxAreaChunks},
+		{"max_response_bytes", &info.MaxResponseBytes},
+		{"max_scan_limit", &info.MaxScanLimit},
+	} {
+		value, ok := reply.Lookup(field.key)
+		if !ok {
+			return nil, fmt.Errorf("no %s", field.key)
+		}
+		number, err := value.Uint64()
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", field.key, err)
+		}
+		*field.dst = number
+	}
+	if info.Protocol != ProtocolVersion {
+		return nil, fmt.Errorf("server replied with protocol %d, expected %d", info.Protocol, ProtocolVersion)
 	}
 	return info, nil
 }
 
-// ParseInfo parses the key=value lines of an INFO, HELLO, USE or TABLEINFO
-// reply.
-func ParseInfo(payload []byte) map[string]string {
-	info := make(map[string]string)
-	for _, line := range strings.Split(string(payload), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
-			continue
-		}
-		key, value, _ := strings.Cut(line, "=")
-		info[key] = value
+// Do sends one statement with its parameter frames and returns its reply;
+// a server error is returned as a *ServerError.
+func (c *Client) Do(statement string, parameters ...[]byte) (Value, error) {
+	replies, err := c.Pipeline([]Request{{Statement: statement, Parameters: parameters}})
+	if err != nil {
+		return Value{}, err
 	}
-	return info
+	if replies[0].Err != nil {
+		return Value{}, replies[0].Err
+	}
+	return replies[0].Value, nil
 }
 
-func (c *Client) Command(command string) (Response, error) {
-	return c.CommandWithPayload(command, nil)
+// Pipeline sends every request before reading the replies, which come back
+// in request order. A server error fails only its own request; an error
+// returned here (framing, transport, a reply that does not parse) leaves
+// the connection unusable.
+func (c *Client) Pipeline(requests []Request) ([]Reply, error) {
+	for _, request := range requests {
+		if err := c.checkRequest(request); err != nil {
+			return nil, err
+		}
+	}
+	return c.roundTrip(requests)
 }
 
-// CommandWithPayload sends a request line followed by raw payload bytes and an
-// empty line (the CHUNKPUT framing). A nil payload sends the line alone.
-func (c *Client) CommandWithPayload(command string, payload []byte) (Response, error) {
+// checkRequest refuses a request the server could not frame: a statement is
+// one line, and the parameter frames must be exactly the `$` parameters the
+// statement names, or the server would read the frames as statements.
+func (c *Client) checkRequest(request Request) error {
+	statement := request.Statement
+	if strings.ContainsAny(statement, "\r\n") {
+		return errors.New("a statement must be a single line (it contains CR or LF)")
+	}
+	if strings.TrimSpace(statement) == "" {
+		return errors.New("empty statement")
+	}
+	if c.info != nil && uint64(len(statement)+2) > c.info.MaxLineBytes {
+		return fmt.Errorf("the statement is %d bytes, the server takes lines of at most %d bytes", len(statement)+2, c.info.MaxLineBytes)
+	}
+	want := ParameterCount(statement)
+	if want != len(request.Parameters) {
+		return fmt.Errorf("the statement names %d parameter(s) ($1 … $n), %d value(s) given", want, len(request.Parameters))
+	}
+	if c.info != nil && uint64(want) > c.info.MaxParameters {
+		return fmt.Errorf("the statement has %d parameters, the server takes at most %d", want, c.info.MaxParameters)
+	}
+	return nil
+}
+
+// ParameterCount counts the `$` outside quoted values, as the server does to
+// decide whether parameter frames follow a line; CQL numbers parameters
+// without gaps and uses each once.
+func ParameterCount(statement string) int {
+	quoted := false
+	count := 0
+	for i := 0; i < len(statement); i++ {
+		switch statement[i] {
+		case '\'':
+			// A doubled quote inside a quoted value closes and reopens it,
+			// which leaves the same state.
+			quoted = !quoted
+		case '$':
+			if !quoted {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (c *Client) roundTrip(requests []Request) ([]Reply, error) {
 	if c.conn == nil {
-		return Response{}, fmt.Errorf("connection is closed")
+		return nil, errors.New("connection is closed")
 	}
-
-	if strings.ContainsAny(command, "\r\n") {
-		return Response{}, fmt.Errorf("command contains invalid control characters")
+	if c.broken != nil {
+		return nil, fmt.Errorf("connection is unusable after an earlier error: %w", c.broken)
 	}
+	replies, err := c.exchange(requests)
+	if err != nil {
+		c.broken = err
+		return nil, err
+	}
+	return replies, nil
+}
 
+func (c *Client) exchange(requests []Request) ([]Reply, error) {
 	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
-		return Response{}, fmt.Errorf("set deadline: %w", err)
+		return nil, fmt.Errorf("set deadline: %w", err)
 	}
-
-	if _, err := c.writer.WriteString(command + "\r\n"); err != nil {
-		return Response{}, fmt.Errorf("write command: %w", err)
-	}
-	if payload != nil {
-		if _, err := c.writer.Write(payload); err != nil {
-			return Response{}, fmt.Errorf("write payload: %w", err)
-		}
-		if _, err := c.writer.WriteString("\r\n"); err != nil {
-			return Response{}, fmt.Errorf("write payload terminator: %w", err)
+	for _, request := range requests {
+		if err := writeRequest(c.writer, request); err != nil {
+			return nil, err
 		}
 	}
 	if err := c.writer.Flush(); err != nil {
-		return Response{}, fmt.Errorf("flush command: %w", err)
+		return nil, fmt.Errorf("send statement: %w", err)
 	}
-
-	line, err := c.reader.ReadString('\n')
-	if err != nil {
-		return Response{}, fmt.Errorf("read response header: %w", err)
+	replies := make([]Reply, 0, len(requests))
+	for range requests {
+		value, err := readReply(c.reader)
+		var serverErr *ServerError
+		switch {
+		case errors.As(err, &serverErr):
+			replies = append(replies, Reply{Err: serverErr})
+		case err != nil:
+			return nil, err
+		default:
+			replies = append(replies, Reply{Value: value})
+		}
 	}
-
-	line = strings.TrimRight(line, "\r\n")
-	if line == "" {
-		return Response{}, fmt.Errorf("empty response")
-	}
-
-	switch line[0] {
-	case '+':
-		return Response{Kind: ResponseSimple, Simple: line[1:]}, nil
-	case '-':
-		msg := line[1:]
-		if strings.HasPrefix(msg, "ERR ") {
-			msg = msg[4:]
-		}
-		return Response{}, &ServerError{Message: msg}
-	case '$':
-		if line == "$-1" {
-			return Response{Kind: ResponseNull}, nil
-		}
-		payload, err := c.readBulkPayload(line)
-		if err != nil {
-			return Response{}, err
-		}
-		return Response{Kind: ResponseBulk, Bulk: payload}, nil
-	case '*':
-		count, err := strconv.Atoi(strings.TrimSpace(line[1:]))
-		if err != nil || count < 0 {
-			return Response{}, fmt.Errorf("invalid array length: %q", line)
-		}
-		items := make([][]byte, 0, count)
-		for i := 0; i < count; i++ {
-			header, err := c.reader.ReadString('\n')
-			if err != nil {
-				return Response{}, fmt.Errorf("read array item header: %w", err)
-			}
-			header = strings.TrimRight(header, "\r\n")
-			if header == "" || header[0] != '$' {
-				return Response{}, fmt.Errorf("invalid array item header: %q", header)
-			}
-			if header == "$-1" {
-				items = append(items, nil)
-				continue
-			}
-			payload, err := c.readBulkPayload(header)
-			if err != nil {
-				return Response{}, err
-			}
-			items = append(items, payload)
-		}
-		return Response{Kind: ResponseArray, Array: items}, nil
-	default:
-		return Response{}, fmt.Errorf("unsupported response type: %q", line)
-	}
+	return replies, nil
 }
 
-// readBulkPayload reads a bulk payload + trailing CRLF given an already-read
-// "$<len>" header line.
-func (c *Client) readBulkPayload(header string) ([]byte, error) {
-	length, err := strconv.Atoi(strings.TrimSpace(header[1:]))
-	if err != nil || length < 0 {
-		return nil, fmt.Errorf("invalid bulk length: %q", header)
+func writeRequest(w *bufio.Writer, request Request) error {
+	if _, err := w.WriteString(request.Statement + "\r\n"); err != nil {
+		return fmt.Errorf("send statement: %w", err)
 	}
+	for _, frame := range request.Parameters {
+		if _, err := w.WriteString(frameHeader(frame)); err != nil {
+			return fmt.Errorf("send parameter: %w", err)
+		}
+		if frame == nil {
+			continue
+		}
+		if _, err := w.Write(frame); err != nil {
+			return fmt.Errorf("send parameter: %w", err)
+		}
+		if _, err := w.WriteString("\r\n"); err != nil {
+			return fmt.Errorf("send parameter: %w", err)
+		}
+	}
+	return nil
+}
 
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(c.reader, payload); err != nil {
-		return nil, fmt.Errorf("read bulk payload: %w", err)
+// frameHeader is `$<length>\r\n`, or `$-1\r\n` for NULL (a nil frame).
+func frameHeader(frame []byte) string {
+	if frame == nil {
+		return "$-1\r\n"
 	}
-
-	terminator := make([]byte, 2)
-	if _, err := io.ReadFull(c.reader, terminator); err != nil {
-		return nil, fmt.Errorf("read bulk terminator: %w", err)
-	}
-	if terminator[0] != '\r' || terminator[1] != '\n' {
-		return nil, fmt.Errorf("invalid bulk terminator")
-	}
-	return payload, nil
+	return "$" + strconv.Itoa(len(frame)) + "\r\n"
 }
