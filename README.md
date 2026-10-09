@@ -245,6 +245,7 @@ A one-shot statement closes its connection, so `BEGIN`, `COMMIT` and `ROLLBACK` 
 ```bash
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
+chunk-cli [options] watch <table> [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
 chunk-cli version | help
 ```
 
