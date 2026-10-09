@@ -291,3 +291,34 @@ func TestCLIWatchTLS(t *testing.T) {
 	}
 	p.interrupt(t)
 }
+
+func TestCLIWatchUnavailableHistoricalSchema(t *testing.T) {
+	s := startServer(t, false)
+	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+	keeper, err := connect(globalOptions{URI: s.uri, Timeout: 2 * time.Second}, console{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keeper.Close()
+	start, err := keeper.BeginWatch("WATCH world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	words := strings.Fields(start)
+	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
+	s.ok(t, "ALTER TABLE world ADD COLUMN name text(16) NULL")
+	p := startWatchProcess(t, s.uri, "--after", words[1]+":"+words[2])
+	_ = p.line(t)
+	select {
+	case err := <-p.done:
+		p.finished = true
+		if err == nil || !strings.Contains(p.stderr.String(), "need schema version 1, DESCRIBE returned 2") {
+			t.Fatalf("historical schema: %v %q", err, p.stderr.String())
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("watch did not reject unavailable historical schema")
+	}
+	for line := range p.lines {
+		t.Fatalf("decoded with the wrong schema: %q", line)
+	}
+}
