@@ -108,21 +108,26 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	if err != nil {
 		return err
 	}
+	// A statement connection occupies a server worker until closed. Describe
+	// before opening the stream so even a one-worker server can start WATCH.
+	lookup := func() (*chunkclient.Schema, error) {
+		describe, err := connectLogin(opts, uri, login)
+		if err != nil {
+			return nil, err
+		}
+		defer describe.Close()
+		return describe.Describe(watch.table)
+	}
+	initial, err := lookup()
+	if err != nil {
+		return err
+	}
+	schemas := map[uint64][]chunkclient.Column{initial.Version: initial.Columns}
 	stream, err := connectLogin(opts, uri, login)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
-	describe, err := connectLogin(opts, uri, login)
-	if err != nil {
-		return err
-	}
-	defer describe.Close()
-	initial, err := describe.Describe(watch.table)
-	if err != nil {
-		return err
-	}
-	schemas := map[uint64][]chunkclient.Column{initial.Version: initial.Columns}
 	start, err := stream.BeginWatch(watch.statement)
 	if err != nil {
 		return err
@@ -166,7 +171,7 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 			return fmt.Errorf("WATCH: expected a push, got %s", push.Kind)
 		}
 		if err := printWatchEvent(stdout, push, watch.json, schemas, func(version uint64) ([]chunkclient.Column, error) {
-			schema, err := describe.Describe(watch.table)
+			schema, err := lookup()
 			if err != nil {
 				return nil, err
 			}

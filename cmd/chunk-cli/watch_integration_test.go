@@ -322,3 +322,18 @@ func TestCLIWatchUnavailableHistoricalSchema(t *testing.T) {
 		t.Fatalf("decoded with the wrong schema: %q", line)
 	}
 }
+
+func TestCLIWatchSingleWorker(t *testing.T) {
+	s := startServerConfigured(t, false, true, 1)
+	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+	p := startWatchProcess(t, s.uri)
+	if line := p.line(t); !strings.HasPrefix(line, "start ") {
+		t.Fatal(line)
+	}
+	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
+	_ = p.line(t)
+	if line := p.line(t); !strings.Contains(line, "id = 7") {
+		t.Fatal(line)
+	}
+	p.interrupt(t)
+}
