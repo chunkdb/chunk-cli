@@ -54,6 +54,15 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	if err := fs.Parse(args[1:]); err != nil {
 		return watchOptions{}, err
 	}
+	var emptyFlag string
+	fs.Visit(func(f *flag.Flag) {
+		if (f.Name == "area" || f.Name == "after") && f.Value.String() == "" {
+			emptyFlag = f.Name
+		}
+	})
+	if emptyFlag != "" {
+		return watchOptions{}, fmt.Errorf("--%s needs a value", emptyFlag)
+	}
 	if fs.NArg() != 0 {
 		return watchOptions{}, fmt.Errorf("unexpected watch argument %q", fs.Arg(0))
 	}
@@ -271,7 +280,7 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 		if len(items) != 3 {
 			return errors.New("WATCH: resync needs three fields")
 		}
-		fmt.Fprintf(&out, "resync %s:%d; re-read state on another connection, then resume with --after %s:%d\n", epoch, revision, epoch, revision)
+		fmt.Fprintf(&out, "resync %s:%d; keep reading while re-reading state on another connection; retain this frontier for --after %s:%d\n", epoch, revision, epoch, revision)
 	case "schema":
 		if len(items) != 5 || items[4].Kind != chunkclient.KindArray {
 			return errors.New("WATCH: invalid schema push")
