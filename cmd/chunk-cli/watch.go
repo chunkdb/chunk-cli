@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/chunkdb/chunk-cli/internal/chunkclient"
 	"github.com/chunkdb/chunk-cli/internal/chunkuri"
@@ -111,24 +113,27 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	// A statement connection occupies a server worker until closed. Describe
 	// before opening the stream so even a one-worker server can start WATCH.
 	lookup := func() (*chunkclient.Schema, error) {
-		describe, err := connectLogin(opts, uri, login)
+		describe, err := connectWatchLogin(ctx, opts, uri, login)
 		if err != nil {
 			return nil, err
 		}
 		defer describe.Close()
-		return describe.Describe(watch.table)
+		var schema *chunkclient.Schema
+		err = watchCall(ctx, describe, func() error { schema, err = describe.Describe(watch.table); return err })
+		return schema, err
 	}
 	initial, err := lookup()
 	if err != nil {
 		return err
 	}
 	schemas := map[uint64][]chunkclient.Column{initial.Version: initial.Columns}
-	stream, err := connectLogin(opts, uri, login)
+	stream, err := connectWatchLogin(ctx, opts, uri, login)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
-	start, err := stream.BeginWatch(watch.statement)
+	var start string
+	err = watchCall(ctx, stream, func() error { start, err = stream.BeginWatch(watch.statement); return err })
 	if err != nil {
 		return err
 	}
@@ -170,6 +175,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if push.Kind != chunkclient.KindPush {
 			return fmt.Errorf("WATCH: expected a push, got %s", push.Kind)
 		}
+		if ctx.Err() != nil {
+			continue
+		} // UNWATCH drains without decoding or printing.
 		if err := printWatchEvent(stdout, push, watch.json, schemas, func(version uint64) ([]chunkclient.Column, error) {
 			schema, err := lookup()
 			if err != nil {
@@ -180,6 +188,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 			}
 			return schema.Columns, nil
 		}); err != nil {
+			if ctx.Err() != nil {
+				continue
+			}
 			return err
 		}
 	}
@@ -207,8 +218,8 @@ func watchCoordinate(v chunkclient.Value) (any, string, error) {
 		return nil, "", err
 	}
 	offset, err := v.Items[1].Uint64()
-	if err != nil {
-		return nil, "", err
+	if err != nil || offset > math.MaxUint32 {
+		return nil, "", errors.New("WATCH: invalid block offset")
 	}
 	return []any{chunk, offset}, fmt.Sprintf("[%d,%d]", chunk, offset), nil
 }
@@ -235,24 +246,33 @@ func watchRow(row chunkclient.Value, columns []chunkclient.Column) (any, string,
 
 func validateWatchValue(v chunkclient.Value, column chunkclient.Column) error {
 	valid := false
+	typ := column.Type
 	switch {
 	case v.Kind == chunkclient.KindNull:
 		valid = column.Null
-	case column.Type.Kind == chunkclient.ColumnUnsigned:
-		_, err := v.Uint64()
-		valid = err == nil
-	case column.Type.Kind == chunkclient.ColumnSigned:
-		_, err := v.Int64()
-		valid = err == nil
-	case column.Type.Kind == chunkclient.ColumnBool:
+	case typ.Kind == chunkclient.ColumnUnsigned:
+		n, err := v.Uint64()
+		valid = err == nil && (typ.Size == 64 || n < uint64(1)<<typ.Size)
+	case typ.Kind == chunkclient.ColumnSigned:
+		n, err := v.Int64()
+		valid = err == nil && (typ.Size == 64 || n >= -(int64(1)<<(typ.Size-1)) && n < int64(1)<<(typ.Size-1))
+	case typ.Kind == chunkclient.ColumnBool:
 		valid = v.Kind == chunkclient.KindBool
-	case column.Type.Kind == chunkclient.ColumnFloat32 || column.Type.Kind == chunkclient.ColumnFloat64:
-		valid = v.Kind == chunkclient.KindDouble
-	default:
-		valid = v.Kind == chunkclient.KindBulk
+	case typ.Kind == chunkclient.ColumnFloat32 || typ.Kind == chunkclient.ColumnFloat64:
+		n, err := v.Float64()
+		valid = err == nil && (typ.Kind == chunkclient.ColumnFloat64 || math.IsNaN(n) || math.IsInf(n, 0) || math.Abs(n) <= math.MaxFloat32)
+	case typ.Kind == chunkclient.ColumnBits:
+		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) == (typ.Size+7)/8
+		if valid && typ.Size%8 != 0 {
+			valid = v.Bulk[len(v.Bulk)-1]>>uint(typ.Size%8) == 0
+		}
+	case typ.Kind == chunkclient.ColumnText:
+		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) <= typ.Size && utf8.Valid(v.Bulk)
+	case typ.Kind == chunkclient.ColumnBytes:
+		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) <= typ.Size
 	}
 	if !valid {
-		return fmt.Errorf("WATCH: invalid value for column %s (%s)", column.Name, column.Type)
+		return fmt.Errorf("WATCH: invalid value for column %s (%s)", column.Name, typ)
 	}
 	return nil
 }
@@ -379,4 +399,34 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 	}
 	_, err = w.Write(out.Bytes())
 	return err
+}
+
+// watchCall cancels a pending handshake or schema request by closing its
+// connection. Stream cancellation itself uses UNWATCH once setup has finished.
+func watchCall(ctx context.Context, client *chunkclient.Client, call func() error) error {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-ctx.Done():
+			_ = client.Close()
+		case <-done:
+		}
+	}()
+	defer func() { close(done); <-finished }()
+	return call()
+}
+
+func connectWatchLogin(ctx context.Context, opts globalOptions, uri chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
+	client, err := chunkclient.DialContext(ctx, chunkclient.Config{URI: uri, Timeout: opts.Timeout, TLSInsecure: opts.TLSInsecure, TLSServerName: opts.TLSServerName})
+	if err != nil {
+		return nil, err
+	}
+	err = watchCall(ctx, client, func() error { _, err := client.Hello(login); return err })
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("connecting failed: %w", err)
+	}
+	return client, nil
 }

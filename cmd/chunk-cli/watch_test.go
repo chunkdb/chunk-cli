@@ -128,3 +128,32 @@ func TestWatchSchemaVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchRejectsOutOfRangeValues(t *testing.T) {
+	cases := []struct {
+		typ   string
+		value chunkclient.Value
+	}{
+		{"u8", watchInt("256")}, {"i8", watchInt("128")}, {"i8", watchInt("-129")},
+		{"bits(5)", watchBulk("")}, {"bits(5)", watchBulk("xx")}, {"bits(5)", watchBulk(string([]byte{128}))},
+		{"text(2)", watchBulk("abc")}, {"text(2)", watchBulk(string([]byte{255}))}, {"bytes(2)", watchBulk("abc")},
+		{"f32", chunkclient.Value{Kind: chunkclient.KindDouble, Text: "1e40"}},
+	}
+	for _, tc := range cases {
+		typ, err := chunkclient.ParseColumnType(tc.typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateWatchValue(tc.value, chunkclient.Column{Name: "v", Type: typ}); err == nil {
+			t.Errorf("accepted %s %+v", tc.typ, tc.value)
+		}
+	}
+	if _, _, err := watchCoordinate(watchArray(watchInt("0"), watchInt("4294967296"))); err == nil {
+		t.Fatal("accepted oversized offset")
+	}
+	for _, args := range [][]string{{"world", "--area", ""}, {"world", "--after", ""}} {
+		if _, err := parseWatchArgs(args, false); err == nil {
+			t.Errorf("accepted empty flag %q", args)
+		}
+	}
+}
