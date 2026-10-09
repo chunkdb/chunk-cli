@@ -43,6 +43,12 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   PASSWORD` read the new password from `--new-password-file <file>` or ask
   for it on the terminal, and send its verifier as `VERIFIER $1`
 - `AUTH_REQUIRED` explains how to log in
+- transactions in the shell: `BEGIN`, `COMMIT` and `ROLLBACK` run on the
+  shell's connection and the prompt turns `chunk*>` while one is open;
+  writes inside print `(applies at COMMIT)`, `COMMIT` prints the version of
+  the written chunks, and a `CONFLICT` says the transaction ended without
+  writing. A one-shot `BEGIN`, `COMMIT` or `ROLLBACK` fails and points to
+  the shell
 
 ## 1.2.0 - 2026-09-03
 

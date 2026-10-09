@@ -168,8 +168,17 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 	return opts, rest, nil
 }
 
-// execute sends one statement and prints its reply.
-func execute(client *chunkclient.Client, statement string, opts statementOptions, stdout io.Writer, term console) error {
+// execute sends one statement and prints its reply. txn is the shell's
+// transaction state, nil for a one-shot statement.
+func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts statementOptions, stdout io.Writer, term console) (err error) {
+	inTxn := txn != nil && txn.open
+	if txn != nil {
+		defer func() { err = txn.ended(client, statement, err) }()
+		if control := txnControlOf(statement); control != txnNone {
+			return txn.control(client, control, statement, opts, stdout)
+		}
+	}
+
 	var parameters [][]byte
 	if rewritten, user, ok := passwordStatement(statement); ok {
 		if opts.in != "" {
@@ -225,11 +234,17 @@ func execute(client *chunkclient.Client, statement string, opts statementOptions
 				return printSchema(stdout, schema)
 			}
 		}
+		// A write inside a transaction answers `_`: it applies at COMMIT.
+		if inTxn && reply.Kind == chunkclient.KindNull && !opts.json && isWrite(statement) {
+			_, err = fmt.Fprintln(stdout, "(applies at COMMIT)")
+			return err
+		}
 		return printReply(stdout, reply, opts)
 	}
 
 	// A read whose reply is decoded by the table's columns: the schema is
-	// read in the same round trip, just before the statement.
+	// read in the same round trip, just before the statement (also inside a
+	// transaction, which runs DESCRIBE).
 	replies, err := client.Pipeline([]chunkclient.Request{
 		{Statement: "DESCRIBE " + info.table},
 		{Statement: statement, Parameters: parameters},
