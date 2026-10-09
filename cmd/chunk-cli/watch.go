@@ -10,6 +10,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/chunkdb/chunk-cli/internal/chunkclient"
@@ -24,6 +25,8 @@ type watchOptions struct {
 	table     string
 	statement string
 	json      bool
+	slot      string
+	ackEvery  uint64
 }
 
 func parseWatchPosition(text string) (watchPosition, error) {
@@ -46,20 +49,25 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	if table == "" || (table[0] != '_' && (table[0] < 'a' || table[0] > 'z')) || strings.Trim(table, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
 		return watchOptions{}, fmt.Errorf("invalid table %q", table)
 	}
-	opts := watchOptions{table: table, statement: "WATCH " + table, json: json}
+	opts := watchOptions{table: table, statement: "WATCH " + table, json: json, ackEvery: 1}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var area, after string
 	fs.StringVar(&area, "area", "", "inclusive chunk rectangle")
 	fs.StringVar(&after, "after", "", "epoch:revision")
+	fs.StringVar(&opts.slot, "slot", "", "durable slot name")
+	fs.Uint64Var(&opts.ackEvery, "ack-every", 1, "acknowledge every n printed changes (requires --slot)")
 	fs.BoolVar(&opts.json, "json", json, "one JSON object per event")
 	if err := fs.Parse(args[1:]); err != nil {
 		return watchOptions{}, err
 	}
 	var emptyFlag string
 	fs.Visit(func(f *flag.Flag) {
-		if (f.Name == "area" || f.Name == "after") && f.Value.String() == "" {
+		if (f.Name == "area" || f.Name == "after" || f.Name == "slot") && f.Value.String() == "" {
 			emptyFlag = f.Name
+		}
+		if f.Name == "ack-every" && opts.slot == "" {
+			emptyFlag = "slot"
 		}
 	})
 	if emptyFlag != "" {
@@ -67,6 +75,16 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	}
 	if fs.NArg() != 0 {
 		return watchOptions{}, fmt.Errorf("unexpected watch argument %q", fs.Arg(0))
+	}
+	if opts.ackEvery == 0 {
+		return watchOptions{}, errors.New("--ack-every must be positive")
+	}
+	if opts.slot != "" {
+		name := opts.slot
+		if len(name) > 63 || (name[0] != '_' && (name[0] < 'a' || name[0] > 'z')) || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+			return watchOptions{}, fmt.Errorf("invalid slot %q: expected [a-z_][a-z0-9_]*, 1-63 bytes", name)
+		}
+		opts.statement += " SLOT '" + name + "'"
 	}
 	if area != "" {
 		parts := strings.Split(area, ",")
@@ -148,17 +166,46 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	if watch.json {
 		err = writeJSON(stdout, orderedMap{{"type", "start"}, {"position", position}})
 	} else {
-		_, err = fmt.Fprintf(stdout, "start %s:%d\n", position.Epoch, position.Revision)
+		line := fmt.Sprintf("start %s:%d\n", position.Epoch, position.Revision)
+		var n int
+		n, err = io.WriteString(stdout, line)
+		if err == nil && n != len(line) {
+			err = io.ErrShortWrite
+		}
 	}
 	if err != nil {
 		return err
 	}
 	done := make(chan struct{})
 	stopped := make(chan error, 1)
+	// Acknowledgements and UNWATCH share the writer. Keep pending state under
+	// the same lock so cancellation flushes only fully printed changes.
+	var sendMu sync.Mutex
+	var pending, lastRevision uint64
+	ending := false
+	ackPending := func() error {
+		if pending == 0 {
+			return nil
+		}
+		if err := stream.AckWatch(lastRevision); err != nil {
+			return err
+		}
+		pending = 0
+		return nil
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
-			stopped <- stream.EndWatch()
+			sendMu.Lock()
+			ending = true
+			err := ackPending()
+			if err == nil {
+				err = stream.EndWatch()
+			} else {
+				_ = stream.Close()
+			}
+			sendMu.Unlock()
+			stopped <- err
 		case <-done:
 			stopped <- nil
 		}
@@ -169,6 +216,7 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if err != nil {
 			return err
 		}
+
 		if push.Kind == chunkclient.KindSimple && push.Text == "OK" && ctx.Err() != nil {
 			return nil
 		}
@@ -178,6 +226,13 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if ctx.Err() != nil {
 			continue
 		} // UNWATCH drains without decoding or printing.
+		// Finish printing and register its position before cancellation can
+		// send the final ACK and UNWATCH.
+		sendMu.Lock()
+		if ending {
+			sendMu.Unlock()
+			continue
+		}
 		if err := printWatchEvent(stdout, push, watch.json, schemas, func(version uint64) ([]chunkclient.Column, error) {
 			schema, err := lookup()
 			if err != nil {
@@ -188,9 +243,21 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 			}
 			return schema.Columns, nil
 		}); err != nil {
+			sendMu.Unlock()
 			if ctx.Err() != nil {
 				continue
 			}
+			return err
+		}
+		if watch.slot != "" && string(push.Items[0].Bulk) == "change" {
+			lastRevision, _ = push.Items[2].Uint64() // validated by printWatchEvent
+			pending++
+			if pending >= watch.ackEvery {
+				err = ackPending()
+			}
+		}
+		sendMu.Unlock()
+		if err != nil {
 			return err
 		}
 	}
@@ -397,7 +464,10 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 	if json {
 		return writeJSON(w, fields)
 	}
-	_, err = w.Write(out.Bytes())
+	n, err := w.Write(out.Bytes())
+	if err == nil && n != out.Len() {
+		return io.ErrShortWrite
+	}
 	return err
 }
 

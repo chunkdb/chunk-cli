@@ -83,6 +83,51 @@ Schemas are retained by version for the lifetime of a stream. If replay needs an
 older schema unavailable through DESCRIBE or earlier schema events, the command
 fails explicitly instead of decoding those rows with the current schema.
 
+### Durable slots
+
+On a server supporting durable slots, create a slot before the changes you need
+to keep. `--slot` resumes from its written acknowledgement and sends ACK only
+after a complete change has printed. The default is every change;
+`--ack-every <n>` batches that many changes and requires `--slot`. Ctrl-C also
+acknowledges a partially filled batch before UNWATCH. Schema descriptions do not
+count toward the batch. Slot names match `[a-z_][a-z0-9_]*`, 1–63 bytes.
+
+This example uses a fresh `world` table with one `u8` column. While the watch is
+running, another terminal writes `SET BLOCK 0 0 IN world id = 7`:
+
+```text
+$ chunk-cli "CREATE TABLE world (id u8) CHUNK 2 x 2"
+OK
+$ chunk-cli "CREATE SLOT 'consumer' ON world"
+OK
+$ chunk-cli watch world --slot consumer
+start 206a190bc6ce96ffcac34fcfc8322257:0
+schema 206a190bc6ce96ffcac34fcfc8322257:2 version 1
+change revision 2 time_ms 1791585663562 user admin
+  block 0 0: (absent) -> {id = 7}
+```
+
+After Ctrl-C, the written position is visible through SHOW SLOTS:
+
+```text
+$ chunk-cli "SHOW SLOTS ON world"
+1) table = world, name = consumer, epoch = 206a190bc6ce96ffcac34fcfc8322257, acked = 2, retained_bytes = 0, lost = false
+$ chunk-cli watch world --slot consumer --ack-every 10 --json
+$ chunk-cli "DROP SLOT 'consumer' ON world"
+OK
+```
+
+CREATE/DROP SLOT require ADMIN on the table; watching requires READ. SHOW SLOTS
+also works in the shell. `--after epoch:revision` can resume beyond the slot's
+written acknowledgement. A lost slot ends the command with `SLOT_LOST`; rebuild
+consumer state, drop the slot and create it again.
+
+A crash can repeat printed changes, including ACKs the server has not persisted.
+Printing to stdout does not confirm that a downstream process stored the output.
+For exactly-once output, use a client that atomically stores `(epoch, revision)`
+with its output, acknowledges after that commit, and reconnects AFTER the stored
+position. See the server's [durable slot guide](https://github.com/chunkdb/chunkdb/blob/main/docs/CHANGE_FEED.md#durable-slots).
+
 ## Logging In
 
 The CLI logs in as the user of the URI (`chunk://user@host:4242/`) or `--user`. The password comes from the first of:
@@ -245,7 +290,7 @@ A one-shot statement closes its connection, so `BEGIN`, `COMMIT` and `ROLLBACK` 
 ```bash
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
-chunk-cli [options] watch <table> [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
+chunk-cli [options] watch <table> [--slot name [--ack-every n]] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
 chunk-cli version | help
 ```
 

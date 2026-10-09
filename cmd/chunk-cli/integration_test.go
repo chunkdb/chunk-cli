@@ -63,7 +63,7 @@ func startServerWith(t *testing.T, tls, users bool) *testServer {
 	return startServerConfigured(t, tls, users, 4)
 }
 
-func startServerConfigured(t *testing.T, tls, users bool, workers int) *testServer {
+func startServerConfigured(t *testing.T, tls, users bool, workers int, extraArgs ...string) *testServer {
 	t.Helper()
 	binary := os.Getenv("CHUNKDB_SERVER_BIN")
 	if binary == "" {
@@ -82,6 +82,7 @@ func startServerConfigured(t *testing.T, tls, users bool, workers int) *testServ
 		s.scheme = "chunks"
 	}
 	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", strconv.Itoa(workers), "--log-level", "warn"}
+	args = append(args, extraArgs...)
 	if users {
 		args = append(args, "--admin-user", adminUser, "--admin-password-file", writePasswordFile(t, adminPassword))
 		s.uri = s.uriFor(adminUser, adminPassword)

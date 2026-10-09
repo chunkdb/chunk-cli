@@ -27,6 +27,27 @@ func TestWatchArguments(t *testing.T) {
 	}
 }
 
+func TestWatchSlotArguments(t *testing.T) {
+	opts, err := parseWatchArgs([]string{"world", "--slot", "consumer_1", "--ack-every", "2", "--area", "0,0,1,1", "--after", watchEpoch + ":9"}, false)
+	if err != nil || opts.statement != "WATCH world SLOT 'consumer_1' AREA 0 0 TO 1 1 AFTER "+watchEpoch+" 9" || opts.ackEvery != 2 {
+		t.Fatalf("got %+v, %v", opts, err)
+	}
+	opts, err = parseWatchArgs([]string{"world", "--slot", "consumer"}, false)
+	if err != nil || opts.ackEvery != 1 {
+		t.Fatalf("default: %+v %v", opts, err)
+	}
+	for _, args := range [][]string{
+		{"world", "--slot", ""}, {"world", "--slot", "UPPER"}, {"world", "--slot", "1bad"},
+		{"world", "--slot", "bad'name"}, {"world", "--slot", "bad\nname"}, {"world", "--slot", strings.Repeat("a", 64)},
+		{"world", "--ack-every", "1"}, {"world", "--slot", "consumer", "--ack-every", "0"},
+		{"world", "--slot", "consumer", "--ack-every", "-1"}, {"world", "--slot", "consumer", "--ack-every", "18446744073709551616"},
+	} {
+		if _, err := parseWatchArgs(args, false); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
 func watchBulk(s string) chunkclient.Value {
 	return chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte(s)}
 }
