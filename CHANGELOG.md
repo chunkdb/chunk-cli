@@ -35,6 +35,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
 - `--ack-every` without `--slot` reports the missing requirement
 
 ### Added
+- `migrate <file>` applies named schema steps once, prints applied/skipped results and stops on the first error; `migrations` lists their history, with JSON output supported by both commands
 - `watch <table> --slot <name>` resumes a durable slot and acknowledges only fully printed changes; `--ack-every <n>` batches acknowledgements (default 1), and Ctrl-C flushes a partial batch before UNWATCH. `CREATE SLOT`, `DROP SLOT` and `SHOW SLOTS` work as statements and in the shell
 - `watch <table>` streams committed before/after changes, schema updates and resync positions, with inclusive chunk `--area`, `--after epoch:revision`, and NDJSON `--json`; Ctrl-C sends UNWATCH and waits for its acknowledgement
 - replies print for people: a block as `column = value` lines, values as CQL
