@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 // Human output: a value as the CQL literal that writes it (NULL, true,

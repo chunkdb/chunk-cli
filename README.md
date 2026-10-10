@@ -3,6 +3,12 @@
 The command-line client for [chunkdb 2.0](https://github.com/chunkdb/chunkdb), a storage engine for tables of chunks containing typed blocks.
 It sends [CQL](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md) over protocol 3 and prints replies for people or JSON for scripts.
 
+Install the 2.0 CLI with Go 1.25.6 or newer:
+
+```bash
+go install github.com/chunkdb/chunk-cli/v2/cmd/chunk-cli@v2.0.0
+```
+
 ## Five-minute start
 
 Start a server with the [server quick start](https://github.com/chunkdb/chunkdb/blob/main/docs/QUICK_START.md).

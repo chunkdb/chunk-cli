@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkuri"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkuri"
 )
 
 // scriptedClient is a client whose server answers with the given bytes and

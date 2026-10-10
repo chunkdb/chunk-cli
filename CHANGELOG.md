@@ -11,6 +11,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).
 
 ### Breaking
+- The Go module path is `github.com/chunkdb/chunk-cli/v2` for 2.x; 1.x installs keep `github.com/chunkdb/chunk-cli/cmd/chunk-cli@<1.x-version>`
 - Use chunkdb 2.0 protocol 3: one CQL statement per invocation or line in the shell, with HELLO 3 on each connection.
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 

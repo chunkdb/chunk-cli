@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkuri"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkuri"
 )
 
 func TestConnectionErrorAdvicePreservesCause(t *testing.T) {

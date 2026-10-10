@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 func TestParseMigrations(t *testing.T) {

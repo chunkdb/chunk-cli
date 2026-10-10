@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 // txnControl is a statement that starts or ends a transaction.
