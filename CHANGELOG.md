@@ -16,6 +16,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- Print never-written chunks as (null), or JSON null, while retaining versioned empty forms and refusing NULL binary exports. (#6).
 - Connection errors explain how to check a refused endpoint, TLS mismatch or timeout while preserving the underlying error
 - Raw MIGRATE statements reach the server when the keyword is not lowercase or is followed by a quoted name; malformed file markers report their line instead of merging steps
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
@@ -23,6 +24,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - `--ack-every` without `--slot` reports the missing requirement
 
 ### Added
+- Table examples start from an empty server catalog; DESCRIBE includes per-table feed and durable-slot limits. (#6).
 - `examples/world.sh` creates and fills a typed table, reads an area and watches an update; its integration test runs the script against a server
 - `migrate <file>` applies named schema steps once, prints applied/skipped results and stops on the first error; `migrations` lists their history, with JSON output supported by both commands
 - `watch <table> --slot <name>` resumes a durable slot and acknowledges only fully printed changes; `--ack-every <n>` batches acknowledgements (default 1), and Ctrl-C flushes a partial batch before UNWATCH. `CREATE SLOT`, `DROP SLOT` and `SHOW SLOTS` work as statements and in the shell
