@@ -16,7 +16,7 @@ export CHUNKDB_URI=chunk://admin@127.0.0.1:4242/
 CHUNKCLI_BIN="$PWD/build/chunk-cli" bash examples/world.sh
 ```
 
-The [world example](examples/world.sh) creates a fresh `world` table with `kind u8` and `name text(16) NULL`, fills four blocks, reads a block and their chunk, then watches an update from grass to a door.
+The [world example](examples/world.sh) creates a fresh `world` table with `kind u8` and `name text(16) NULL`, fills four blocks, reads a block and an area with `GET AREA`, then watches an update from grass to a door.
 It exits after that change; it needs Bash and an unused `world` table.
 To repeat it, first delete only the example's data:
 

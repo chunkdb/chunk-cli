@@ -15,7 +15,7 @@ Without `--after`, watching starts after completed writes; `--after <epoch:revis
 JSON is one object per line with `type` and `position`; changes include `commit_time_ms`, user, schema version and before/after rows.
 Text output uses CQL literals and `(absent)` for a missing row.
 Schema events describe version changes; rows are decoded with their recorded schema.
-A `resync` event means the retained position is unavailable: keep consuming while rereading state on another connection, apply only changes newer than each chunk's version, and keep the reported frontier with the rebuilt state before applying later changes.
+A `resync` event means the retained position is unavailable; rebuild state using the server's [resynchronization procedure](https://github.com/chunkdb/chunkdb/blob/main/docs/CHANGE_FEED.md#resynchronizing).
 
 ## Durable consumer
 

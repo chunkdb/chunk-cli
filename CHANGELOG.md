@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Documentation
+- Correct the world example description and link feed recovery to the server procedure (#6).
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).
 
 ### Breaking
