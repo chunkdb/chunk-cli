@@ -10,6 +10,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
 ## Unreleased
 
 ### Breaking
+- The Go module path is `github.com/chunkdb/chunk-cli/v2` for 2.x; 1.x installs keep `github.com/chunkdb/chunk-cli/cmd/chunk-cli@<1.x-version>`
 - Protocol 3 (chunkdb 2.0): the CLI sends CQL statements. `chunk-cli
   [options] "<statement>"` runs one statement, `shell` reads one per line.
   Every connection opens with `HELLO 3`; a server of an earlier protocol is
