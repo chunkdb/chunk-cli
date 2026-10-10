@@ -271,6 +271,13 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	case statementGetBlock:
 		return printBlock(stdout, schema, info.columns, reply, opts)
 	case statementGetChunk:
+		if reply.Kind == chunkclient.KindNull {
+			if opts.json {
+				return writeJSON(stdout, nil)
+			}
+			_, err := fmt.Fprintln(stdout, "(null)")
+			return err
+		}
 		if reply.Kind != chunkclient.KindBulk {
 			return fmt.Errorf("GET CHUNK: expected a chunk form, got a %s", reply.Kind)
 		}

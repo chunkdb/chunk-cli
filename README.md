@@ -47,6 +47,8 @@ kind = 2
 name = 'door'
 ```
 
+A never-written chunk prints `(null)` (`null` with `--json`); a written empty chunk still shows its versioned form until collection removes it.
+
 ## Commands and guides
 
 All guide examples start from the world table above and use the same `CHUNKDB_URI` and password.

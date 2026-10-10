@@ -39,13 +39,14 @@ Per-line options are `--json`, `--blocks`, `--in`, `--out` and `--new-password-f
 ```
 
 Blocks print `column = value` lines; an absent block prints `NULL`.
+A never-written chunk prints `(null)`, or JSON `null`. A written chunk with all blocks deleted retains its empty form and version until collection removes it. `--out` refuses a NULL reply and leaves an existing output file unchanged.
 Chunk replies show version, schema version and presence count; `--blocks` adds rows, and AREA groups output by chunk.
 Values use CQL literals: numbers, booleans, `NULL`, quoted text, `x'hex'` bytes and `b'bits'` (lowest bit first).
 JSON blocks are objects; absent rows/null columns are null, bytes are hex strings and bits are strings.
 Integers print exactly; non-finite floats print as strings.
 
 SET/DELETE return the chunk's new version.
-Use a version returned by GET CHUNK for a conditional write (this shell example uses Python 3 to read the JSON version):
+Use a version returned by a non-NULL GET CHUNK for a conditional write (this shell example uses Python 3 to read the JSON version):
 
 ```bash
 version=$(./build/chunk-cli --uri "$CHUNKDB_URI" --json "GET CHUNK 0 0 FROM world" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
