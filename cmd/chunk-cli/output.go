@@ -355,7 +355,10 @@ func writeJSON(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(w, "%s\n", data)
+	n, err := fmt.Fprintf(w, "%s\n", data)
+	if err == nil && n != len(data)+1 {
+		return io.ErrShortWrite
+	}
 	return err
 }
 
