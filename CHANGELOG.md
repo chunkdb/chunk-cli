@@ -10,6 +10,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
 ## Unreleased
 
 ### Breaking
+- The Go module path is `github.com/chunkdb/chunk-cli/v2` for 2.x; 1.x installs keep `github.com/chunkdb/chunk-cli/cmd/chunk-cli@<1.x-version>`
 - Protocol 3 (chunkdb 2.0): the CLI sends CQL statements. `chunk-cli
   [options] "<statement>"` runs one statement, `shell` reads one per line.
   Every connection opens with `HELLO 3`; a server of an earlier protocol is
@@ -30,11 +31,13 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   connection. `--token` and the token in the URI are removed
 
 ### Fixed
+- Raw MIGRATE statements reach the server when the keyword is not lowercase or is followed by a quoted name; malformed file markers report their line instead of merging steps
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
 - final ACK and UNWATCH write failures are reported instead of the resulting stream read error
 - `--ack-every` without `--slot` reports the missing requirement
 
 ### Added
+- `migrate <file>` applies named schema steps once, prints applied/skipped results and stops on the first error; `migrations` lists their history, with JSON output supported by both commands
 - `watch <table> --slot <name>` resumes a durable slot and acknowledges only fully printed changes; `--ack-every <n>` batches acknowledgements (default 1), and Ctrl-C flushes a partial batch before UNWATCH. `CREATE SLOT`, `DROP SLOT` and `SHOW SLOTS` work as statements and in the shell
 - `watch <table>` streams committed before/after changes, schema updates and resync positions, with inclusive chunk `--area`, `--after epoch:revision`, and NDJSON `--json`; Ctrl-C sends UNWATCH and waits for its acknowledgement
 - replies print for people: a block as `column = value` lines, values as CQL
