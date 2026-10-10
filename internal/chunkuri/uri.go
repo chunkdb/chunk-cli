@@ -20,7 +20,7 @@ type Parsed struct {
 	Password string
 	Secure   bool
 	// Table is the table the path names (chunk://host:4242/terrain), empty
-	// for / (the server's default table).
+	// for / (the client's default table name).
 	Table string
 }
 

@@ -12,6 +12,7 @@ go install github.com/chunkdb/chunk-cli/v2/cmd/chunk-cli@v2.0.0
 ## Five-minute start
 
 Start a server with the [server quick start](https://github.com/chunkdb/chunkdb/blob/main/docs/QUICK_START.md).
+A fresh server starts with no tables; the example creates its named table before writing.
 From this repository, with Go 1.25.6 or newer:
 
 ```bash

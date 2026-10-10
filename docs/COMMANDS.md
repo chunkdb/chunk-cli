@@ -38,6 +38,9 @@ Per-line options are `--json`, `--blocks`, `--in`, `--out` and `--new-password-f
 ./build/chunk-cli --uri "$CHUNKDB_URI" "SCAN CHUNKS FROM world"
 ```
 
+
+Table options `feed_buffer_bytes` and `slot_max_bytes` take positive per-table byte budgets for the in-memory feed and durable-slot retention. Set them in `CREATE TABLE ... WITH` or `ALTER TABLE ... SET`; `DESCRIBE` reports the effective limits. Omitted limits use the server's configured defaults, normally 64 MiB and 1 GiB.
+
 Blocks print `column = value` lines; an absent block prints `NULL`.
 A never-written chunk prints `(null)`, or JSON `null`. A written chunk with all blocks deleted retains its empty form and version until its disk artifacts and cached state are removed. `--out` refuses a NULL reply and leaves an existing output file unchanged.
 Chunk replies show version, schema version and presence count; `--blocks` adds rows, and AREA groups output by chunk.

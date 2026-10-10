@@ -220,10 +220,14 @@ func TestCLIBlocks(t *testing.T) {
 	if out := s.ok(t, "PING"); out != "PONG\n" {
 		t.Fatalf("PING: %q", out)
 	}
+	if out := s.ok(t, "SHOW TABLES"); out != "(empty)\n" {
+		t.Fatalf("fresh SHOW TABLES: %q", out)
+	}
+	s.fails(t, "NO_TABLE", "DESCRIBE default")
 	if out := s.ok(t, createWorld); out != "OK\n" {
 		t.Fatalf("CREATE TABLE: %q", out)
 	}
-	if out := s.ok(t, "SHOW", "TABLES"); out != "1) default\n2) world\n" {
+	if out := s.ok(t, "SHOW", "TABLES"); out != "1) world\n" {
 		t.Fatalf("SHOW TABLES: %q", out)
 	}
 	version := strings.TrimSpace(s.ok(t, "SET BLOCK 1 0 IN world id = 18446744073709551615, s = -3, f = 1.5, ok = TRUE, "+
@@ -378,7 +382,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 
 func TestCLITablesAndAlter(t *testing.T) {
 	s := startServer(t, false)
-	s.ok(t, "CREATE TABLE t (a u8, label text(8) NULL) CHUNK 2 x 2 WITH durability_mode = 'fsync-wal'")
+	s.ok(t, "CREATE TABLE t (a u8, label text(8) NULL) CHUNK 2 x 2 WITH durability_mode = 'fsync-wal', feed_buffer_bytes = 2097152, slot_max_bytes = 4194304")
 	out := s.ok(t, "DESCRIBE t")
 	if !strings.HasPrefix(out, "table = t\nversion = 1\nchunk = 2 x 2\nlarge = ") ||
 		!strings.Contains(out, "columns:\n  a u8\n  label text(8) NULL\noptions:\n  durability_mode = fsync-wal\n") {
@@ -415,7 +419,9 @@ func TestCLITablesAndAlter(t *testing.T) {
 		t.Fatalf("after ALTER COLUMN TYPE: %q", out)
 	}
 	s.ok(t, "ALTER TABLE t SET checkpoint_updates = 10")
-	if out := s.ok(t, "--json", "DESCRIBE t"); !strings.Contains(out, `"checkpoint_updates":10`) || !strings.Contains(out, `{"id":1,"name":"a","type":"u4","null":false,"required":false,"default":null}`) {
+	s.ok(t, "ALTER TABLE t SET feed_buffer_bytes = 3145728")
+	s.ok(t, "ALTER TABLE t SET slot_max_bytes = 5242880")
+	if out := s.ok(t, "--json", "DESCRIBE t"); !strings.Contains(out, `"checkpoint_updates":10`) || !strings.Contains(out, `"feed_buffer_bytes":3145728`) || !strings.Contains(out, `"slot_max_bytes":5242880`) || !strings.Contains(out, `{"id":1,"name":"a","type":"u4","null":false,"required":false,"default":null}`) {
 		t.Fatalf("DESCRIBE --json: %q", out)
 	}
 	s.ok(t, "DROP TABLE t")
