@@ -7,9 +7,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chunkdb/chunk-cli/v2/internal/chunkuri"
@@ -100,7 +102,7 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("connect %s: %w", address, err)
+		return nil, connectionError("connect", address, cfg.URI.Secure, err)
 	}
 
 	return &Client{
@@ -338,6 +340,7 @@ func (c *Client) roundTrip(requests []Request) ([]Reply, error) {
 	}
 	replies, err := c.exchange(requests)
 	if err != nil {
+		err = connectionError("request", c.conn.RemoteAddr().String(), false, err)
 		c.broken = err
 		return nil, err
 	}
@@ -399,4 +402,24 @@ func frameHeader(frame []byte) string {
 		return "$-1\r\n"
 	}
 	return "$" + strconv.Itoa(len(frame)) + "\r\n"
+}
+
+// connectionError keeps the transport cause available to errors.Is/As.
+func connectionError(operation, address string, secure bool, err error) error {
+	var netErr net.Error
+	var tlsRecord tls.RecordHeaderError
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("%s %s: connection refused; start the server and check the host and port: %w", operation, address, err)
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return fmt.Errorf("%s %s: timed out; check server availability or increase --timeout; a sent write may already have applied: %w", operation, address, err)
+	case errors.As(err, &tlsRecord):
+		return fmt.Errorf("%s %s: TLS handshake failed; use chunks:// for a TLS server or chunk:// for a plain server: %w", operation, address, err)
+	case secure && !errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s %s: TLS connection failed; check the server certificate and chunks:// endpoint: %w", operation, address, err)
+	case errors.Is(err, io.EOF):
+		return fmt.Errorf("%s %s: connection closed before the reply; check chunk:// versus chunks:// and the server logs: %w", operation, address, err)
+	default:
+		return fmt.Errorf("%s %s: %w", operation, address, err)
+	}
 }

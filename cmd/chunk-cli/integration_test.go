@@ -499,9 +499,9 @@ func TestCLIConnection(t *testing.T) {
 	expect("URI login", s.uri, 0, "PONG\n", "", "PING")
 	expect("--user and --password-file", s.uriFor("", ""), 0, "PONG\n", "", "--user", adminUser, "--password-file", writePasswordFile(t, adminPassword), "PING")
 	expect("--password-file over the URI", s.uriFor(adminUser, "wrong"), 0, "PONG\n", "", "--password-file", writePasswordFile(t, adminPassword), "PING")
-	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password\n", "PING")
-	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password\n", "PING")
-	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED", "PING")
+	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password; check the username and password in your connection URI\n", "PING")
+	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password; check the username and password in your connection URI\n", "PING")
+	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI", "PING")
 	expect("no user", s.uriFor("", ""), 1, "", "(log in with --user or chunk://user:password@host/)", "PING")
 	expect("no password", s.uriFor(adminUser, ""), 1, "", "error: no password for user admin", "PING")
 	t.Setenv(passwordEnv, adminPassword)
@@ -561,9 +561,9 @@ func TestCLIUsers(t *testing.T) {
 		t.Fatalf("bot reads: %d %q %q", code, out, errOut)
 	}
 	for statement, want := range map[string]string{
-		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED WRITE on world\n",
-		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED MANAGES USERS",
-		"SHOW METRICS":                  "error: PERMISSION_DENIED ADMIN on *",
+		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED WRITE on world; ask an administrator to grant this right\n",
+		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED MANAGES USERS; ask an administrator to grant this right\n",
+		"SHOW METRICS":                  "error: PERMISSION_DENIED ADMIN on *; ask an administrator to grant this right\n",
 	} {
 		if code, out, errOut := bot("bot: first@", statement); code != 1 || out != "" || !strings.HasPrefix(errOut, want) {
 			t.Fatalf("bot %s: %d %q %q", statement, code, out, errOut)
