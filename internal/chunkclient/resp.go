@@ -268,7 +268,7 @@ func readLine(r *bufio.Reader) (string, error) {
 	line, err := r.ReadString('\n')
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			return "", errors.New("connection closed by the server")
+			return "", fmt.Errorf("connection closed by the server: %w", err)
 		}
 		return "", fmt.Errorf("read reply: %w", err)
 	}

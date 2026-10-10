@@ -30,11 +30,13 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   connection. `--token` and the token in the URI are removed
 
 ### Fixed
+- Connection errors explain how to check a refused endpoint, TLS mismatch or timeout while preserving the underlying error
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
 - final ACK and UNWATCH write failures are reported instead of the resulting stream read error
 - `--ack-every` without `--slot` reports the missing requirement
 
 ### Added
+- `examples/world.sh` creates and fills a typed table, reads an area and watches an update; its integration test runs the script against a server
 - `migrate <file>` applies named schema steps once, prints applied/skipped results and stops on the first error; `migrations` lists their history, with JSON output supported by both commands
 - `watch <table> --slot <name>` resumes a durable slot and acknowledges only fully printed changes; `--ack-every <n>` batches acknowledgements (default 1), and Ctrl-C flushes a partial batch before UNWATCH. `CREATE SLOT`, `DROP SLOT` and `SHOW SLOTS` work as statements and in the shell
 - `watch <table>` streams committed before/after changes, schema updates and resync positions, with inclusive chunk `--area`, `--after epoch:revision`, and NDJSON `--json`; Ctrl-C sends UNWATCH and waits for its acknowledgement

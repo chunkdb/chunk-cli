@@ -41,3 +41,19 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      - name: Checkout server
+        uses: actions/checkout@v5
+        with:
+          repository: chunkdb/chunkdb
+          path: chunkdb-server
+
+      - name: Build example server
+        run: |
+          cmake -S chunkdb-server -B chunkdb-server/build -DCMAKE_BUILD_TYPE=Release -DCHUNKDB_WERROR=ON
+          cmake --build chunkdb-server/build --parallel 3 --target chunkdb_server
+
+      - name: Run world example test
+        env:
+          CHUNKDB_SERVER_BIN: ${{ github.workspace }}/chunkdb-server/build/chunkdb_server
+        run: go test ./cmd/chunk-cli -run '^TestCLIWorldExample$' -count=1

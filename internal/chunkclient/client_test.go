@@ -413,6 +413,9 @@ func TestTimeout(t *testing.T) {
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("expected a timeout, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "timed out; check server availability or increase --timeout; a sent write may already have applied") {
+		t.Fatalf("timeout advice: %v", err)
+	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("the timeout took %v", elapsed)
 	}

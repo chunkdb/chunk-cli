@@ -7,6 +7,27 @@ It sends [CQL](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md) stateme
 Speaks `chunkdb` protocol 3; see the engine's [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 A server of an earlier protocol is reported as such when connecting.
 
+## World in five minutes
+
+Start a server with the [server quick start](https://github.com/chunkdb/chunkdb/blob/main/docs/QUICK_START.md), then run from this repository:
+
+```bash
+export CHUNKDB_PASSWORD='your-admin-password'
+CHUNKDB_URI=chunk://admin@127.0.0.1:4242/ bash examples/world.sh
+```
+
+The [world example](examples/world.sh) builds the CLI, creates a fresh `world`
+table with `kind u8` and `name text(16) NULL`, fills four blocks, reads a block
+and their area, and prints a watched update from grass to a door.
+It exits after that change. It needs Bash and Go; use `CHUNKCLI_BIN=/path/to/chunk-cli`
+with an already built binary. Choose an unused `world` table to run it.
+Before repeating the example, remove its table with
+`chunk-cli --uri "$CHUNKDB_URI" "DROP TABLE world"`; this deletes the example data.
+`CHUNKDB_URI` selects the server; `CHUNKDB_PASSWORD` supplies its password.
+For a TLS server use `chunks://`; `CHUNKDB_TLS_INSECURE=1` accepts a local
+self-signed certificate. Without `CHUNKDB_URI`, the example connects as admin
+at `127.0.0.1:4242`.
+
 ## Installation
 
 Requirements:
@@ -26,7 +47,7 @@ Install into `GOBIN`:
 go install ./cmd/chunk-cli
 ```
 
-## Quick Start
+## Basic commands
 
 Default URI is `chunk://127.0.0.1:4242/`. A statement is the arguments after the options, joined by spaces; quote it so the shell keeps quotes and `$` as they are. The examples after the first leave out the login (see [Logging In](#logging-in)).
 
