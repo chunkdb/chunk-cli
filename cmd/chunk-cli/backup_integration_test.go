@@ -9,10 +9,17 @@ import (
 )
 
 func TestCLIBackupStatement(t *testing.T) {
+	canonicalTemp := func() string {
+		dir, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
 	s := startServer(t, false)
 	s.ok(t, "CREATE TABLE world (n u8) CHUNK 2 x 2")
 	s.ok(t, "SET BLOCK 0 0 IN world n = 7")
-	target := filepath.Join(t.TempDir(), "it's-backup")
+	target := filepath.Join(canonicalTemp(), "it's-backup")
 	statement := "BACKUP TO '" + strings.ReplaceAll(target, "'", "''") + "'"
 	code, output, errout := s.cli(t, "", "--json", statement)
 	if code != 0 || errout != "" {
@@ -45,7 +52,7 @@ func TestCLIBackupStatement(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, "chunkdb.backup")); err != nil {
 		t.Fatal(err)
 	}
-	next := filepath.Join(t.TempDir(), "shell-backup")
+	next := filepath.Join(canonicalTemp(), "shell-backup")
 	code, output, errout = s.cli(t, "BACKUP TO '"+next+"'\nquit\n", "shell")
 	if code != 0 || errout != "" || !strings.Contains(output, "cuts") {
 		t.Fatalf("shell backup: %d %q %q", code, output, errout)
