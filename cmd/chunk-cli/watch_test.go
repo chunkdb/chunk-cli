@@ -178,3 +178,10 @@ func TestWatchRejectsOutOfRangeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchAckEveryRequiresSlot(t *testing.T) {
+	_, err := parseWatchArgs([]string{"world", "--ack-every", "1"}, false)
+	if err == nil || err.Error() != "--ack-every requires --slot" {
+		t.Fatalf("argument error: %v", err)
+	}
+}
