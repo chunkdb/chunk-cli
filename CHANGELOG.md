@@ -2,12 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-This CLI follows [Semantic Versioning](https://semver.org/). Version 1.x
-speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
-2.0); see the engine's
-[compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
+The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility policy](https://github.com/chunkdb/chunkdb/blob/main/docs/COMPATIBILITY.md).
 
 ## Unreleased
+
+### Documentation
+- Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).
 
 ### Breaking
 - Protocol 3 (chunkdb 2.0): the CLI sends CQL statements. `chunk-cli
