@@ -89,8 +89,11 @@ On a server supporting durable slots, create a slot before the changes you need
 to keep. `--slot` resumes from its written acknowledgement and sends ACK only
 after a complete change has printed. The default is every change;
 `--ack-every <n>` batches that many changes and requires `--slot`. Ctrl-C also
-acknowledges a partially filled batch before UNWATCH. Schema descriptions do not
-count toward the batch. Slot names match `[a-z_][a-z0-9_]*`, 1–63 bytes.
+acknowledges a partially filled batch before UNWATCH. A change whose output
+finishes after Ctrl-C begins is not acknowledged. UNWATCH is sent even while
+an event's output is blocked; the command finishes once the pending event output
+write returns. Schema descriptions do not count toward the batch. Slot names
+match `[a-z_][a-z0-9_]*`, 1–63 bytes.
 
 This example uses a fresh `world` table with one `u8` column. While the watch is
 running, another terminal writes `SET BLOCK 0 0 IN world id = 7`:
@@ -105,6 +108,7 @@ start 206a190bc6ce96ffcac34fcfc8322257:0
 schema 206a190bc6ce96ffcac34fcfc8322257:2 version 1
 change revision 2 time_ms 1791585663562 user admin
   block 0 0: (absent) -> {id = 7}
+^C
 ```
 
 After Ctrl-C, the written position is visible through SHOW SLOTS:
@@ -113,6 +117,8 @@ After Ctrl-C, the written position is visible through SHOW SLOTS:
 $ chunk-cli "SHOW SLOTS ON world"
 1) table = world, name = consumer, epoch = 206a190bc6ce96ffcac34fcfc8322257, acked = 2, retained_bytes = 0, lost = false
 $ chunk-cli watch world --slot consumer --ack-every 10 --json
+{"type":"start","position":{"epoch":"206a190bc6ce96ffcac34fcfc8322257","revision":2}}
+^C
 $ chunk-cli "DROP SLOT 'consumer' ON world"
 OK
 ```

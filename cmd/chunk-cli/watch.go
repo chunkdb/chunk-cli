@@ -62,16 +62,20 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		return watchOptions{}, err
 	}
 	var emptyFlag string
+	var ackEverySet bool
 	fs.Visit(func(f *flag.Flag) {
 		if (f.Name == "area" || f.Name == "after" || f.Name == "slot") && f.Value.String() == "" {
 			emptyFlag = f.Name
 		}
-		if f.Name == "ack-every" && opts.slot == "" {
-			emptyFlag = "slot"
+		if f.Name == "ack-every" {
+			ackEverySet = true
 		}
 	})
 	if emptyFlag != "" {
 		return watchOptions{}, fmt.Errorf("--%s needs a value", emptyFlag)
+	}
+	if ackEverySet && opts.slot == "" {
+		return watchOptions{}, errors.New("--ack-every requires --slot")
 	}
 	if fs.NArg() != 0 {
 		return watchOptions{}, fmt.Errorf("unexpected watch argument %q", fs.Arg(0))
@@ -176,10 +180,31 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	if err != nil {
 		return err
 	}
+	return consumeWatch(ctx, watch, stream, stdout, schemas, func(version uint64) ([]chunkclient.Column, error) {
+		schema, err := lookup()
+		if err != nil {
+			return nil, err
+		}
+		if schema.Version != version {
+			return nil, fmt.Errorf("WATCH: need schema version %d, DESCRIBE returned %d", version, schema.Version)
+		}
+		return schema.Columns, nil
+	})
+}
+
+// watchStream is the dedicated connection after WATCH has started.
+type watchStream interface {
+	ReadWatch() (chunkclient.Value, error)
+	AckWatch(uint64) error
+	EndWatch() error
+	Close() error
+}
+
+func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, stdout io.Writer, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error)) (resultErr error) {
 	done := make(chan struct{})
 	stopped := make(chan error, 1)
 	// Acknowledgements and UNWATCH share the writer. Keep pending state under
-	// the same lock so cancellation flushes only fully printed changes.
+	// the same lock so cancellation flushes only changes printed beforehand.
 	var sendMu sync.Mutex
 	var pending, lastRevision uint64
 	ending := false
@@ -188,7 +213,7 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 			return nil
 		}
 		if err := stream.AckWatch(lastRevision); err != nil {
-			return err
+			return fmt.Errorf("ACK: %w", err)
 		}
 		pending = 0
 		return nil
@@ -196,24 +221,36 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	go func() {
 		select {
 		case <-ctx.Done():
-			sendMu.Lock()
-			ending = true
-			err := ackPending()
-			if err == nil {
-				err = stream.EndWatch()
-			} else {
-				_ = stream.Close()
-			}
-			sendMu.Unlock()
-			stopped <- err
 		case <-done:
-			stopped <- nil
+			if ctx.Err() == nil {
+				stopped <- nil
+				return
+			}
+		}
+		sendMu.Lock()
+		ending = true
+		err := ackPending()
+		if err == nil {
+			if err = stream.EndWatch(); err != nil {
+				err = fmt.Errorf("UNWATCH: %w", err)
+			}
+		} else {
+			_ = stream.Close()
+		}
+		sendMu.Unlock()
+		stopped <- err
+	}()
+	readFailed := false
+	defer func() {
+		close(done)
+		if stopErr := <-stopped; stopErr != nil && (resultErr == nil || readFailed) {
+			resultErr = stopErr
 		}
 	}()
-	defer func() { close(done); <-stopped }()
 	for {
 		push, err := stream.ReadWatch()
 		if err != nil {
+			readFailed = true
 			return err
 		}
 
@@ -226,28 +263,18 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if ctx.Err() != nil {
 			continue
 		} // UNWATCH drains without decoding or printing.
-		// Finish printing and register its position before cancellation can
-		// send the final ACK and UNWATCH.
-		sendMu.Lock()
-		if ending {
-			sendMu.Unlock()
-			continue
-		}
-		if err := printWatchEvent(stdout, push, watch.json, schemas, func(version uint64) ([]chunkclient.Column, error) {
-			schema, err := lookup()
-			if err != nil {
-				return nil, err
-			}
-			if schema.Version != version {
-				return nil, fmt.Errorf("WATCH: need schema version %d, DESCRIBE returned %d", version, schema.Version)
-			}
-			return schema.Columns, nil
-		}); err != nil {
-			sendMu.Unlock()
+		if err := printWatchEvent(stdout, push, watch.json, schemas, fetch); err != nil {
 			if ctx.Err() != nil {
 				continue
 			}
 			return err
+		}
+		// Printing and schema lookup must not block cancellation. Register
+		// only changes whose output completed before cancellation began.
+		sendMu.Lock()
+		if ending || ctx.Err() != nil {
+			sendMu.Unlock()
+			continue
 		}
 		if watch.slot != "" && string(push.Items[0].Bulk) == "change" {
 			lastRevision, _ = push.Items[2].Uint64() // validated by printWatchEvent

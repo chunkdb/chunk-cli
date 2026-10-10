@@ -58,7 +58,9 @@ func TestCLIWatchSlotsIntegration(t *testing.T) {
 		Type     string        `json:"type"`
 		Position watchPosition `json:"position"`
 	}
-	if err := json.Unmarshal([]byte(resumed.line(t)), &event); err != nil || event.Type != "start" || event.Position.Revision != revision {
+	resumedStart := resumed.line(t)
+	t.Logf("Observed resumed slot start: %s", resumedStart)
+	if err := json.Unmarshal([]byte(resumedStart), &event); err != nil || event.Type != "start" || event.Position.Revision != revision {
 		t.Fatalf("resumed start: %+v %v", event, err)
 	}
 	nextVersion := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 8"))

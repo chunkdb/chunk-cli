@@ -373,61 +373,75 @@ func TestWatchBlockedOutputCancellationSendsUnwatch(t *testing.T) {
 	}
 }
 
+// failingWatchStream allows control writes to fail independently of reads,
+// without relying on when a kernel reports a TCP reset.
+type failingWatchStream struct {
+	pushes      []chunkclient.Value
+	failure     error
+	failCommand string
+	finished    chan struct{}
+}
+
+func (s *failingWatchStream) ReadWatch() (chunkclient.Value, error) {
+	if len(s.pushes) != 0 {
+		push := s.pushes[0]
+		s.pushes = s.pushes[1:]
+		return push, nil
+	}
+	<-s.finished
+	return chunkclient.Value{}, net.ErrClosed
+}
+func (s *failingWatchStream) AckWatch(uint64) error {
+	if s.failCommand == "ACK" {
+		return s.failure
+	}
+	return nil
+}
+func (s *failingWatchStream) EndWatch() error { close(s.finished); return s.failure }
+func (s *failingWatchStream) Close() error    { close(s.finished); return nil }
+
 func TestWatchCancelReportsFinalWriteError(t *testing.T) {
 	for _, command := range []string{"ACK", "UNWATCH"} {
 		t.Run(command, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			kind := "change"
-			events := slotWireChange(1)
 			if command == "ACK" {
-				kind = "schema"
-				events += slotWireSchema(2)
+				kind = "resync"
+			}
+			stream := &failingWatchStream{failure: errors.New("final control write failed"), failCommand: command, finished: make(chan struct{})}
+			change := watchPush("change", watchInt("123"), chunkclient.Value{Kind: chunkclient.KindNull}, watchInt("1"), watchArray(watchArray(watchInt("0"), watchInt("0"), chunkclient.Value{Kind: chunkclient.KindNull}, watchArray(watchInt("7")))))
+			stream.pushes = []chunkclient.Value{change}
+			if command == "ACK" {
+				stream.pushes = append(stream.pushes, watchPush("resync"))
 			}
 			out := &slotOutput{blockType: kind, blocked: make(chan struct{}), release: make(chan struct{})}
 			blocked := out.blocked
-			reset := make(chan struct{})
-			uri, done := fakeSlotServer(t, func(conn net.Conn, r *bufio.Reader) error {
-				if _, err := io.WriteString(conn, "+OK "+watchEpoch+" 0\r\n"+events); err != nil {
-					return err
-				}
-				select {
-				case <-blocked:
-				case <-time.After(3 * time.Second):
-					return errors.New("output was not reached")
-				}
-				if err := conn.(*net.TCPConn).SetLinger(0); err != nil {
-					return err
-				}
-				if err := conn.Close(); err != nil {
-					return err
-				}
-				cancel()
-				close(reset)
-				return nil
-			})
 			result := make(chan error, 1)
 			go func() {
-				result <- runWatch(ctx, globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 2}, console{}, out)
+				result <- consumeWatch(ctx, watchOptions{slot: "consumer", ackEvery: 2}, stream, out, map[uint64][]chunkclient.Column{1: {{Name: "v", Type: chunkclient.ColumnType{Kind: chunkclient.ColumnUnsigned, Size: 8}}}}, nil)
 			}()
 			select {
-			case <-reset:
+			case <-blocked:
 			case <-time.After(3 * time.Second):
 				close(out.release)
-				t.Fatal("server did not reset stream")
+				t.Fatal("output was not reached")
 			}
-			// Keep stdout blocked until cancellation has closed the stream; the
-			// server reset makes the final control write fail before the read.
+			cancel()
+			select {
+			case <-stream.finished:
+			case <-time.After(time.Second):
+				t.Error("final control write waited for stdout")
+			}
 			close(out.release)
 			select {
 			case err := <-result:
-				if err == nil || !strings.Contains(err.Error(), command+":") {
+				if !errors.Is(err, stream.failure) || !strings.Contains(err.Error(), command+":") {
 					t.Fatalf("final %s error: %v", command, err)
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("watch did not finish")
 			}
-			waitSlotServer(t, done)
 		})
 	}
 }
