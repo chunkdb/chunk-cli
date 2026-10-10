@@ -10,24 +10,8 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).
 
 ### Breaking
-- Protocol 3 (chunkdb 2.0): the CLI sends CQL statements. `chunk-cli
-  [options] "<statement>"` runs one statement, `shell` reads one per line.
-  Every connection opens with `HELLO 3`; a server of an earlier protocol is
-  reported as such
-- the commands of protocol 2 and 1.x are removed: `get`, `set`, `unset`,
-  `mset`, `mget`, `chunk*`, `info`, `walflush`, `metrics`, the table
-  commands, `use`, `auth`, and the `--table` option. Their statements are
-  `GET` / `SET` / `DELETE BLOCK`, `GET` / `SET CHUNK`, `GET AREA`,
-  `SCAN CHUNKS`, `FLUSH WAL`, `SHOW METRICS`, `CREATE` / `ALTER` /
-  `DROP TABLE`, `SHOW TABLES` and `DESCRIBE`; the shell's `quit` now exits
-  locally like `exit`
-- bit-string block values, bit-text chunks and zrle transfer are removed
-- users replace the token: the CLI logs in with a user and password
-  (SCRAM-SHA-256), from `chunk://user:password@host/` (percent-decoded),
-  `--user`, `--password-file`, `CHUNKDB_PASSWORD` or a prompt without echo
-  on a terminal; without a user it logs in without one (`--auth none`
-  servers). A server that cannot prove it knows the password fails the
-  connection. `--token` and the token in the URI are removed
+- Use chunkdb 2.0 protocol 3: one CQL statement per invocation or line in the shell, with HELLO 3 on each connection.
+- Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
 - Connection errors explain how to check a refused endpoint, TLS mismatch or timeout while preserving the underlying error
@@ -61,29 +45,4 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
   writing. A one-shot `BEGIN`, `COMMIT` or `ROLLBACK` fails and points to
   the shell
 
-## 1.2.0 - 2026-09-03
-
-### Added
-- `chunksetbin` and `chunksetbinstate`: binary chunk writes over the new
-  `CHUNKSETBIN` command (chunkdb server 1.3+). The payload is given as hex or
-  read from a file with `--in`, in the byte layouts `chunkbin` /
-  `chunkbinstate` print, so `chunkbin --out` output can be written back as is.
-  Also available in `shell`
-
-## 1.1.0 - 2026-07-18
-
-### Added
-- World-read commands: `chunkscan`, `chunkrange`, `chunkradius`.
-- Chunk concurrency commands: `chunkver`, `chunkcas`, `chunkbatch`.
-- `walflush` explicit durability barrier command.
-- `chunkbinc` / `chunkbincstate` zrle-compressed binary chunk transfer with a
-  bounded local decoder.
-
-Each new command validates its arguments before sending. Existing commands and
-their output are unchanged.
-
-## 1.0.0
-
-Initial stable release: point and chunk-level commands (`get`/`set`/`exists`/
-`unset`, `chunkexists`/`chunk`/`chunkset`/`chunkbin` and their `state` forms),
-`mset`/`mget` batch commands, `info`, `metrics`, and the interactive `shell`.
+Historical release notes: [1.x and the protocol 3 transition](docs/releases/1.x.md).

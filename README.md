@@ -34,6 +34,13 @@ For a single statement, quote the whole CQL string; specify `--uri` on each invo
 ./build/chunk-cli --uri "$CHUNKDB_URI" shell
 ```
 
+The block read prints:
+
+```text
+kind = 2
+name = 'door'
+```
+
 ## Commands and guides
 
 All guide examples start from the world table above and use the same `CHUNKDB_URI` and password.
