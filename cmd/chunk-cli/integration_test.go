@@ -67,6 +67,9 @@ func startServerConfigured(t *testing.T, tls, users bool, workers int, extraArgs
 	t.Helper()
 	binary := os.Getenv("CHUNKDB_SERVER_BIN")
 	if binary == "" {
+		if os.Getenv("CHUNKDB_REQUIRE_SERVER") == "1" {
+			t.Fatal("CHUNKDB_SERVER_BIN is required for integration tests")
+		}
 		t.Skip("set CHUNKDB_SERVER_BIN to a chunkdb server binary to run the integration tests")
 	}
 
