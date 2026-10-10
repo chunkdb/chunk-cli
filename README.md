@@ -20,11 +20,13 @@ go build -o chunk-cli ./cmd/chunk-cli
 ./chunk-cli version
 ```
 
-Install into `GOBIN`:
+Install the 2.0 CLI into `GOBIN`:
 
 ```bash
-go install ./cmd/chunk-cli
+go install github.com/chunkdb/chunk-cli/v2/cmd/chunk-cli@v2.0.0
 ```
+
+From a local checkout, use `go install ./cmd/chunk-cli`.
 
 ## Quick Start
 

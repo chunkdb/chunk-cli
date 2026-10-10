@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
-	"github.com/chunkdb/chunk-cli/internal/chunkuri"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkuri"
 )
 
 func writeFile(t *testing.T, content string) string {
