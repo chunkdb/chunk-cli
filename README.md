@@ -42,6 +42,47 @@ chunk-cli "DESCRIBE world"
 
 `SET BLOCK`, `DELETE BLOCK` and `SET CHUNK` print the chunk version after the write; `IF VERSION <v>` writes only while the chunk still has that version, otherwise the statement fails with `VERSION_MISMATCH current=<v>`.
 
+## Watching changes
+
+A server supporting WATCH can stream committed changes of a table:
+
+```bash
+chunk-cli watch world --area 0,0,3,3
+chunk-cli watch world --after a1f8d6716431b4702a5daeeb9cda1c5d:4 --json
+```
+
+`--area` bounds are inclusive **chunk** coordinates. `--after` resumes after an
+`epoch:revision` position still retained by the server. Without it, the stream
+starts after completed writes. Output begins with that start position, followed
+by a header and one before/after line per changed block:
+
+```text
+start a1f8d6716431b4702a5daeeb9cda1c5d:0
+change revision 4 time_ms 1791575377810 user admin
+  block 0 0: (absent) -> {id = 18446744073709551615, name = 'door', flags = b'10110', blob = x'00ff'}
+```
+
+Values use the same literals as other CLI output; `(absent)` denotes a missing
+block, while `NULL` denotes a null column. Anonymous changes print
+`user (anonymous)`. Coordinates beyond int64 print as `[chunk,offset]`.
+`schema` lines identify schema changes. A `resync` line means the position is no
+longer available: keep reading while re-reading state on another connection,
+apply subsequent changes only when their revision exceeds each chunk's version,
+and retain the reported frontier with the rebuilt state before applying later
+changes.
+
+`--json` emits one object per line, including the initial `start`, with `type`
+and `position` (`epoch`, `revision`). Change objects include `commit_time_ms`,
+`user`, `schema_version` and `blocks` with `x`, `y`, `before` and `after`;
+absent rows are JSON null. Values follow the CLI's JSON conventions below.
+
+Ctrl-C sends UNWATCH, drains its acknowledgement and exits successfully. A lost
+connection or server error ends the command with a non-zero status; it does not
+reconnect automatically. WATCH runs through this command, outside the shell.
+Schemas are retained by version for the lifetime of a stream. If replay needs an
+older schema unavailable through DESCRIBE or earlier schema events, the command
+fails explicitly instead of decoding those rows with the current schema.
+
 ## Logging In
 
 The CLI logs in as the user of the URI (`chunk://user@host:4242/`) or `--user`. The password comes from the first of:
@@ -204,6 +245,7 @@ A one-shot statement closes its connection, so `BEGIN`, `COMMIT` and `ROLLBACK` 
 ```bash
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
+chunk-cli [options] watch <table> [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
 chunk-cli version | help
 ```
 

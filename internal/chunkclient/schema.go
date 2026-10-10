@@ -218,7 +218,7 @@ func ParseDescribe(reply Value) (*Schema, error) {
 	}
 	ids := map[uint32]bool{}
 	for i, item := range columns.Items {
-		column, err := parseColumn(item)
+		column, err := ParseColumn(item)
 		if err != nil {
 			return nil, fmt.Errorf("DESCRIBE: column %d: %w", i+1, err)
 		}
@@ -250,7 +250,8 @@ func sizePair(pair Value) (int, int, error) {
 	return out[0], out[1], nil
 }
 
-func parseColumn(item Value) (Column, error) {
+// ParseColumn parses one DESCRIBE or WATCH schema column.
+func ParseColumn(item Value) (Column, error) {
 	if item.Kind != KindMap {
 		return Column{}, fmt.Errorf("expected a map, got %s", item.Kind)
 	}

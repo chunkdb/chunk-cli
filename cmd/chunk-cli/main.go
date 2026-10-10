@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -63,6 +65,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if strings.EqualFold(rest[0], "watch") {
+		watch, err := parseWatchArgs(rest[1:], opts.Statement.json)
+		if err != nil {
+			return fail(err)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if err := runWatch(ctx, opts, watch, console{in: stdin, out: stderr}, stdout); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+
 	statement := strings.Join(rest, " ")
 	if control := txnControlOf(statement); !shell && control != txnNone {
 		return fail(fmt.Errorf("%s runs in the shell (chunk-cli shell): a transaction lives on one connection, and a one-shot statement closes its connection", control))
@@ -98,6 +113,10 @@ func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return connectLogin(opts, parsedURI, login)
+}
+
+func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
 	client, err := chunkclient.Dial(chunkclient.Config{
 		URI:           parsedURI,
 		Timeout:       opts.Timeout,
@@ -195,6 +214,7 @@ A line may start with --json, --blocks, --in <file>, --out <file> or
 PASSWORD ask for the password and send its verifier.
 BEGIN starts a transaction (the prompt turns chunk*>): its reads see one
 snapshot, its writes apply together at COMMIT, ROLLBACK discards them.
+Streams use chunk-cli watch <table>, outside the shell.
 `
 
 func printUsage(w io.Writer) {
@@ -203,6 +223,7 @@ func printUsage(w io.Writer) {
 Usage:
   chunk-cli [options] <CQL statement>
   chunk-cli [options] shell
+  chunk-cli [options] watch <table> [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
   chunk-cli version | help
 
 Options:

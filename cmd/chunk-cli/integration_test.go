@@ -60,6 +60,10 @@ func startServer(t *testing.T, tls bool) *testServer {
 // startServerWith starts a server with an administrator, or with --auth none
 // when users is false.
 func startServerWith(t *testing.T, tls, users bool) *testServer {
+	return startServerConfigured(t, tls, users, 4)
+}
+
+func startServerConfigured(t *testing.T, tls, users bool, workers int) *testServer {
 	t.Helper()
 	binary := os.Getenv("CHUNKDB_SERVER_BIN")
 	if binary == "" {
@@ -77,7 +81,7 @@ func startServerWith(t *testing.T, tls, users bool) *testServer {
 	if tls {
 		s.scheme = "chunks"
 	}
-	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", "4", "--log-level", "warn"}
+	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", strconv.Itoa(workers), "--log-level", "warn"}
 	if users {
 		args = append(args, "--admin-user", adminUser, "--admin-password-file", writePasswordFile(t, adminPassword))
 		s.uri = s.uriFor(adminUser, adminPassword)

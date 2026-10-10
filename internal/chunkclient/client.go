@@ -2,6 +2,7 @@ package chunkclient
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/tls"
 	"errors"
@@ -65,6 +66,11 @@ type Client struct {
 }
 
 func Dial(cfg Config) (*Client, error) {
+	return DialContext(context.Background(), cfg)
+}
+
+// DialContext opens a connection, including TLS, with cancellation.
+func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
@@ -88,9 +94,9 @@ func Dial(cfg Config) (*Client, error) {
 			tlsCfg.ServerName = cfg.URI.Host
 		}
 
-		conn, err = tls.DialWithDialer(&dialer, "tcp", address, tlsCfg)
+		conn, err = (&tls.Dialer{NetDialer: &dialer, Config: tlsCfg}).DialContext(ctx, "tcp", address)
 	} else {
-		conn, err = dialer.Dial("tcp", address)
+		conn, err = dialer.DialContext(ctx, "tcp", address)
 	}
 
 	if err != nil {

@@ -30,6 +30,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   connection. `--token` and the token in the URI are removed
 
 ### Added
+- `watch <table>` streams committed before/after changes, schema updates and resync positions, with inclusive chunk `--area`, `--after epoch:revision`, and NDJSON `--json`; Ctrl-C sends UNWATCH and waits for its acknowledgement
 - replies print for people: a block as `column = value` lines, values as CQL
   literals (`NULL`, `'text'`, `x'bytes'`, `b'bits'`), maps as `key = value`
   lines, arrays as numbered rows; `GET CHUNK` and `GET AREA` print a summary

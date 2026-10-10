@@ -22,6 +22,7 @@ const (
 	KindBulk
 	KindArray
 	KindMap
+	KindPush
 )
 
 // Value is one decoded RESP3 reply value.
@@ -97,6 +98,8 @@ func (k Kind) String() string {
 		return "array"
 	case KindMap:
 		return "map"
+	case KindPush:
+		return "push"
 	}
 	return "unknown"
 }
@@ -217,7 +220,10 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 			return Value{}, errors.New("bulk string is not terminated by CRLF")
 		}
 		return Value{Kind: KindBulk, Bulk: data[:length]}, nil
-	case '*':
+	case '*', '>':
+		if line[0] == '>' && depth != 0 {
+			return Value{}, errors.New("push inside an aggregate reply")
+		}
 		count, err := aggregateCount(body)
 		if err != nil {
 			return Value{}, err
@@ -230,7 +236,11 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 			}
 			items = append(items, item)
 		}
-		return Value{Kind: KindArray, Items: items}, nil
+		kind := KindArray
+		if line[0] == '>' {
+			kind = KindPush
+		}
+		return Value{Kind: kind, Items: items}, nil
 	case '%':
 		count, err := aggregateCount(body)
 		if err != nil {

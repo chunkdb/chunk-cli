@@ -171,6 +171,10 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 // execute sends one statement and prints its reply. txn is the shell's
 // transaction state, nil for a one-shot statement.
 func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts statementOptions, stdout io.Writer, term console) (err error) {
+	tokens := strings.Fields(statement)
+	if len(tokens) > 0 && strings.EqualFold(tokens[0], "WATCH") {
+		return errors.New("WATCH streams use chunk-cli watch <table>, outside the shell")
+	}
 	inTxn := txn != nil && txn.open
 	if txn != nil {
 		defer func() { err = txn.ended(client, statement, err) }()
