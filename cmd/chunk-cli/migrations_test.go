@@ -24,7 +24,7 @@ func TestParseMigrations(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, %v", got, err)
 	}
-	for _, statement := range []string{"CREATE TABLE w (id u8)", "ALTER TABLE w ADD id u8", "DROP TABLE w", "GRANT READ ON w TO bot", "REVOKE READ ON w FROM bot", "CREATE SLOT 'reader' ON w", "DROP SLOT 'reader' ON w"} {
+	for _, statement := range []string{"CREATE TABLE w (id u8)", "ALTER TABLE w ADD COLUMN id u8", "DROP TABLE w", "GRANT READ ON w TO bot", "REVOKE READ ON w FROM bot", "CREATE SLOT 'reader' ON w", "DROP SLOT 'reader' ON w"} {
 		if _, err := parseMigrations(strings.NewReader("-- migrate: _1\n" + statement)); err != nil {
 			t.Errorf("%q: %v", statement, err)
 		}
@@ -41,8 +41,8 @@ func TestParseMigrationsRejectsInvalidFiles(t *testing.T) {
 		"", "-- comment", "CREATE TABLE w (id u8)", "-- migrate: a", "-- migrate: A\nDROP TABLE w", "-- migrate: 0a\nDROP TABLE w",
 		"-- migrate: " + strings.Repeat("a", 64) + "\nDROP TABLE w", "-- migrate: x' DROP TABLE w\nDROP TABLE w",
 		"-- migrate: a\nDROP TABLE w\n-- migrate: a\nDROP TABLE w", "-- migrate: a\nPING", "-- migrate: a\nMIGRATE 'b' DROP TABLE w",
-		"-- migrate: a\nCREATE USER bot VERIFIER $1", "-- migrate: a\nALTER TABLE w ADD text text(8) DEFAULT $1",
-		"-- migrate: a\nDROP TABLE w; DROP TABLE z", "-- migrate: a\nALTER TABLE w ADD t text(8) DEFAULT 'a\nb'",
+		"-- migrate: a\nCREATE USER bot VERIFIER $1", "-- migrate: a\nALTER TABLE w ADD COLUMN text text(8) DEFAULT $1",
+		"-- migrate: a\nDROP TABLE w; DROP TABLE z", "-- migrate: a\nALTER TABLE w ADD COLUMN t text(8) DEFAULT 'a\nb'",
 		"-- migrate: a\nDROP TA\rBLE w", "-- migrate: a\nDROP TABLE w\x00", "-- migrate: a\nDROP TABLE " + strings.Repeat("a", 65536),
 	} {
 		if _, err := parseMigrations(strings.NewReader(text)); err == nil {
@@ -115,7 +115,7 @@ func fakeMigrationServer(t *testing.T, commands, replies []string) (string, <-ch
 }
 
 func TestMigrateFakeServer(t *testing.T) {
-	file := migrationFile(t, "-- migrate: a\nCREATE TABLE w (id u8)\n-- migrate: b\nALTER TABLE w ADD n u8\n-- migrate: c\nDROP TABLE w")
+	file := migrationFile(t, "-- migrate: a\nCREATE TABLE w (id u8)\n-- migrate: b\nALTER TABLE w ADD COLUMN n u8\n-- migrate: c\nDROP TABLE w")
 	for _, tc := range []struct {
 		name         string
 		replies      []string
@@ -130,7 +130,7 @@ func TestMigrateFakeServer(t *testing.T) {
 		{"wrong_type_stops", []string{"$7\r\napplied\r\n"}, false, 1, "", "migration \"a\": expected applied or skipped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			commands := []string{"MIGRATE 'a' CREATE TABLE w (id u8)", "MIGRATE 'b' ALTER TABLE w ADD n u8", "MIGRATE 'c' DROP TABLE w"}
+			commands := []string{"MIGRATE 'a' CREATE TABLE w (id u8)", "MIGRATE 'b' ALTER TABLE w ADD COLUMN n u8", "MIGRATE 'c' DROP TABLE w"}
 			uri, done := fakeMigrationServer(t, commands[:len(tc.replies)], tc.replies)
 			args := []string{"--uri", uri}
 			if tc.json {

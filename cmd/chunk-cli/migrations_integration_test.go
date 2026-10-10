@@ -14,7 +14,7 @@ func TestCLIMigrationsConcurrentAndConflict(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s := startServer(t, tls)
-			file := migrationFile(t, "-- migrate: create_world\nCREATE TABLE world (id u8) CHUNK 2 x 2\n-- migrate: add_name\nALTER TABLE world ADD name text(16) NULL\n-- migrate: create_slot\nCREATE SLOT 'consumer' ON world")
+			file := migrationFile(t, "-- migrate: create_world\nCREATE TABLE world (id u8) CHUNK 2 x 2\n-- migrate: add_name\nALTER TABLE world ADD COLUMN name text(16) NULL\n-- migrate: create_slot\nCREATE SLOT 'consumer' ON world")
 			type result struct {
 				code         int
 				out, failure string
@@ -82,7 +82,7 @@ func TestCLIMigrationsConcurrentAndConflict(t *testing.T) {
 
 func TestCLIMigrationStopsAfterSemanticError(t *testing.T) {
 	s := startServerWith(t, false, false)
-	file := migrationFile(t, "-- migrate: create_world\nCREATE TABLE world (id u8) CHUNK 2 x 2\n-- migrate: absent\nALTER TABLE missing ADD id u8\n-- migrate: later\nCREATE TABLE later (id u8) CHUNK 2 x 2")
+	file := migrationFile(t, "-- migrate: create_world\nCREATE TABLE world (id u8) CHUNK 2 x 2\n-- migrate: absent\nALTER TABLE missing ADD COLUMN id u8\n-- migrate: later\nCREATE TABLE later (id u8) CHUNK 2 x 2")
 	code, out, failure := s.cli(t, "", "migrate", file)
 	if code != 1 || out != "create_world applied\n" || !strings.Contains(failure, "migration \"absent\": NO_TABLE") {
 		t.Fatalf("got %d %q %q", code, out, failure)

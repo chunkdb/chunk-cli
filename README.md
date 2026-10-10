@@ -57,7 +57,7 @@ chunk-cli --uri chunk://admin@127.0.0.1:4242/ migrations
 -- migrate: create_world
 CREATE TABLE world (id u16, name text(32) NULL) CHUNK 16 x 16
 -- migrate: add_light
-ALTER TABLE world ADD light u4 DEFAULT 15
+ALTER TABLE world ADD COLUMN light u4 DEFAULT 15
 ```
 
 The command prints `create_world applied`, then `add_light applied`.
