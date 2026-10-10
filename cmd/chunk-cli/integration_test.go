@@ -81,7 +81,11 @@ func startServerConfigured(t *testing.T, tls, users bool, workers int, extraArgs
 	if tls {
 		s.scheme = "chunks"
 	}
-	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", t.TempDir(), "--durability", "relaxed", "--workers", strconv.Itoa(workers), "--log-level", "warn"}
+	dataDirectory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", dataDirectory, "--durability", "relaxed", "--workers", strconv.Itoa(workers), "--log-level", "warn"}
 	args = append(args, extraArgs...)
 	if users {
 		args = append(args, "--admin-user", adminUser, "--admin-password-file", writePasswordFile(t, adminPassword))
