@@ -253,7 +253,7 @@ $ chunk-cli "SHOW USERS"
   grants:
     world = READ
 $ chunk-cli --uri chunk://bot@127.0.0.1:4242/ "SET BLOCK 0 0 IN world id = 1"
-error: PERMISSION_DENIED WRITE on world
+error: PERMISSION_DENIED WRITE on world; ask an administrator to grant this right
 ```
 
 A user can change their own password; everything else on users needs `MANAGES USERS`. A table the user has no right on reads as `NO_TABLE`.
