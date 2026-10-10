@@ -42,8 +42,8 @@ chunk-cli "DESCRIBE world"
 
 `SET BLOCK`, `DELETE BLOCK` and `SET CHUNK` print the chunk version after the write; `IF VERSION <v>` writes only while the chunk still has that version, otherwise the statement fails with `VERSION_MISMATCH current=<v>`.
 
-`chunk-cli "BACKUP TO '/backups/snapshot'"` creates a backup on the server's
-filesystem and prints its table cuts and counts. It requires `MANAGES USERS`;
+`chunk-cli "BACKUP TO 'snapshot'"` creates a backup on the server's
+filesystem under its configured `--backup-dir` and prints table cuts and counts. It requires `MANAGES USERS`;
 see the server's [backup guide](https://github.com/chunkdb/chunkdb/blob/main/docs/BACKUP.md).
 
 ## Watching changes

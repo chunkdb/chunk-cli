@@ -16,11 +16,12 @@ func TestCLIBackupStatement(t *testing.T) {
 		}
 		return dir
 	}
-	s := startServer(t, false)
+	backups := canonicalTemp()
+	s := startServerConfigured(t, false, true, 4, "--backup-dir", backups)
 	s.ok(t, "CREATE TABLE world (n u8) CHUNK 2 x 2")
 	s.ok(t, "SET BLOCK 0 0 IN world n = 7")
-	target := filepath.Join(canonicalTemp(), "it's-backup")
-	statement := "BACKUP TO '" + strings.ReplaceAll(target, "'", "''") + "'"
+	target := filepath.Join(backups, "it's-backup")
+	statement := "BACKUP TO '" + strings.ReplaceAll(filepath.Base(target), "'", "''") + "'"
 	code, output, errout := s.cli(t, "", "--json", statement)
 	if code != 0 || errout != "" {
 		t.Fatalf("backup: %d %q %q", code, output, errout)
@@ -52,8 +53,8 @@ func TestCLIBackupStatement(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, "chunkdb.backup")); err != nil {
 		t.Fatal(err)
 	}
-	next := filepath.Join(canonicalTemp(), "shell-backup")
-	code, output, errout = s.cli(t, "BACKUP TO '"+next+"'\nquit\n", "shell")
+	next := filepath.Join(backups, "shell-backup")
+	code, output, errout = s.cli(t, "BACKUP TO '"+filepath.Base(next)+"'\nquit\n", "shell")
 	if code != 0 || errout != "" || !strings.Contains(output, "cuts") {
 		t.Fatalf("shell backup: %d %q %q", code, output, errout)
 	}
