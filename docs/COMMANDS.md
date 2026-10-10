@@ -8,7 +8,8 @@ chunk-cli [options] shell
 chunk-cli [options] watch <table> [--slot name] [--ack-every n] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
-chunk-cli version | help
+chunk-cli version
+chunk-cli help
 ```
 
 | Option | Meaning |
@@ -44,7 +45,7 @@ JSON blocks are objects; absent rows/null columns are null, bytes are hex string
 Integers print exactly; non-finite floats print as strings.
 
 SET/DELETE return the chunk's new version.
-Use a version returned by GET CHUNK for a conditional write:
+Use a version returned by GET CHUNK for a conditional write (this shell example uses Python 3 to read the JSON version):
 
 ```bash
 version=$(./build/chunk-cli --uri "$CHUNKDB_URI" --json "GET CHUNK 0 0 FROM world" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
