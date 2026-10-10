@@ -13,7 +13,8 @@ Start a server with the [server quick start](https://github.com/chunkdb/chunkdb/
 
 ```bash
 export CHUNKDB_PASSWORD='your-admin-password'
-CHUNKDB_URI=chunk://admin@127.0.0.1:4242/ bash examples/world.sh
+export CHUNKDB_URI=chunk://admin@127.0.0.1:4242/
+bash examples/world.sh
 ```
 
 The [world example](examples/world.sh) builds the CLI, creates a fresh `world`
@@ -221,9 +222,9 @@ The password never crosses the network (SCRAM-SHA-256), and the server must prov
 
 ```text
 $ chunk-cli --uri chunk://admin:wrong@127.0.0.1:4242/ PING
-error: connecting failed: AUTH_FAILED invalid user or password
+error: connecting failed: AUTH_FAILED invalid user or password; check the username and password in your connection URI
 $ chunk-cli PING
-error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message (log in with --user or chunk://user:password@host/)
+error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
 ```
 
 ## Users
