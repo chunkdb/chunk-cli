@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
-	"github.com/chunkdb/chunk-cli/internal/chunkuri"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkuri"
 )
 
 const version = "1.2.0"
@@ -78,12 +78,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	migrationFileCommand := rest[0] == "migrate" && (len(rest) == 1 || !strings.HasPrefix(strings.TrimSpace(rest[1]), "'"))
 	var migrations []migrationStep
-	if strings.EqualFold(rest[0], "migrate") || strings.EqualFold(rest[0], "migrations") {
+	if migrationFileCommand || strings.EqualFold(rest[0], "migrations") {
 		if err := checkMigrationOptions(opts.Statement); err != nil {
 			return fail(err)
 		}
-		if strings.EqualFold(rest[0], "migrate") {
+		if migrationFileCommand {
 			if len(rest) != 2 {
 				return fail(errors.New("usage: chunk-cli [options] migrate <file>"))
 			}

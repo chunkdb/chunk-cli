@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 func TestParseMigrations(t *testing.T) {
@@ -193,5 +193,47 @@ func TestMigrateValidatesBeforeConnecting(t *testing.T) {
 		if code != 1 || strings.Contains(failure.String(), "unsupported scheme") {
 			t.Fatalf("%v connected: %d, %q", args, code, failure.String())
 		}
+	}
+}
+
+func TestMigrateStatementDispatch(t *testing.T) {
+	for _, keyword := range []string{"MIGRATE", "Migrate", "MiGrAtE", "migrate"} {
+		t.Run(keyword, func(t *testing.T) {
+			statement := keyword + " 'a' CREATE TABLE w (id u8)"
+			uri, done := fakeMigrationServer(t, []string{statement}, []string{"+applied\r\n"})
+			var out, failure bytes.Buffer
+			code := run([]string{"--uri", uri, keyword, "'a'", "CREATE", "TABLE", "w", "(id u8)"}, strings.NewReader(""), &out, &failure)
+			if code != 0 || out.String() != "applied\n" || failure.Len() != 0 {
+				t.Fatalf("statement dispatch: %d, %q, %q", code, out.String(), failure.String())
+			}
+			waitSlotServer(t, done)
+		})
+	}
+}
+
+func TestUppercaseMigrateDoesNotOpenFile(t *testing.T) {
+	file := migrationFile(t, "-- migrate: a\nDROP TABLE world")
+	statement := "MIGRATE " + file
+	uri, done := fakeMigrationServer(t, []string{statement}, []string{"-ERR SYNTAX expected quoted migration name\r\n"})
+	var out, failure bytes.Buffer
+	code := run([]string{"--uri", uri, "MIGRATE", file}, strings.NewReader(""), &out, &failure)
+	if code != 1 || out.Len() != 0 || !strings.Contains(failure.String(), "SYNTAX expected quoted migration name") {
+		t.Fatalf("uppercase dispatch: %d, %q, %q", code, out.String(), failure.String())
+	}
+	waitSlotServer(t, done)
+}
+
+func TestParseMigrationsRejectsNearMarkers(t *testing.T) {
+	for _, marker := range []string{"--migrate: b", "--  migrate:b", "-- MIGRATE: b", "-- Migrate: b", "-- MiGrAtE: b", "--\tmigrate: b", "-- migrate : b", "-- migrate b"} {
+		t.Run(marker, func(t *testing.T) {
+			_, err := parseMigrations(strings.NewReader("-- migrate: a\nCREATE TABLE first (id u8)\n" + marker + "\nCREATE TABLE second (id u8)"))
+			if err == nil || !strings.Contains(err.Error(), "line 3:") || !strings.Contains(err.Error(), "-- migrate: <name>") {
+				t.Fatalf("near marker must fail at its own line: %v", err)
+			}
+		})
+	}
+	steps, err := parseMigrations(strings.NewReader("-- migration: explanation\n-- migrated data previously\n-- migrate: a\nCREATE TABLE first (id u8)"))
+	if err != nil || len(steps) != 1 || steps[0].name != "a" {
+		t.Fatalf("ordinary comments: %#v, %v", steps, err)
 	}
 }

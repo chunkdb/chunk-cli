@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,20 @@ func TestCLIMigrationStopsAfterSemanticError(t *testing.T) {
 	var records []map[string]any
 	if err := json.Unmarshal([]byte(s.ok(t, "--json", "migrations")), &records); err != nil || len(records) != 1 || records[0]["user"] != "" {
 		t.Fatalf("records: %#v %v", records, err)
+	}
+}
+
+func TestCLIRawMigrateStatements(t *testing.T) {
+	s := startServer(t, false)
+	for i, keyword := range []string{"MIGRATE", "Migrate", "MiGrAtE", "migrate"} {
+		name := "raw_" + strconv.Itoa(i)
+		statement := "CREATE TABLE " + name + " (id u8) CHUNK 2 x 2"
+		if out := s.ok(t, keyword, "'"+name+"'", statement); out != "applied\n" {
+			t.Fatalf("%s apply: %q", keyword, out)
+		}
+		if out := s.ok(t, keyword, "'"+name+"'", statement); out != "skipped\n" {
+			t.Fatalf("%s skip: %q", keyword, out)
+		}
+		s.ok(t, "DESCRIBE "+name)
 	}
 }

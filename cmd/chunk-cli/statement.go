@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 // statementOptions are the options of one statement: given as global flags

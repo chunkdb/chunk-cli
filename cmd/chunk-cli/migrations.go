@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/chunkdb/chunk-cli/internal/chunkclient"
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 type migrationStep struct {
@@ -96,7 +96,17 @@ func parseMigrations(r io.Reader) ([]migrationStep, error) {
 			current = migrationStep{name: name}
 			continue
 		}
-		if line == "" || strings.HasPrefix(line, "--") {
+		if strings.HasPrefix(line, "--") {
+			words := strings.Fields(strings.TrimPrefix(line, "--"))
+			if len(words) > 0 {
+				word, _, _ := strings.Cut(words[0], ":")
+				if strings.EqualFold(word, "migrate") {
+					return nil, fmt.Errorf("line %d: invalid migration marker; use -- migrate: <name>", lineNumber)
+				}
+			}
+			continue
+		}
+		if line == "" {
 			continue
 		}
 		if current.name == "" {
