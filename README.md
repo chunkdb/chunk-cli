@@ -42,6 +42,57 @@ chunk-cli "DESCRIBE world"
 
 `SET BLOCK`, `DELETE BLOCK` and `SET CHUNK` print the chunk version after the write; `IF VERSION <v>` writes only while the chunk still has that version, otherwise the statement fails with `VERSION_MISMATCH current=<v>`.
 
+## Named migrations
+
+Run this at every start of your app, before issuing its data statements:
+
+```bash
+chunk-cli --uri chunk://admin@127.0.0.1:4242/ migrate migrations.cql
+chunk-cli --uri chunk://admin@127.0.0.1:4242/ migrations
+```
+
+Lowercase `migrate <file>` selects the file command.
+To send a CQL statement, quote the whole statement, for example
+`chunk-cli "MIGRATE 'create_world' CREATE TABLE world (id u8) CHUNK 2 x 2"`.
+Other keyword cases and a lowercase `migrate` followed by a quoted name are
+also sent as statements.
+
+`migrations.cql` contains named steps, each followed by one schema statement:
+
+```sql
+-- migrate: create_world
+CREATE TABLE world (id u16, name text(32) NULL) CHUNK 16 x 16
+-- migrate: add_light
+ALTER TABLE world ADD COLUMN light u4 DEFAULT 15
+```
+
+The command prints `create_world applied`, then `add_light applied`.
+Running the same file again prints `skipped` for each step, including when two
+applications start concurrently. Keep an applied name and its statement text
+unchanged; add a new step for the next schema change. A changed statement under
+the same name fails with `CONFLICT`. The command stops at the first error,
+prints the step name and server error code on stderr, and exits with status 1.
+Earlier successful steps remain applied.
+
+Names match `[a-z_][a-z0-9_]*`, 1–63 bytes. Blank lines and full-line `--`
+comments are ignored. A comment starting with the word `migrate` must use the
+exact `-- migrate:` marker spelling and spacing; near markers report their
+line number instead of merging steps. Multiline statements are joined with one space after
+trimming each line; quoted values must fit on one line. Interior spacing and
+case are preserved and form part of the migration identity. Statements need
+no semicolons; separators and `$` parameters outside quotes are rejected.
+The whole file is checked for these rules before connecting, while the server
+validates each statement's CQL syntax and permissions when that step runs.
+
+Supported steps are CREATE/ALTER/DROP TABLE, GRANT/REVOKE and CREATE/DROP SLOT.
+Each step requires the same rights as its inner statement; already applied
+steps still require those rights. `migrations` lists names, application times,
+users and statement text in applied order and requires MANAGES USERS. `--json`
+prints one `{name,status}` object per applied/skipped step, or the full history
+array for `migrations`. See the server's
+[named migration reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md#named-migrations)
+for recovery and permission details.
+
 ## Watching changes
 
 A server supporting WATCH can stream committed changes of a table:
@@ -297,6 +348,8 @@ A one-shot statement closes its connection, so `BEGIN`, `COMMIT` and `ROLLBACK` 
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
 chunk-cli [options] watch <table> [--slot name [--ack-every n]] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
+chunk-cli [options] migrate <file>
+chunk-cli [options] migrations
 chunk-cli version | help
 ```
 
