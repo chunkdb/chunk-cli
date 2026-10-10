@@ -78,6 +78,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	var migrations []migrationStep
+	if strings.EqualFold(rest[0], "migrate") || strings.EqualFold(rest[0], "migrations") {
+		if err := checkMigrationOptions(opts.Statement); err != nil {
+			return fail(err)
+		}
+		if strings.EqualFold(rest[0], "migrate") {
+			if len(rest) != 2 {
+				return fail(errors.New("usage: chunk-cli [options] migrate <file>"))
+			}
+			migrations, err = readMigrationFile(rest[1])
+			if err != nil {
+				return fail(err)
+			}
+		} else if len(rest) != 1 {
+			return fail(errors.New("usage: chunk-cli [options] migrations"))
+		}
+	}
+
 	statement := strings.Join(rest, " ")
 	if control := txnControlOf(statement); !shell && control != txnNone {
 		return fail(fmt.Errorf("%s runs in the shell (chunk-cli shell): a transaction lives on one connection, and a one-shot statement closes its connection", control))
@@ -92,7 +110,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_ = client.Close()
 	}()
 
-	if shell {
+	if migrations != nil {
+		err = runMigrations(client, migrations, stdout, opts.Statement.json)
+	} else if strings.EqualFold(rest[0], "migrations") {
+		err = listMigrations(client, stdout, opts.Statement)
+	} else if shell {
 		err = runShell(client, term, stdout, opts.Statement)
 	} else {
 		err = execute(client, nil, statement, opts.Statement, stdout, term)
@@ -224,6 +246,8 @@ Usage:
   chunk-cli [options] <CQL statement>
   chunk-cli [options] shell
   chunk-cli [options] watch <table> [--slot name [--ack-every n]] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
+  chunk-cli [options] migrate <file>
+  chunk-cli [options] migrations
   chunk-cli version | help
 
 Options:
