@@ -276,6 +276,29 @@ func TestCLIBlocks(t *testing.T) {
 	s.fails(t, "1 parameter(s)", "SET BLOCK 0 0 IN world name = $1")
 }
 
+func TestCLIChunkNull(t *testing.T) {
+	s := startServer(t, false)
+	s.ok(t, createWorld)
+	if out := s.ok(t, "GET CHUNK 0 0 FROM world"); out != "(null)\n" {
+		t.Fatalf("never-written chunk: %q", out)
+	}
+	if out := s.ok(t, "--json", "GET CHUNK 0 0 FROM world COLUMNS id"); out != "null\n" {
+		t.Fatalf("never-written projected chunk: %q", out)
+	}
+	if out := s.ok(t, "--json", "GET AREA 0 0 TO 0 0 FROM world"); strings.TrimSpace(out) != "[]" {
+		t.Fatalf("never-written area: %q", out)
+	}
+	s.ok(t, "SET BLOCK 0 0 IN world id = 1")
+	version := strings.TrimSpace(s.ok(t, "DELETE BLOCK 0 0 FROM world"))
+	out := s.ok(t, "GET CHUNK 0 0 FROM world")
+	if !strings.HasPrefix(out, "version = "+version+"\n") || !strings.Contains(out, "present = 0 of 4 blocks") {
+		t.Fatalf("written empty chunk: %q", out)
+	}
+	if out := s.ok(t, "--json", "GET AREA 0 0 TO 0 0 FROM world"); strings.TrimSpace(out) != "[]" {
+		t.Fatalf("written empty area: %q", out)
+	}
+}
+
 func TestCLIChunksAndAreas(t *testing.T) {
 	s := startServer(t, false)
 	s.ok(t, createWorld)
