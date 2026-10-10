@@ -47,7 +47,7 @@ kind = 2
 name = 'door'
 ```
 
-A never-written chunk prints `(null)` (`null` with `--json`); a written empty chunk still shows its versioned form until collection removes it.
+A never-written chunk prints `(null)` (`null` with `--json`); a written empty chunk still shows its versioned form until its stored and cached state are removed.
 
 ## Commands and guides
 
