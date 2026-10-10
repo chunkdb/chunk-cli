@@ -51,6 +51,12 @@ chunk-cli --uri chunk://admin@127.0.0.1:4242/ migrate migrations.cql
 chunk-cli --uri chunk://admin@127.0.0.1:4242/ migrations
 ```
 
+Lowercase `migrate <file>` selects the file command.
+To send a CQL statement, quote the whole statement, for example
+`chunk-cli "MIGRATE 'create_world' CREATE TABLE world (id u8) CHUNK 2 x 2"`.
+Other keyword cases and a lowercase `migrate` followed by a quoted name are
+also sent as statements.
+
 `migrations.cql` contains named steps, each followed by one schema statement:
 
 ```sql
@@ -69,7 +75,9 @@ prints the step name and server error code on stderr, and exits with status 1.
 Earlier successful steps remain applied.
 
 Names match `[a-z_][a-z0-9_]*`, 1–63 bytes. Blank lines and full-line `--`
-comments are ignored. Multiline statements are joined with one space after
+comments are ignored. A comment starting with the word `migrate` must use the
+exact `-- migrate:` marker spelling and spacing; near markers report their
+line number instead of merging steps. Multiline statements are joined with one space after
 trimming each line; quoted values must fit on one line. Interior spacing and
 case are preserved and form part of the migration identity. Statements need
 no semicolons; separators and `$` parameters outside quotes are rejected.

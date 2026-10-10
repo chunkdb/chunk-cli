@@ -30,6 +30,7 @@ speaks the `chunkdb` 1.x protocol, version 2.x speaks protocol 3 (chunkdb
   connection. `--token` and the token in the URI are removed
 
 ### Fixed
+- Raw MIGRATE statements reach the server when the keyword is not lowercase or is followed by a quoted name; malformed file markers report their line instead of merging steps
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
 - final ACK and UNWATCH write failures are reported instead of the resulting stream read error
 - `--ack-every` without `--slot` reports the missing requirement
