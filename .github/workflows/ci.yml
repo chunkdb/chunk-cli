@@ -9,6 +9,7 @@ jobs:
   build-test:
     name: Build and Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -36,9 +37,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./...
-
       - name: Build
         run: go build ./...
 
@@ -46,14 +44,44 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: chunkdb/chunkdb
+          ref: main
           path: chunkdb-server
 
-      - name: Build example server
+      - name: Install OpenSSL
+        shell: bash
         run: |
-          cmake -S chunkdb-server -B chunkdb-server/build -DCMAKE_BUILD_TYPE=Release -DCHUNKDB_WERROR=ON
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install openssl@3
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update
+            sudo apt-get install -y libssl-dev openssl
+          fi
+
+      - name: Build server with TLS
+        run: |
+          cmake -S chunkdb-server -B chunkdb-server/build \
+            -DCMAKE_BUILD_TYPE=Release -DCHUNKDB_WERROR=ON \
+            -DCHUNKDB_BUILD_TESTS=OFF -DCHUNKDB_WITH_TLS=ON
           cmake --build chunkdb-server/build --parallel 3 --target chunkdb_server
 
-      - name: Run world example test
+      - name: Run all tests and integrations
+        shell: bash
         env:
           CHUNKDB_SERVER_BIN: ${{ github.workspace }}/chunkdb-server/build/chunkdb_server
-        run: go test ./cmd/chunk-cli -run '^TestCLIWorldExample$' -count=1
+          CHUNKDB_REQUIRE_SERVER: '1'
+        run: |
+          test -x "$CHUNKDB_SERVER_BIN"
+          set -o pipefail
+          go test -race -count=1 -timeout=10m -json ./... | tee test-results.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          events = [json.loads(line) for line in Path("test-results.jsonl").read_text().splitlines()]
+          skipped = [event["Test"] for event in events if event.get("Action") == "skip" and "Test" in event]
+          passed = {event["Test"] for event in events if event.get("Action") == "pass" and "Test" in event}
+          required = {"TestCLIWorldExample", "TestCLIConnection", "TestCLIBackupStatement", "TestCLIWatchTLS"}
+          if skipped or not required <= passed:
+              raise SystemExit(f"Skipped tests: {skipped}; missing integration results: {sorted(required - passed)}")
+          print(f"Passed {len(passed)} test cases with no skipped tests")
+          PY
