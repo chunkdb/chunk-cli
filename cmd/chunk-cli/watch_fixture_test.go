@@ -307,8 +307,8 @@ func drainWatchFixture(lines <-chan string, done <-chan error, deadline time.Tim
 
 func (f *watchFixture) stop(t *testing.T, p *watchProcess, ceiling, schemaVersion uint64) {
 	t.Helper()
+	defer func() { t.Logf("Raw WATCH stream:\n%s", strings.Join(f.raw, "\n")) }()
 	p.interrupt(t, func(line string) error { return f.drain(line, ceiling, schemaVersion) })
-	t.Logf("Raw WATCH stream:\n%s", strings.Join(f.raw, "\n"))
 }
 
 // Output read before cancellation is necessarily complete. A queued tail may
@@ -446,7 +446,10 @@ func (f *watchFixture) expectFailure(t *testing.T, p *watchProcess, ceiling uint
 		return err
 	}, func() { p.finished = true })
 	t.Logf("Raw terminal WATCH stream:\n%s", strings.Join(f.raw, "\n"))
-	if !p.finished || validation != nil || err == nil || !strings.Contains(p.stderr.String(), message) {
+	if !p.finished {
+		t.Fatalf("WATCH terminal deadline before reaping child: %v", err)
+	}
+	if validation != nil || err == nil || !strings.Contains(p.stderr.String(), message) {
 		t.Fatalf("WATCH terminal error: %v; validation %v; stderr %q", err, validation, p.stderr.String())
 	}
 }

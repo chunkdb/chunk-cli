@@ -102,6 +102,9 @@ func (p *watchProcess) interrupt(t *testing.T, observers ...func(string) error) 
 		observe = observers[0]
 	}
 	err := drainWatchFixture(p.lines, p.done, time.Now().Add(8*time.Second), observe, func() { p.finished = true })
+	if !p.finished {
+		t.Fatalf("WATCH shutdown deadline before reaping child: %v", err)
+	}
 	if err != nil || p.stderr.Len() != 0 {
 		t.Fatalf("SIGINT drain: %v %s", err, p.stderr.String())
 	}
@@ -312,6 +315,9 @@ func TestCLIWatchUnavailableHistoricalSchema(t *testing.T) {
 		return err
 	}, func() { p.finished = true })
 	t.Logf("Raw historical WATCH stream: %s", strings.Join(trace.raw, "\n"))
+	if !p.finished {
+		t.Fatalf("historical WATCH deadline before reaping child: %v", err)
+	}
 	if validationError != nil || err == nil || !strings.Contains(p.stderr.String(), "need schema version 1, DESCRIBE returned 2") {
 		t.Fatalf("historical schema: %v; validation %v; %q", err, validationError, p.stderr.String())
 	}

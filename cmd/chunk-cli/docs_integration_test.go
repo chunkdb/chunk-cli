@@ -309,6 +309,9 @@ func (w *docWatch) finish(t *testing.T, observe func(string) error) {
 		t.Fatal(err)
 	}
 	err := drainWatchFixture(w.lines, w.done, time.Now().Add(15*time.Second), observe, func() { w.finished = true })
+	if !w.finished {
+		t.Fatalf("docs WATCH shutdown deadline before reaping child: %v", err)
+	}
 	if err != nil || w.stderr.Len() != 0 {
 		t.Fatalf("docs WATCH drain: %v; %s", err, w.stderr.String())
 	}
@@ -364,6 +367,7 @@ func TestCLIDocExamples(t *testing.T) {
 						t.Fatal(err)
 					}
 					watchIndex = i
+					defer func(trace *watchFixture) { t.Logf("Raw Markdown WATCH stream:\n%s", strings.Join(trace.raw, "\n")) }(trace)
 					continue
 				}
 				if example.kind == "cql docs-check" {
@@ -413,7 +417,6 @@ func TestCLIDocExamples(t *testing.T) {
 					}
 					watch.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion) })
 					outputs[watchIndex] = strings.Join(trace.semantic, "\n") + "\n"
-					t.Logf("Raw Markdown WATCH stream:\n%s", strings.Join(trace.raw, "\n"))
 					watch = nil
 				}
 			}
