@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,19 @@ func TestWatchProcess(t *testing.T) {
 	if os.Getenv("CHUNKCLI_WATCH_PROCESS") != "1" {
 		return
 	}
+	// The owned child installs only its fixture CA; certificate and hostname
+	// validation remain enabled without changing production TLS options.
+	if caFile := os.Getenv("CHUNKCLI_WATCH_CA"); caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			t.Fatal("invalid owned WATCH CA")
+		}
+		x509.SetFallbackRoots(roots)
+	}
 	for i, arg := range os.Args {
 		if arg == "--" {
 			os.Exit(run(os.Args[i+1:], os.Stdin, os.Stdout, os.Stderr))
@@ -39,11 +54,22 @@ type watchProcess struct {
 }
 
 func startWatchProcess(t *testing.T, uri string, args ...string) *watchProcess {
+	return startWatchProcessTrusted(t, uri, "", args...)
+}
+
+func startWatchProcessTrusted(t *testing.T, uri, caFile string, args ...string) *watchProcess {
 	t.Helper()
 	p := &watchProcess{lines: make(chan string, 64), done: make(chan error, 1)}
-	all := append([]string{"-test.run=^TestWatchProcess$", "--", "--uri", uri, "--tls-insecure", "watch", "world"}, args...)
+	global := []string{"-test.run=^TestWatchProcess$", "--", "--uri", uri}
+	if caFile == "" {
+		global = append(global, "--tls-insecure")
+	}
+	all := append(append(global, "watch", "world"), args...)
 	p.command = exec.Command(os.Args[0], all...)
 	p.command.Env = append(os.Environ(), "CHUNKCLI_WATCH_PROCESS=1")
+	if caFile != "" {
+		p.command.Env = append(p.command.Env, "CHUNKCLI_WATCH_CA="+caFile, "GODEBUG="+os.Getenv("GODEBUG")+",x509usefallbackroots=1")
+	}
 	p.command.Stderr = &p.stderr
 	out, err := p.command.StdoutPipe()
 	if err != nil {
@@ -157,6 +183,25 @@ func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Both TLS hops verify the owned fixture certificate and endpoint identity.
+	// Record only application bytes, after the inbound TLS handshake.
+	var remoteTLS *tls.Config
+	if s.scheme == "chunks" {
+		cert, err := tls.LoadX509KeyPair(s.tlsCert, s.tlsKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pem, err := os.ReadFile(s.tlsCert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			t.Fatal("invalid owned TLS certificate")
+		}
+		listener = tls.NewListener(listener, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}})
+		remoteTLS = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	}
 	recorder := &recordingProxy{}
 	var mu sync.Mutex
 	var sockets []net.Conn
@@ -169,7 +214,12 @@ func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 			if err != nil {
 				return
 			}
-			remote, err := net.Dial("tcp", s.address)
+			var remote net.Conn
+			if remoteTLS != nil {
+				remote, err = tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", s.address, remoteTLS)
+			} else {
+				remote, err = net.DialTimeout("tcp", s.address, 5*time.Second)
+			}
 			if err != nil {
 				socket.Close()
 				return
@@ -177,6 +227,23 @@ func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 			mu.Lock()
 			sockets = append(sockets, socket, remote)
 			mu.Unlock()
+			if tlsSocket, ok := socket.(*tls.Conn); ok {
+				if err := tlsSocket.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+				if err := tlsSocket.Handshake(); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+				if err := tlsSocket.SetDeadline(time.Time{}); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+			}
 			workers.Add(2)
 			go func() { defer workers.Done(); _, _ = io.Copy(remote, io.TeeReader(socket, recorder)); remote.Close() }()
 			go func() { defer workers.Done(); _, _ = io.Copy(socket, remote); socket.Close() }()
@@ -268,7 +335,7 @@ func TestCLIWatchIntegration(t *testing.T) {
 	replay.stop(t, resumed, thirdRevision, 2)
 	stale := startWatchProcess(t, s.uri, "--after", watchEpoch+":0")
 	staleTrace := fixtureStart(t, stale, false)
-	if line := staleTrace.waitResync(t, stale, thirdRevision); !strings.HasPrefix(line, "resync ") || !strings.Contains(line, "--after ") {
+	if line := staleTrace.waitResync(t, stale, replay.epoch, thirdRevision); !strings.HasPrefix(line, "resync ") || !strings.Contains(line, "--after ") {
 		t.Fatal(line)
 	}
 	staleTrace.stop(t, stale, thirdRevision, 2)

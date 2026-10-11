@@ -277,3 +277,29 @@ func TestWatchFixtureCapturedACKRequiresCompleteLine(t *testing.T) {
 		t.Fatalf("complete captured ACK: %t %v", acknowledged, err)
 	}
 }
+
+func TestWatchFixtureResyncCurrentIdentity(t *testing.T) {
+	current := "fedcba9876543210fedcba9876543210"
+	f := &watchFixture{epoch: watchEpoch}
+	line := "resync " + current + ":17; restart with --after " + current + ":17"
+	if err := f.resync(line, current, 17); err != nil {
+		t.Fatal(err)
+	}
+	if f.epoch != current || f.frontier != 17 || len(f.eligible) != 0 || len(f.semantic) != 1 {
+		t.Fatalf("resync state: %+v", f)
+	}
+	for _, bad := range []string{
+		"resync " + watchEpoch + ":17; restart",
+		"resync " + current + ":16; restart",
+		"resync " + current + ":18; restart",
+		"resync invalid:17; restart",
+	} {
+		before := len(f.semantic)
+		if err := f.resync(bad, current, 17); err == nil {
+			t.Fatalf("accepted wrong resync: %s", bad)
+		}
+		if f.epoch != current || f.frontier != 17 || len(f.semantic) != before || len(f.eligible) != 0 {
+			t.Fatalf("invalid resync changed state: %+v", f)
+		}
+	}
+}

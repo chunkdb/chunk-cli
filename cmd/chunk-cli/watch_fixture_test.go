@@ -462,7 +462,7 @@ func (f *watchFixture) waitSchema(t *testing.T, p *watchProcess, revision, versi
 	}
 }
 
-func (f *watchFixture) waitResync(t *testing.T, p *watchProcess, revision uint64) string {
+func (f *watchFixture) waitResync(t *testing.T, p *watchProcess, epoch string, revision uint64) string {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for {
@@ -481,13 +481,27 @@ func (f *watchFixture) waitResync(t *testing.T, p *watchProcess, revision uint64
 		if len(words) < 2 || words[0] != "resync" {
 			t.Fatalf("unexpected resync: %s", line)
 		}
-		position, err := parseWatchPosition(strings.TrimSuffix(words[1], ";"))
-		if err != nil || position.Epoch != f.epoch || position.Revision != revision {
-			t.Fatalf("wrong resync position: %s %v", line, err)
+		if err := f.resync(line, epoch, revision); err != nil {
+			t.Fatal(err)
 		}
-		f.semantic = append(f.semantic, line)
 		return line
 	}
+}
+
+// A stale AFTER start identifies the requested history. RESYNC must identify
+// the independently observed current table, with its exact committed frontier.
+func (f *watchFixture) resync(line, epoch string, revision uint64) error {
+	words := strings.Fields(line)
+	if len(words) < 2 || words[0] != "resync" {
+		return fmt.Errorf("unexpected resync: %s", line)
+	}
+	position, err := parseWatchPosition(strings.TrimSuffix(words[1], ";"))
+	if err != nil || position.Epoch != epoch || position.Revision != revision {
+		return fmt.Errorf("wrong resync position: %s %v", line, err)
+	}
+	f.epoch, f.frontier = position.Epoch, position.Revision
+	f.semantic = append(f.semantic, line)
+	return nil
 }
 
 // Expected terminal failures still drain and validate all periodic output.

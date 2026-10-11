@@ -72,7 +72,7 @@ func TestFoundationServerContract(t *testing.T) {
 				t.Fatal(filters)
 			}
 			watchURI, proxy := watchProxy(t, s)
-			p := startWatchProcess(t, watchURI, "--slot", "consumer", "--json")
+			p := startWatchProcessTrusted(t, watchURI, s.tlsCert, "--slot", "consumer", "--json")
 			trace := fixtureStart(t, p, true)
 			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 			revision := fixtureVersion(t, written)

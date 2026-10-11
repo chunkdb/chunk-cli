@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,7 +53,7 @@ func normalizeDocOutput(output string) string {
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
-		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  filters:\n)`, `${1}<epoch>${2}`},
+		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
 		{`(?m)^(\d+\) name = [a-z_][a-z0-9_]*, applied_ms = )\d+`, `${1}<time-ms>`},
 	} {
@@ -98,7 +99,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	null := chunkclient.Value{Kind: chunkclient.KindNull}
 	filters := foundationMapValue(
 		watchBulk("area"), watchArray(watchInt("0"), watchInt("0"), watchInt("0"), watchInt("0")),
-		watchBulk("columns"), null, watchBulk("column_ids"), null,
+		watchBulk("column_ids"), null, watchBulk("columns"), null,
 		watchBulk("no_before"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("chunks"), chunkclient.Value{Kind: chunkclient.KindBool},
 	)
@@ -106,7 +107,7 @@ func TestDocSlotTranscript(t *testing.T) {
 		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
 		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("3"),
 		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
-		watchBulk("filters"), filters, watchBulk("lost_reason"), null,
+		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
 	)
 	var out bytes.Buffer
 	if err := printReply(&out, watchArray(slot), statementOptions{}); err != nil {
@@ -351,6 +352,13 @@ func TestCLIDocExamples(t *testing.T) {
 			}
 			s := startServerConfigured(t, false, true, 2, "--backup-dir", backups)
 			watchURI, watchWire := watchProxy(t, s)
+			parsedURI, err := url.Parse(watchURI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep passwords in the environment so examples can override them.
+			parsedURI.User = url.User(adminUser)
+			watchURI = parsedURI.String()
 			env := append(os.Environ(), "PATH="+cliDirectory+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"CHUNKDB_URI="+watchURI, "CHUNKDB_PASSWORD="+adminPassword)
 			var watch *docWatch

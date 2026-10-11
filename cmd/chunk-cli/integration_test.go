@@ -35,9 +35,10 @@ const (
 
 type testServer struct {
 	// uri logs in as the administrator (or without a user with --auth none).
-	uri     string
-	scheme  string
-	address string
+	uri             string
+	scheme          string
+	address         string
+	tlsCert, tlsKey string
 }
 
 // uriFor returns the server's URI with the login of user (none when empty).
@@ -99,6 +100,7 @@ func startServerConfigured(t *testing.T, tls, users bool, workers int, extraArgs
 	}
 	if tls {
 		cert, key := writeTLSFixture(t)
+		s.tlsCert, s.tlsKey = cert, key
 		args = append(args, "--tls-cert", cert, "--tls-key", key)
 	}
 	command := exec.Command(binary, args...)
