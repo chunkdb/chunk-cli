@@ -1,33 +1,68 @@
-# Connect to chunkdb 2.0
+# Connect to chunkdb
 
-The CLI opens protocol 3 connections with SCRAM-SHA-256 authentication.
-Set a user in the URI or with `--user`; `--user` overrides the URI's user.
-The password comes from `--password-file` (first line), then the URI, then `CHUNKDB_PASSWORD`, then a terminal prompt without echo.
-Without a user, only a server running with `--auth none` accepts the connection.
+Supply your server address, user and password before sending statements.
+Start a server using [Quick start](https://github.com/chunkdb/chunkdb/blob/main/docs/QUICK_START.md).
 
-```bash
-./build/chunk-cli --uri "$CHUNKDB_URI" PING
-./build/chunk-cli --uri "$CHUNKDB_URI" --user admin --password-file admin.password "SHOW TABLES"
+1. Set the connection variables.
+
+```sh
+export CHUNKDB_URI=chunk://admin@127.0.0.1:4242/
+export CHUNKDB_PASSWORD='your-admin-password'
 ```
 
-Create `admin.password` with the server's admin password before the second command.
-URI credentials use percent escapes for special characters such as `:`, `@`, `/` and `%`.
-Authentication proves password knowledge without sending the password itself.
-TLS protects the rest of the connection.
+2. Check the connection.
 
-```bash
-./build/chunk-cli --uri chunks://admin@127.0.0.1:4242/ --tls-insecure PING
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" PING
 ```
 
-Use `chunks://` for a server configured with TLS; `chunk://` selects plain TCP.
-`--tls-insecure` accepts an untrusted certificate and is intended for local self-signed certificates.
-For a trusted certificate with a different name, set `--tls-server-name <name>`.
-The default network timeout is `5s`; `--timeout 10s` changes it.
+```output
+PONG
+```
 
-A refused connection points to the URI, host, port and server availability.
-A TLS failure points to the scheme and certificate settings.
-`AUTH_REQUIRED` asks for a user and password; `AUTH_FAILED` asks you to check them.
-Server errors preserve their code and message; failed commands exit 1.
+3. To use a password file, write its first line and connect.
+
+```sh docs-check-shell
+printf '%s\n' "$CHUNKDB_PASSWORD" > admin.password
+chunk-cli --uri "$CHUNKDB_URI" --user admin --password-file admin.password PING
+```
+
+```output
+PONG
+```
+
+`--user` overrides the URI's user.
+Password precedence is `--password-file`, URI password, `CHUNKDB_PASSWORD`, then a terminal prompt without echo.
+URI credentials use percent escapes for `:`, `@`, `/` and `%`.
+The CLI uses SCRAM-SHA-256 to prove password knowledge without sending the password itself.
+
+## TLS
+
+Use `chunks://` for a TLS server and `chunk://` for plain TCP.
+TLS protects statements and replies.
+For a certificate with a different name, set `--tls-server-name <name>`.
+`--tls-insecure` accepts an untrusted certificate, including local self-signed certificates.
+
+The default network timeout is `5s`.
+Use `--timeout 10s` to change it.
 The CLI does not retry statements or reconnect a watch automatically.
 
-[Commands](COMMANDS.md) · [README](../README.md)
+## If it fails
+
+- **Connection refused:** check the URI, host, port and server availability.
+- **TLS error:** check the URI scheme and certificate settings.
+- **AUTH_REQUIRED:** supply a user and password.
+- **AUTH_FAILED:** check the supplied credentials.
+
+Without a user, the connection succeeds only when the server disables authentication.
+For example, omitting the user from the connection URI prints this error and exits 1:
+
+```sh docs-check-error
+chunk-cli --uri "${CHUNKDB_URI/admin@/}" PING
+```
+
+```output
+error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
+```
+Failed commands exit 1 and preserve the server's error code and message.
+See [Commands](COMMANDS.md) for all options.
