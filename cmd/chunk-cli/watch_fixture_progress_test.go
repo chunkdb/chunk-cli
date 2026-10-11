@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,7 @@ func TestDocWatchInterleavedProgress(t *testing.T) {
 	for _, beforeSchema := range []bool{true, false} {
 		t.Run(fmt.Sprintf("progress_before_schema=%t", beforeSchema), func(t *testing.T) {
 			printed := make(chan struct{})
+			recorder := &recordingProxy{}
 			uri, done := fakeSlotServer(t, func(conn net.Conn, r *bufio.Reader) error {
 				schema := strings.Replace(slotWireSchema(revision), watchWireBulk("v"), watchWireBulk("kind"), 1)
 				prefix := schema + fixtureProgressWire(revision-1)
@@ -51,14 +53,18 @@ func TestDocWatchInterleavedProgress(t *testing.T) {
 				if _, err := io.WriteString(conn, "+OK "+watchEpoch+fmt.Sprintf(" %d\r\n", revision-1)+prefix+change+fixtureProgressWire(revision)); err != nil {
 					return err
 				}
-				if err := expectSlotLine(r, fmt.Sprintf("ACK %d", revision)); err != nil {
+				ack, err := r.ReadString('\n')
+				if err != nil || ack != fmt.Sprintf("ACK %d\r\n", revision) {
+					return fmt.Errorf("registered ACK: %q %v", ack, err)
+				}
+				if _, err := recorder.Write([]byte(ack)); err != nil {
 					return err
 				}
 				close(printed)
 				if err := expectSlotLine(r, "UNWATCH"); err != nil {
 					return err
 				}
-				_, err := io.WriteString(conn, "+OK\r\n")
+				_, err = io.WriteString(conn, "+OK\r\n")
 				return err
 			})
 			quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -80,6 +86,7 @@ func TestDocWatchInterleavedProgress(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("final progress was not completely printed and ACKed")
 			}
+			trace.awaitACK(t, recorder, w.lines, revision, version)
 			w.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, version) })
 			waitSlotServer(t, done)
 			if got := normalizeDocOutput(strings.Join(trace.semantic, "\n") + "\n"); got != expected {
@@ -151,19 +158,20 @@ func TestWatchFixtureBatchAccounting(t *testing.T) {
 	for _, tc := range []struct {
 		name, wire string
 		eligible   []uint64
-		mandatory  int
 		valid      bool
 	}{
-		{"partial_without_progress", "ACK 4\r\nUNWATCH\r\n", []uint64{3, 4}, 2, true},
-		{"progress_completes_batch", "ACK 4\r\nUNWATCH\r\n", []uint64{2, 3, 4}, 3, true},
-		{"repeated_idle_progress", "ACK 3\r\nACK 4\r\nUNWATCH\r\n", []uint64{2, 2, 3, 4}, 4, true},
-		{"post_cancel_tail", "ACK 4\r\nUNWATCH\r\n", []uint64{3, 4, 4}, 2, true},
-		{"premature_batch", "ACK 3\r\nACK 4\r\nUNWATCH\r\n", []uint64{3, 4}, 2, false},
-		{"invented_frontier", "ACK 5\r\nUNWATCH\r\n", []uint64{2, 3, 4}, 3, false},
-		{"missing_final_partial", "UNWATCH\r\n", []uint64{3, 4}, 2, false},
+		{"partial_without_progress", "ACK 4\r\nUNWATCH\r\n", []uint64{3, 4}, true},
+		{"progress_completes_batch", "ACK 4\r\nUNWATCH\r\n", []uint64{2, 3, 4}, true},
+		{"repeated_idle_progress", "ACK 3\r\nACK 4\r\nUNWATCH\r\n", []uint64{2, 2, 3, 4}, true},
+		{"post_cancel_tail", "ACK 4\r\nUNWATCH\r\n", []uint64{3, 4, 4}, true},
+		{"premature_batch", "ACK 3\r\nACK 4\r\nUNWATCH\r\n", []uint64{3, 4}, false},
+		{"invented_frontier", "ACK 5\r\nUNWATCH\r\n", []uint64{2, 3, 4}, false},
+		{"missing_final_partial", "UNWATCH\r\n", []uint64{3, 4}, false},
+		{"last_visible_unregistered", "UNWATCH\r\n", []uint64{3}, true},
+		{"only_last_may_be_unregistered", "ACK 3\r\nUNWATCH\r\n", []uint64{3, 4, 5}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := fixtureBatchACKs(tc.wire, tc.eligible, tc.mandatory, 3)
+			err := fixtureBatchACKs(tc.wire, tc.eligible, 3)
 			if (err == nil) != tc.valid {
 				t.Fatalf("ACK oracle: %v", err)
 			}
@@ -206,5 +214,66 @@ func TestSlotWatchProgressCompletesBatch(t *testing.T) {
 				waitSlotServer(t, done)
 			})
 		}
+	}
+}
+
+// The existing writer hook makes a complete row visible and cancels before
+// Write returns. UNWATCH with no ACK is legal only for this final event.
+func TestWatchFixtureVisibleCancellationBoundary(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	captured := make(chan string, 1)
+	uri, done := fakeSlotServer(t, func(conn net.Conn, r *bufio.Reader) error {
+		if _, err := io.WriteString(conn, "+OK "+watchEpoch+" 0\r\n"+slotWireChange(1)); err != nil {
+			return err
+		}
+		line, err := r.ReadString('\n')
+		captured <- line
+		if err != nil || line != "UNWATCH\r\n" {
+			return fmt.Errorf("boundary wire: %q %v", line, err)
+		}
+		_, err = io.WriteString(conn, "+OK\r\n")
+		return err
+	})
+	out := &slotOutput{cancelAfterChange: cancel}
+	if err := runWatch(ctx, globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 3}, console{}, out); err != nil {
+		t.Fatal(err)
+	}
+	waitSlotServer(t, done)
+	trace, err := newWatchFixture("start "+watchEpoch+":0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")[1:]
+	_, _, err = trace.mutation(func(time.Time) (string, error) {
+		if len(lines) == 0 {
+			return "", io.EOF
+		}
+		line := lines[0]
+		lines = lines[1:]
+		return line, nil
+	}, "change", 1, 1)
+	if err != nil || len(trace.eligible) != 1 {
+		t.Fatalf("visible complete mutation: %v %v", err, trace.raw)
+	}
+	wire := <-captured
+	if err := fixtureBatchACKs(wire, trace.eligible, 3); err != nil {
+		t.Fatal(err)
+	}
+	if frontier := fixtureSavedFrontier(t, wire, 0); frontier != 0 {
+		t.Fatalf("unproven saved frontier %d", frontier)
+	}
+	t.Logf("Complete visible mutation remains unregistered: raw %v; wire %q; saved frontier 0", trace.raw, wire)
+}
+
+func TestWatchFixtureCapturedACKRequiresCompleteLine(t *testing.T) {
+	recorder := &recordingProxy{}
+	_, _ = recorder.Write([]byte("ACK 3"))
+	if acknowledged, _, err := recorder.acknowledged(3); err != nil || acknowledged {
+		t.Fatalf("partial wire is not ACK proof: %t %v", acknowledged, err)
+	}
+	_, _ = recorder.Write([]byte("\r\n"))
+	if acknowledged, _, err := recorder.acknowledged(3); err != nil || !acknowledged {
+		t.Fatalf("complete captured ACK: %t %v", acknowledged, err)
 	}
 }

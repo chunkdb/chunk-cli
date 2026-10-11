@@ -115,15 +115,42 @@ func (p *watchProcess) interrupt(t *testing.T, observers ...func(string) error) 
 type recordingProxy struct {
 	mu               sync.Mutex
 	input            bytes.Buffer
+	changed          chan struct{}
 	closeConnections func()
 }
 
 func (p *recordingProxy) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.input.Write(data)
+	n, err := p.input.Write(data)
+	if p.changed != nil {
+		close(p.changed)
+	}
+	p.changed = make(chan struct{})
+	return n, err
 }
 func (p *recordingProxy) text() string { p.mu.Lock(); defer p.mu.Unlock(); return p.input.String() }
+func (p *recordingProxy) acknowledged(revision uint64) (bool, <-chan struct{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.changed == nil {
+		p.changed = make(chan struct{})
+	}
+	acks, err := fixtureWireACKs(p.input.String())
+	if err != nil {
+		return false, p.changed, err
+	}
+	for _, ack := range acks {
+		if ack > revision {
+			return false, p.changed, fmt.Errorf("ACK %d exceeds expected %d", ack, revision)
+		}
+		if ack == revision {
+			return true, p.changed, nil
+		}
+	}
+	return false, p.changed, nil
+}
+
 func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

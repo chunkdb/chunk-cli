@@ -52,16 +52,17 @@ func TestCLIWatchSlotsIntegration(t *testing.T) {
 	if trace.schemas != 1 || !strings.Contains(header, "change revision "+version+" ") || block != "  block 0 0: (absent) -> {id = 7}" {
 		t.Fatalf("output: %q %q; schemas %d", header, block, trace.schemas)
 	}
-	mandatory := len(trace.eligible)
+	trace.awaitACK(t, proxy, p.lines, revision, 1)
 	trace.stop(t, p, revision, 1)
-	if err := fixtureBatchACKs(proxy.text(), trace.eligible, mandatory, 1); err != nil {
+	if err := fixtureBatchACKs(proxy.text(), trace.eligible, 1); err != nil {
 		t.Fatal(err)
 	}
 	if slotAcked(t, s) != revision || !strings.Contains(proxy.text(), "ACK "+version+"\r\n") || !strings.HasSuffix(proxy.text(), "UNWATCH\r\n") {
 		t.Fatalf("acknowledgement: %q", proxy.text())
 	}
 	t.Logf("SHOW SLOTS:\n%s", s.ok(t, "SHOW SLOTS ON world"))
-	resumed := startWatchProcess(t, s.uri, "--slot", "consumer", "--json")
+	resumedURI, resumedProxy := watchProxy(t, s)
+	resumed := startWatchProcess(t, resumedURI, "--slot", "consumer", "--json")
 	var event struct {
 		Type     string        `json:"type"`
 		Position watchPosition `json:"position"`
@@ -76,6 +77,7 @@ func TestCLIWatchSlotsIntegration(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &event); err != nil || event.Type != "change" || fmt.Sprint(event.Position.Revision) != nextVersion || !strings.Contains(line, `"before":{"id":7}`) || !strings.Contains(line, `"after":{"id":8}`) || replay.schemas != 1 {
 		t.Fatalf("resumed change: %s %v", line, err)
 	}
+	replay.awaitACK(t, resumedProxy, resumed.lines, nextRevision, 1)
 	replay.stop(t, resumed, nextRevision, 1)
 	after := event.Position
 	withAfter := startWatchProcess(t, s.uri, "--slot", "consumer", "--after", after.Epoch+":"+fmt.Sprint(after.Revision))
@@ -116,13 +118,15 @@ func TestCLIWatchSlotPartialBatch(t *testing.T) {
 	}
 	// Progress can complete a batch. Compare actual ACKs with complete eligible
 	// events instead of treating every pre-cancel ACK as premature.
-	mandatory := len(trace.eligible)
+	// Stdout alone does not prove that the last event registered before cancel.
+	initial := fixtureVersionFromStart(t, trace.raw[0], true)
 	trace.stop(t, p, revision, 1)
-	if err := fixtureBatchACKs(proxy.text(), trace.eligible, mandatory, 3); err != nil {
+	if err := fixtureBatchACKs(proxy.text(), trace.eligible, 3); err != nil {
 		t.Fatal(err)
 	}
-	if slotAcked(t, s) != revision || !strings.Contains(proxy.text(), "ACK "+version+"\r\n") || !strings.HasSuffix(proxy.text(), "UNWATCH\r\n") {
-		t.Fatalf("partial batch: %q", proxy.text())
+	proven := fixtureSavedFrontier(t, proxy.text(), initial)
+	if slotAcked(t, s) != proven || !strings.HasSuffix(proxy.text(), "UNWATCH\r\n") {
+		t.Fatalf("partial batch saved frontier %d: %q", proven, proxy.text())
 	}
 }
 

@@ -350,8 +350,9 @@ func TestCLIDocExamples(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := startServerConfigured(t, false, true, 2, "--backup-dir", backups)
+			watchURI, watchWire := watchProxy(t, s)
 			env := append(os.Environ(), "PATH="+cliDirectory+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"CHUNKDB_URI="+s.uriFor(adminUser, ""), "CHUNKDB_PASSWORD="+adminPassword)
+				"CHUNKDB_URI="+watchURI, "CHUNKDB_PASSWORD="+adminPassword)
 			var watch *docWatch
 			var trace *watchFixture
 			watchIndex := -1
@@ -401,7 +402,8 @@ func TestCLIDocExamples(t *testing.T) {
 					outputs[i] = stdout.String()
 				}
 				if watch != nil {
-					// The illustrated complete mutation is the cancellation signal.
+					// The illustrated complete mutation establishes the output frontier.
+					// Its captured wire ACK proves registration before cancellation.
 					// Valid periodic progress is retained raw and checked against this
 					// mutation's frontier, rather than normalized as arbitrary output.
 					revision, schemaVersion, err := fixtureDocMutation(examples[watchIndex].expected)
@@ -415,6 +417,7 @@ func TestCLIDocExamples(t *testing.T) {
 					if err != nil {
 						t.Fatalf("%v; raw WATCH: %s", err, strings.Join(trace.raw, "\n"))
 					}
+					trace.awaitACK(t, watchWire, watch.lines, revision, schemaVersion)
 					watch.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion) })
 					outputs[watchIndex] = strings.Join(trace.semantic, "\n") + "\n"
 					watch = nil

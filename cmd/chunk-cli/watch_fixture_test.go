@@ -311,31 +311,36 @@ func (f *watchFixture) stop(t *testing.T, p *watchProcess, ceiling, schemaVersio
 	p.interrupt(t, func(line string) error { return f.drain(line, ceiling, schemaVersion) })
 }
 
-// Output read before cancellation is necessarily complete. A queued tail may
-// have completed on either side of cancellation; only its pre-cancel prefix is
-// ACK-eligible. Require an exact batch sequence for such a prefix, never an ACK
-// with insufficient delivered events or an invented position.
-func fixtureBatchACKs(wire string, eligible []uint64, mandatory int, batch uint64) error {
-	if batch == 0 || mandatory < 0 || mandatory > len(eligible) {
-		return fmt.Errorf("invalid ACK oracle bounds")
+// The stream registers each eligible event before printing the next one.
+// Cancellation can exclude only the final visible eligible event, including
+// one discovered during drain. Every earlier event must still be represented
+// by exact full-batch ACKs and the final partial flush.
+func fixtureBatchACKs(wire string, eligible []uint64, batch uint64) error {
+	if batch == 0 {
+		return fmt.Errorf("invalid ACK batch")
 	}
-	var actual []uint64
-	for _, match := range regexp.MustCompile(`(?m)^ACK ([0-9]+)\r?$`).FindAllStringSubmatch(wire, -1) {
-		n, err := strconv.ParseUint(match[1], 10, 64)
-		if err != nil {
-			return err
+	actual, err := fixtureWireACKs(wire)
+	if err != nil {
+		return err
+	}
+	for i := 1; i < len(eligible); i++ {
+		if eligible[i] < eligible[i-1] {
+			return fmt.Errorf("regressed delivered frontier")
 		}
-		actual = append(actual, n)
 	}
-	for completed := mandatory; completed <= len(eligible); completed++ {
+	minimum := len(eligible) - 1
+	if minimum < 0 {
+		minimum = 0
+	}
+	for registered := minimum; registered <= len(eligible); registered++ {
 		var expected []uint64
-		for i, revision := range eligible[:completed] {
+		for i, revision := range eligible[:registered] {
 			if uint64(i+1)%batch == 0 {
 				expected = append(expected, revision)
 			}
 		}
-		if completed > 0 && uint64(completed)%batch != 0 {
-			expected = append(expected, eligible[completed-1])
+		if registered > 0 && uint64(registered)%batch != 0 {
+			expected = append(expected, eligible[registered-1])
 		}
 		if len(actual) != len(expected) {
 			continue
@@ -351,7 +356,63 @@ func fixtureBatchACKs(wire string, eligible []uint64, mandatory int, batch uint6
 			return nil
 		}
 	}
-	return fmt.Errorf("premature/wrong ACK %v; mandatory delivered prefix %d, complete observed events %v, batch %d", actual, mandatory, eligible, batch)
+	return fmt.Errorf("premature/wrong ACK %v; delivered %v, only final visible event may be unregistered; batch %d", actual, eligible, batch)
+}
+
+func fixtureWireACKs(wire string) ([]uint64, error) {
+	var revisions []uint64
+	for _, match := range regexp.MustCompile(`(?m)^ACK ([0-9]+)\r\n`).FindAllStringSubmatch(wire, -1) {
+		revision, err := strconv.ParseUint(match[1], 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		if len(revisions) > 0 && revision < revisions[len(revisions)-1] {
+			return nil, fmt.Errorf("regressed wire ACK")
+		}
+		revisions = append(revisions, revision)
+	}
+	return revisions, nil
+}
+
+func fixtureSavedFrontier(t *testing.T, wire string, initial uint64) uint64 {
+	t.Helper()
+	acks, err := fixtureWireACKs(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acks) == 0 {
+		return initial
+	}
+	return acks[len(acks)-1]
+}
+
+// Captured complete wire ACK establishes registration before cancellation.
+// Keep draining and validating output while waiting, under one fixed deadline.
+func (f *watchFixture) awaitACK(t *testing.T, proxy *recordingProxy, lines <-chan string, revision, schemaVersion uint64) {
+	t.Helper()
+	timer := time.NewTimer(15 * time.Second)
+	defer timer.Stop()
+	for {
+		acknowledged, changed, err := proxy.acknowledged(revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if acknowledged {
+			return
+		}
+		select {
+		case <-changed:
+		case line, open := <-lines:
+			if !open {
+				t.Fatal("WATCH ended before registered ACK")
+			}
+			if err := f.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion); err != nil {
+				t.Fatal(err)
+			}
+		case <-timer.C:
+			t.Fatalf("WATCH did not send registered ACK %d; raw %v; wire %q", revision, f.raw, proxy.text())
+		}
+	}
 }
 
 func fixtureDocMutation(expected string) (uint64, uint64, error) {
@@ -452,4 +513,13 @@ func (f *watchFixture) expectFailure(t *testing.T, p *watchProcess, ceiling uint
 	if validation != nil || err == nil || !strings.Contains(p.stderr.String(), message) {
 		t.Fatalf("WATCH terminal error: %v; validation %v; stderr %q", err, validation, p.stderr.String())
 	}
+}
+
+func fixtureVersionFromStart(t *testing.T, line string, jsonOutput bool) uint64 {
+	t.Helper()
+	trace, err := newWatchFixture(line, jsonOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return trace.frontier
 }

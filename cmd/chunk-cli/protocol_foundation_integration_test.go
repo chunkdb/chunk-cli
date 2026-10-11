@@ -71,7 +71,8 @@ func TestFoundationServerContract(t *testing.T) {
 			if !chunks.Bool || !before.Bool {
 				t.Fatal(filters)
 			}
-			p := startWatchProcess(t, s.uri, "--slot", "consumer", "--json")
+			watchURI, proxy := watchProxy(t, s)
+			p := startWatchProcess(t, watchURI, "--slot", "consumer", "--json")
 			trace := fixtureStart(t, p, true)
 			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 			revision := fixtureVersion(t, written)
@@ -79,6 +80,7 @@ func TestFoundationServerContract(t *testing.T) {
 			if !strings.Contains(line, `"version":`+written) || !strings.Contains(line, `"chunks":[{"cx":0,"cy":0,`) || !strings.Contains(line, `"tag":null,"txn":null`) {
 				t.Fatal(line)
 			}
+			trace.awaitACK(t, proxy, p.lines, revision, 1)
 			trace.stop(t, p, revision, 1)
 			if got := fmt.Sprint(slotAcked(t, s)); got != written {
 				t.Fatal("ACK frontier", got, written)
