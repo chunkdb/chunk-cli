@@ -644,6 +644,16 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			if event.Kind != chunkclient.KindMap {
 				return errors.New("WATCH: invalid catalog entry")
 			}
+			for _, key := range []string{"kind", "action", "name", "table"} {
+				value, found := event.Lookup(key)
+				if !found || value.Kind != chunkclient.KindBulk && value.Kind != chunkclient.KindNull {
+					return fmt.Errorf("WATCH: invalid catalog %s", key)
+				}
+			}
+			data, found := event.Lookup("data")
+			if !found || data.Kind != chunkclient.KindMap && data.Kind != chunkclient.KindNull {
+				return errors.New("WATCH: invalid catalog data")
+			}
 		}
 		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"events", jsonValue(items[5], nil)}, jsonField{"txn", txn})
 		fmt.Fprintf(&out, "catalog %s:%d\n", epoch, revision)

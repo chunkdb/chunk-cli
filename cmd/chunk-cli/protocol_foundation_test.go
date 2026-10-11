@@ -198,6 +198,24 @@ func TestFoundationJSONFlagError(t *testing.T) {
 	}
 }
 
+func TestFoundationReservedCatalogFields(t *testing.T) {
+	null := chunkclient.Value{Kind: chunkclient.KindNull}
+	event := foundationMapValue(watchBulk("kind"), watchBulk("future"), watchBulk("action"), null, watchBulk("name"), null, watchBulk("table"), null, watchBulk("data"), foundationMapValue(watchBulk("future"), watchInt("9007199254740992")), watchBulk("extension"), watchArray(null))
+	push := watchPush("catalog", watchInt("1"), null, watchArray(event), null, null)
+	var out bytes.Buffer
+	if err := printWatchEvent(&out, push, true, nil, nil); err != nil || !strings.Contains(out.String(), `"future":"9007199254740992"`) {
+		t.Fatal(out.String(), err)
+	}
+	broken := event
+	broken.Map = append([]chunkclient.MapEntry{}, event.Map...)
+	broken.Map[0].Value = watchInt("1")
+	push.Items[5] = watchArray(broken)
+	out.Reset()
+	if err := printWatchEvent(&out, push, true, nil, nil); err == nil || out.Len() != 0 {
+		t.Fatal("invalid catalog field printed", err, out.String())
+	}
+}
+
 func TestFoundationWatchFlags(t *testing.T) {
 	opts, err := parseWatchArgs([]string{"world", "--slot", "consumer", "--columns", "v", "--no-before", "--chunks", "--takeover", "--ack-timeout-ms", "500"}, false)
 	if err != nil || opts.statement != "WATCH world SLOT 'consumer' COLUMNS v NO BEFORE CHUNKS TAKEOVER ACK TIMEOUT 500" {

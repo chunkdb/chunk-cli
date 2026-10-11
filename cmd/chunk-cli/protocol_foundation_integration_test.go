@@ -79,7 +79,11 @@ func TestFoundationServerContract(t *testing.T) {
 			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 			// Progress/schema envelopes may precede a mutation, but do not stand
 			// in for the required committed CHUNKS envelope.
+			deadline := time.Now().Add(8 * time.Second)
 			for {
+				if time.Now().After(deadline) {
+					t.Fatal("CHUNKS mutation not delivered before the deadline")
+				}
 				line := p.line(t)
 				var event map[string]json.RawMessage
 				if err := json.Unmarshal([]byte(line), &event); err != nil {
