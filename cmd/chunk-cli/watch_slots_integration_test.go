@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,55 +32,58 @@ func slotAcked(t *testing.T, s *testServer) uint64 {
 func TestCLIWatchSlotsIntegration(t *testing.T) {
 	s := startServer(t, false)
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+	createdFrontier := fixtureTableFrontier(t, s)
 	if out := s.ok(t, "CREATE SLOT 'consumer' ON world"); out != "OK\n" {
 		t.Fatal(out)
 	}
 	show := s.ok(t, "SHOW SLOTS ON world")
-	if !strings.Contains(show, "name = consumer") || !strings.Contains(show, "lost = false") || slotAcked(t, s) != 0 {
+	if !strings.Contains(show, "name = consumer") || !strings.Contains(show, "lost = false") || slotAcked(t, s) != createdFrontier {
 		t.Fatal(show)
 	}
 	uri, proxy := watchProxy(t, s)
 	p := startWatchProcess(t, uri, "--slot", "consumer")
-	start := p.line(t)
-	if !strings.HasPrefix(start, "start ") {
-		t.Fatal(start)
+	trace := fixtureStart(t, p, false)
+	if trace.frontier != createdFrontier {
+		t.Fatalf("slot start %d; created at %d", trace.frontier, createdFrontier)
 	}
 	version := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
-	schema, header, block := p.line(t), p.line(t), p.line(t)
-	if !strings.HasPrefix(schema, "schema ") || !strings.Contains(header, "change revision "+version+" ") || block != "  block 0 0: (absent) -> {id = 7}" {
-		t.Fatalf("output: %q %q %q", schema, header, block)
+	revision := fixtureVersion(t, version)
+	header, block := trace.waitMutation(t, p, "change", revision, 1)
+	if trace.schemas != 1 || !strings.Contains(header, "change revision "+version+" ") || block != "  block 0 0: (absent) -> {id = 7}" {
+		t.Fatalf("output: %q %q; schemas %d", header, block, trace.schemas)
 	}
-	p.interrupt(t)
-	revision, err := strconv.ParseUint(version, 10, 64)
-	if err != nil || slotAcked(t, s) != revision || strings.Count(proxy.text(), "ACK "+version+"\r\n") != 1 || !strings.Contains(proxy.text(), "ACK "+version+"\r\nUNWATCH\r\n") {
-		t.Fatalf("acknowledgement: %q %v", proxy.text(), err)
+	mandatory := len(trace.eligible)
+	trace.stop(t, p, revision, 1)
+	if err := fixtureBatchACKs(proxy.text(), trace.eligible, mandatory, 1); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("Observed slot output:\n%s\n%s\n%s\n%s\nSHOW SLOTS:\n%s", start, schema, header, block, s.ok(t, "SHOW SLOTS ON world"))
+	if slotAcked(t, s) != revision || !strings.Contains(proxy.text(), "ACK "+version+"\r\n") || !strings.HasSuffix(proxy.text(), "UNWATCH\r\n") {
+		t.Fatalf("acknowledgement: %q", proxy.text())
+	}
+	t.Logf("SHOW SLOTS:\n%s", s.ok(t, "SHOW SLOTS ON world"))
 	resumed := startWatchProcess(t, s.uri, "--slot", "consumer", "--json")
 	var event struct {
 		Type     string        `json:"type"`
 		Position watchPosition `json:"position"`
 	}
-	resumedStart := resumed.line(t)
-	t.Logf("Observed resumed slot start: %s", resumedStart)
-	if err := json.Unmarshal([]byte(resumedStart), &event); err != nil || event.Type != "start" || event.Position.Revision != revision {
-		t.Fatalf("resumed start: %+v %v", event, err)
+	replay := fixtureStart(t, resumed, true)
+	if replay.frontier != revision || replay.epoch != trace.epoch {
+		t.Fatalf("resumed position: %v", replay.raw)
 	}
 	nextVersion := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 8"))
-	if line := resumed.line(t); !strings.Contains(line, `"type":"schema"`) {
-		t.Fatal(line)
-	}
-	line := resumed.line(t)
-	if err := json.Unmarshal([]byte(line), &event); err != nil || event.Type != "change" || fmt.Sprint(event.Position.Revision) != nextVersion || !strings.Contains(line, `"before":{"id":7}`) || !strings.Contains(line, `"after":{"id":8}`) {
+	nextRevision := fixtureVersion(t, nextVersion)
+	line, _ := replay.waitMutation(t, resumed, "change", nextRevision, 1)
+	if err := json.Unmarshal([]byte(line), &event); err != nil || event.Type != "change" || fmt.Sprint(event.Position.Revision) != nextVersion || !strings.Contains(line, `"before":{"id":7}`) || !strings.Contains(line, `"after":{"id":8}`) || replay.schemas != 1 {
 		t.Fatalf("resumed change: %s %v", line, err)
 	}
-	resumed.interrupt(t)
+	replay.stop(t, resumed, nextRevision, 1)
 	after := event.Position
 	withAfter := startWatchProcess(t, s.uri, "--slot", "consumer", "--after", after.Epoch+":"+fmt.Sprint(after.Revision))
-	if line := withAfter.line(t); line != "start "+after.Epoch+":"+fmt.Sprint(after.Revision) {
-		t.Fatal(line)
+	afterTrace := fixtureStart(t, withAfter, false)
+	if afterTrace.raw[0] != "start "+after.Epoch+":"+fmt.Sprint(after.Revision) {
+		t.Fatal(afterTrace.raw)
 	}
-	withAfter.interrupt(t)
+	afterTrace.stop(t, withAfter, nextRevision, 1)
 	if out := s.ok(t, "DROP SLOT 'consumer' ON world"); out != "OK\n" {
 		t.Fatal(out)
 	}
@@ -100,21 +102,27 @@ func TestCLIWatchSlotPartialBatch(t *testing.T) {
 	s.ok(t, "CREATE SLOT 'consumer' ON world")
 	uri, proxy := watchProxy(t, s)
 	p := startWatchProcess(t, uri, "--slot", "consumer", "--ack-every", "3", "--json")
-	_ = p.line(t)
-	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
-	_ = p.line(t)
-	_ = p.line(t)
+	trace := fixtureStart(t, p, true)
+	firstRevision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
+	first, _ := trace.waitMutation(t, p, "change", firstRevision, 1)
+	if !strings.Contains(first, `"before":null,"after":{"id":7}`) {
+		t.Fatal(first)
+	}
 	version := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 8"))
-	if line := p.line(t); !strings.Contains(line, `"revision":`+version) {
-		t.Fatal(line)
+	revision := fixtureVersion(t, version)
+	second, _ := trace.waitMutation(t, p, "change", revision, 1)
+	if !strings.Contains(second, `"before":{"id":7},"after":{"id":8}`) {
+		t.Fatal(second)
 	}
-	if strings.Contains(proxy.text(), "ACK ") {
-		t.Fatalf("premature batch ACK: %q", proxy.text())
+	// Progress can complete a batch. Compare actual ACKs with complete eligible
+	// events instead of treating every pre-cancel ACK as premature.
+	mandatory := len(trace.eligible)
+	trace.stop(t, p, revision, 1)
+	if err := fixtureBatchACKs(proxy.text(), trace.eligible, mandatory, 3); err != nil {
+		t.Fatal(err)
 	}
-	p.interrupt(t)
-	revision, err := strconv.ParseUint(version, 10, 64)
-	if err != nil || slotAcked(t, s) != revision || !strings.Contains(proxy.text(), "ACK "+version+"\r\nUNWATCH\r\n") {
-		t.Fatalf("partial batch: %q %v", proxy.text(), err)
+	if slotAcked(t, s) != revision || !strings.Contains(proxy.text(), "ACK "+version+"\r\n") || !strings.HasSuffix(proxy.text(), "UNWATCH\r\n") {
+		t.Fatalf("partial batch: %q", proxy.text())
 	}
 }
 

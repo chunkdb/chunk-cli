@@ -303,19 +303,14 @@ func TestDocWatchCleanupAfterBackpressure(t *testing.T) {
 	})
 }
 
-func (w *docWatch) finish(t *testing.T) {
+func (w *docWatch) finish(t *testing.T, observe func(string) error) {
 	t.Helper()
 	if err := w.command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-w.done:
-		w.finished = true
-		if err != nil || w.stderr.Len() != 0 {
-			t.Fatalf("docs watch shutdown: %v; %s", err, w.stderr.String())
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("docs watch timed out waiting for UNWATCH shutdown")
+	err := drainWatchFixture(w.lines, w.done, time.Now().Add(15*time.Second), observe, func() { w.finished = true })
+	if err != nil || w.stderr.Len() != 0 {
+		t.Fatalf("docs WATCH drain: %v; %s", err, w.stderr.String())
 	}
 }
 
@@ -355,6 +350,7 @@ func TestCLIDocExamples(t *testing.T) {
 			env := append(os.Environ(), "PATH="+cliDirectory+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"CHUNKDB_URI="+s.uriFor(adminUser, ""), "CHUNKDB_PASSWORD="+adminPassword)
 			var watch *docWatch
+			var trace *watchFixture
 			watchIndex := -1
 			outputs := make([]string, len(examples))
 			for i, example := range examples {
@@ -363,9 +359,9 @@ func TestCLIDocExamples(t *testing.T) {
 						t.Fatal("docs watch requires a following writer example")
 					}
 					watch = startDocWatch(t, example.input, work, env)
-					outputs[i] = watch.line(t, "WATCH start")
-					if !strings.HasPrefix(outputs[i], "start ") {
-						t.Fatalf("unexpected WATCH start: %s", outputs[i])
+					trace, err = newWatchFixture(strings.TrimSuffix(watch.line(t, "WATCH start"), "\n"), false)
+					if err != nil {
+						t.Fatal(err)
 					}
 					watchIndex = i
 					continue
@@ -401,22 +397,23 @@ func TestCLIDocExamples(t *testing.T) {
 					outputs[i] = stdout.String()
 				}
 				if watch != nil {
-					// This checked transcript has one changed block. Its complete
-					// row is the explicit signal before cancellation and slot inspection.
-					change := watch.line(t, "schema or change header")
-					if strings.HasPrefix(change, "schema ") {
-						outputs[watchIndex] += change
-						change = watch.line(t, "change header after schema")
+					// The illustrated complete mutation is the cancellation signal.
+					// Valid periodic progress is retained raw and checked against this
+					// mutation's frontier, rather than normalized as arbitrary output.
+					revision, schemaVersion, err := fixtureDocMutation(examples[watchIndex].expected)
+					if err != nil {
+						t.Fatal(err)
 					}
-					row := watch.line(t, "complete changed block")
-					if !strings.HasPrefix(change, "change revision ") || !strings.HasPrefix(row, "  block ") {
-						t.Fatalf("unexpected change: %s%s", change, row)
+					_, _, err = trace.mutation(func(deadline time.Time) (string, error) {
+						line, err := readWatchFixtureLine(watch.lines, deadline)
+						return strings.TrimSuffix(line, "\n"), err
+					}, "change", revision, schemaVersion)
+					if err != nil {
+						t.Fatalf("%v; raw WATCH: %s", err, strings.Join(trace.raw, "\n"))
 					}
-					outputs[watchIndex] += change + row
-					watch.finish(t)
-					for line := range watch.lines {
-						outputs[watchIndex] += line + "\n"
-					}
+					watch.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion) })
+					outputs[watchIndex] = strings.Join(trace.semantic, "\n") + "\n"
+					t.Logf("Raw Markdown WATCH stream:\n%s", strings.Join(trace.raw, "\n"))
 					watch = nil
 				}
 			}

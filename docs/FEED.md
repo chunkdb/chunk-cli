@@ -32,6 +32,8 @@ change revision 3 time_ms <time-ms> user admin
   block 1 1: {kind = 1} -> {kind = 6}
 ```
 
+The stream may include periodic `progress <epoch>:<revision>` lines before or after the illustrated change, including while idle.
+
 3. In the other terminal, write the change shown above.
 
 ```sh docs-check-shell

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -73,34 +72,14 @@ func TestFoundationServerContract(t *testing.T) {
 				t.Fatal(filters)
 			}
 			p := startWatchProcess(t, s.uri, "--slot", "consumer", "--json")
-			if line := p.line(t); !strings.Contains(line, `"type":"start"`) {
+			trace := fixtureStart(t, p, true)
+			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
+			revision := fixtureVersion(t, written)
+			line, _ := trace.waitMutation(t, p, "chunks", revision, 1)
+			if !strings.Contains(line, `"version":`+written) || !strings.Contains(line, `"chunks":[{"cx":0,"cy":0,`) || !strings.Contains(line, `"tag":null,"txn":null`) {
 				t.Fatal(line)
 			}
-			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
-			// Progress/schema envelopes may precede a mutation, but do not stand
-			// in for the required committed CHUNKS envelope.
-			deadline := time.Now().Add(8 * time.Second)
-			for {
-				if time.Now().After(deadline) {
-					t.Fatal("CHUNKS mutation not delivered before the deadline")
-				}
-				line := p.line(t)
-				var event map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(line), &event); err != nil {
-					t.Fatal(err, line)
-				}
-				if string(event["type"]) != `"chunks"` {
-					if string(event["type"]) != `"schema"` && string(event["type"]) != `"progress"` {
-						t.Fatal(line)
-					}
-					continue
-				}
-				if !strings.Contains(line, `"version":`+written) || !strings.Contains(line, `"chunks":[{"cx":0,"cy":0,`) || !strings.Contains(line, `"tag":null,"txn":null`) {
-					t.Fatal(line)
-				}
-				break
-			}
-			p.interrupt(t)
+			trace.stop(t, p, revision, 1)
 			if got := fmt.Sprint(slotAcked(t, s)); got != written {
 				t.Fatal("ACK frontier", got, written)
 			}
