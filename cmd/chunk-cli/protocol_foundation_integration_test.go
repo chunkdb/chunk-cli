@@ -78,7 +78,7 @@ func TestFoundationServerContract(t *testing.T) {
 			watchURI, proxy := watchProxy(t, s)
 			p := startWatchProcessTrusted(t, watchURI, s.tlsCert, "--slot", "consumer", "--json")
 			trace := fixtureStart(t, p, true)
-			code, out, failure = s.cli(t, "", "watch", "world", "--slot", "consumer", "--json")
+			code, out, failure = s.cli(t, "", "--json", "watch", "world", "--slot", "consumer")
 			assertFoundationFatalError(t, code, out, failure, "SLOT_BUSY", "slot_attached")
 			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 			revision := fixtureVersion(t, written)
