@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -132,5 +136,49 @@ func TestCLIWatchSlotLost(t *testing.T) {
 	}
 	if out := s.ok(t, "SHOW SLOTS ON world"); !strings.Contains(out, "lost = true") {
 		t.Fatal(out)
+	}
+}
+
+// A terminal error arriving after printed output and its ACK must survive the
+// actual subprocess exit path. The wire ACK is the ordering signal.
+func TestCLIWatchSlotTerminalError(t *testing.T) {
+	for _, code := range []string{"SLOT_LOST", "NO_TABLE"} {
+		t.Run(code, func(t *testing.T) {
+			uri, done := fakeSlotServer(t, func(conn net.Conn, reader *bufio.Reader) error {
+				if _, err := io.WriteString(conn, "+OK "+watchEpoch+" 0\r\n"+slotWireSchema(1)+slotWireChange(1)); err != nil {
+					return err
+				}
+				if err := expectSlotLine(reader, "ACK 1"); err != nil {
+					return err
+				}
+				_, err := io.WriteString(conn, "-ERR "+code+" terminal slot error\r\n")
+				return err
+			})
+			p := startWatchProcess(t, uri, "--slot", "consumer")
+			for _, want := range []string{
+				"start " + watchEpoch + ":0",
+				"schema " + watchEpoch + ":1 version 1",
+				"change revision 1 time_ms 123 user (anonymous)",
+				"  block 0 0: (absent) -> {v = 7}",
+			} {
+				if got := p.line(t); got != want {
+					t.Fatalf("terminal slot output: got %q; want %q", got, want)
+				}
+			}
+			select {
+			case err := <-p.done:
+				p.finished = true
+				exit, ok := err.(*exec.ExitError)
+				if !ok || exit.ExitCode() != 1 || p.stderr.String() != "error: "+code+" terminal slot error\n" {
+					t.Fatalf("terminal slot exit: %v; stderr %q", err, p.stderr.String())
+				}
+			case <-time.After(8 * time.Second):
+				t.Fatal("terminal slot error did not end the CLI subprocess")
+			}
+			for extra := range p.lines {
+				t.Fatalf("output after terminal slot error: %q", extra)
+			}
+			waitSlotServer(t, done)
+		})
 	}
 }
