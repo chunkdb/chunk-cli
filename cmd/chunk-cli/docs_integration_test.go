@@ -1,0 +1,282 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+type docExample struct {
+	kind, input, expected string
+}
+
+var docFence = regexp.MustCompile("(?ms)^```([^\\n]*)\\n(.*?)\\n```")
+
+func parseDocExamples(source string) ([]docExample, error) {
+	fences := docFence.FindAllStringSubmatchIndex(source, -1)
+	var examples []docExample
+	for i, fence := range fences {
+		tag := source[fence[2]:fence[3]]
+		if !strings.Contains(tag, "docs-check") {
+			continue
+		}
+		if tag != "sh docs-check-shell" && tag != "sh docs-check-watch" && tag != "cql docs-check" && tag != "sh docs-check-error" {
+			return nil, fmt.Errorf("unknown example marker %q", tag)
+		}
+		if i+1 == len(fences) {
+			return nil, fmt.Errorf("missing expected output")
+		}
+		next := fences[i+1]
+		if source[next[2]:next[3]] != "output" || strings.TrimSpace(source[fence[1]:next[0]]) != "" {
+			return nil, fmt.Errorf("checked input must be followed immediately by an output fence")
+		}
+		examples = append(examples, docExample{tag, source[fence[4]:fence[5]], source[next[4]:next[5]]})
+	}
+	return examples, nil
+}
+
+// Replace only explicitly volatile metadata. Data values, revisions, chunk
+// versions, counts, and every other byte remain part of the comparison.
+func normalizeDocOutput(output string) string {
+	for _, rule := range []struct{ pattern, replacement string }{
+		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
+		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
+		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
+		{`(?m)^(\d+\) name = [a-z_][a-z0-9_]*, applied_ms = )\d+`, `${1}<time-ms>`},
+	} {
+		output = regexp.MustCompile(rule.pattern).ReplaceAllString(output, rule.replacement)
+	}
+	return strings.TrimRight(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+}
+
+func TestDocExampleMarkers(t *testing.T) {
+	for _, source := range []string{
+		"```sh docs-check-shell\ntrue\n```",
+		"```sh docs-check-shell\ntrue\n```\nexplanation\n```output\nOK\n```",
+		"```sh docs-check-shell\ntrue\n```\n```text\nOK\n```",
+		"```sh docs-check-unknown\ntrue\n```\n```output\nOK\n```",
+	} {
+		if _, err := parseDocExamples(source); err == nil {
+			t.Fatalf("accepted malformed example: %s", source)
+		}
+	}
+	source := "```sh docs-check-shell\nchunk-cli PING\n```\n\n```output\nPONG\n```"
+	examples, err := parseDocExamples(source)
+	if err != nil || len(examples) != 1 || examples[0].input != "chunk-cli PING" || examples[0].expected != "PONG" {
+		t.Fatalf("parse: %#v, %v", examples, err)
+	}
+}
+
+func TestDocOutputNormalization(t *testing.T) {
+	epoch := "0123456789abcdef0123456789abcdef"
+	source := "start " + epoch + ":2\nchange revision 3 time_ms 123 user admin\n1) name = step, applied_ms = 456, user = admin\n"
+	want := "start <epoch>:2\nchange revision 3 time_ms <time-ms> user admin\n1) name = step, applied_ms = <time-ms>, user = admin"
+	if got := normalizeDocOutput(source); got != want {
+		t.Fatalf("normalized: %q; want %q", got, want)
+	}
+	data := "kind = 42\nname = '" + epoch + "'\nname = 'time_ms 123'\nversion = 2\n"
+	if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
+		t.Fatalf("changed data values: %q", got)
+	}
+}
+
+type docWatch struct {
+	command  *exec.Cmd
+	lines    chan string
+	done     chan error
+	stderr   bytes.Buffer
+	finished bool
+}
+
+func (w *docWatch) line(t *testing.T, label string) string {
+	t.Helper()
+	select {
+	case line, ok := <-w.lines:
+		if !ok {
+			// Wait publishes stderr and the exit status before reading them.
+			err := <-w.done
+			w.finished = true
+			t.Fatalf("docs watch ended waiting for %s: %v; %s", label, err, w.stderr.String())
+		}
+		return line + "\n"
+	case <-time.After(15 * time.Second):
+		t.Fatalf("docs watch timed out waiting for %s", label)
+		return ""
+	}
+}
+
+func startDocWatch(t *testing.T, code, directory string, env []string) *docWatch {
+	t.Helper()
+	w := &docWatch{lines: make(chan string, 16), done: make(chan error, 1)}
+	w.command = exec.Command("bash", "-eu", "-o", "pipefail", "-c", "exec "+code)
+	w.command.Dir, w.command.Env, w.command.Stderr = directory, env, &w.stderr
+	stdout, err := w.command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			w.lines <- scanner.Text()
+		}
+		err := scanner.Err()
+		if waitErr := w.command.Wait(); err == nil {
+			err = waitErr
+		}
+		close(w.lines)
+		w.done <- err
+	}()
+	t.Cleanup(func() {
+		if !w.finished {
+			_ = w.command.Process.Signal(os.Interrupt)
+			select {
+			case <-w.done:
+			case <-time.After(5 * time.Second):
+				_ = w.command.Process.Kill()
+				<-w.done
+			}
+		}
+	})
+	return w
+}
+
+func (w *docWatch) finish(t *testing.T) {
+	t.Helper()
+	if err := w.command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-w.done:
+		w.finished = true
+		if err != nil || w.stderr.Len() != 0 {
+			t.Fatalf("docs watch shutdown: %v; %s", err, w.stderr.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("docs watch timed out waiting for UNWATCH shutdown")
+	}
+}
+
+func TestCLIDocExamples(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliDirectory := t.TempDir()
+	binary := filepath.Join(cliDirectory, "chunk-cli")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/chunk-cli")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build docs CLI: %v\n%s", err, out)
+	}
+	pages, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages = append([]string{filepath.Join(root, "README.md")}, pages...)
+	for _, page := range pages {
+		t.Run(filepath.Base(page), func(t *testing.T) {
+			source, err := os.ReadFile(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			examples, err := parseDocExamples(string(source))
+			if err != nil || len(examples) == 0 {
+				t.Fatalf("docs examples: %v; found %d", err, len(examples))
+			}
+			work := t.TempDir()
+			backups, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := startServerConfigured(t, false, true, 2, "--backup-dir", backups)
+			env := append(os.Environ(), "PATH="+cliDirectory+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"CHUNKDB_URI="+s.uriFor(adminUser, ""), "CHUNKDB_PASSWORD="+adminPassword)
+			var watch *docWatch
+			watchIndex := -1
+			outputs := make([]string, len(examples))
+			for i, example := range examples {
+				if example.kind == "sh docs-check-watch" {
+					if watch != nil {
+						t.Fatal("docs watch requires a following writer example")
+					}
+					watch = startDocWatch(t, example.input, work, env)
+					outputs[i] = watch.line(t, "WATCH start")
+					if !strings.HasPrefix(outputs[i], "start ") {
+						t.Fatalf("unexpected WATCH start: %s", outputs[i])
+					}
+					watchIndex = i
+					continue
+				}
+				if example.kind == "cql docs-check" {
+					code, out, errout := s.cli(t, example.input+"\nexit\n", "shell")
+					if code != 0 || errout != "" {
+						t.Fatalf("example %d shell: exit %d; stderr %q", i+1, code, errout)
+					}
+					// CQL fences show replies without the shell's UI prompts.
+					out = strings.TrimSuffix(out, "chunk> ")
+					out = regexp.MustCompile(`(?m)^chunk\*?> `).ReplaceAllString(out, "")
+					outputs[i] = out
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				command := exec.CommandContext(ctx, "bash", "-eu", "-o", "pipefail", "-c", example.input)
+				command.Dir, command.Env = work, env
+				var stdout, stderr bytes.Buffer
+				command.Stdout, command.Stderr = &stdout, &stderr
+				err := command.Run()
+				cancel()
+				if example.kind == "sh docs-check-error" {
+					exit, ok := err.(*exec.ExitError)
+					if !ok || exit.ExitCode() != 1 || stdout.Len() != 0 || stderr.Len() == 0 {
+						t.Fatalf("example %d expected exit 1 and stderr: %v; stderr %q; stdout %q", i+1, err, stderr.String(), stdout.String())
+					}
+					outputs[i] = stderr.String()
+				} else {
+					if err != nil || stderr.Len() != 0 {
+						t.Fatalf("example %d: %v; stderr %q; stdout %q", i+1, err, stderr.String(), stdout.String())
+					}
+					outputs[i] = stdout.String()
+				}
+				if watch != nil {
+					// This checked transcript has one changed block. Its complete
+					// row is the explicit signal before cancellation and slot inspection.
+					change := watch.line(t, "schema or change header")
+					if strings.HasPrefix(change, "schema ") {
+						outputs[watchIndex] += change
+						change = watch.line(t, "change header after schema")
+					}
+					row := watch.line(t, "complete changed block")
+					if !strings.HasPrefix(change, "change revision ") || !strings.HasPrefix(row, "  block ") {
+						t.Fatalf("unexpected change: %s%s", change, row)
+					}
+					outputs[watchIndex] += change + row
+					watch.finish(t)
+					for line := range watch.lines {
+						outputs[watchIndex] += line + "\n"
+					}
+					watch = nil
+				}
+			}
+			if watch != nil {
+				t.Fatal("docs watch has no following writer example")
+			}
+			for i, example := range examples {
+				if actual := normalizeDocOutput(outputs[i]); actual != example.expected {
+					t.Errorf("example %d output differs\nexpected:\n%s\nactual:\n%s", i+1, example.expected, actual)
+				}
+			}
+			t.Logf("checked %d Markdown examples", len(examples))
+		})
+	}
+}
