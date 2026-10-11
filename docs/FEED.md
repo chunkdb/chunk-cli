@@ -82,4 +82,5 @@ A crash can repeat printed changes whose acknowledgements are not durable yet.
 Changes finishing output after cancellation starts are not acknowledged.
 Stdout does not confirm downstream storage.
 For exactly-once processing, use a client that stores data and position together before acknowledging.
+
 See [Change feed](https://github.com/chunkdb/chunkdb/blob/main/docs/CHANGE_FEED.md) for recovery rules.
