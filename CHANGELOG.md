@@ -16,6 +16,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- Print never-written chunks as (null), or JSON null, while retaining versioned empty forms and refusing NULL binary exports. (#6).
 - Connection errors explain how to check a refused endpoint, TLS mismatch or timeout while preserving the underlying error
 - Raw MIGRATE statements reach the server when the keyword is not lowercase or is followed by a quoted name; malformed file markers report their line instead of merging steps
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
