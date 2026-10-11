@@ -42,7 +42,8 @@ type statementInfo struct {
 	kind  statementKind
 	table string
 	// columns are the names after COLUMNS.
-	columns []string
+	columns                 []string
+	withVersion, withSchema bool
 	// cx, cy are the chunk of GET CHUNK.
 	cx, cy int64
 }
@@ -119,11 +120,30 @@ func classify(statement string) statementInfo {
 		return statementInfo{}
 	}
 	info.table = tokens[from+1]
-	if from+2 < len(tokens) {
-		if keyword(from+2) != "COLUMNS" || from+3 >= len(tokens) {
+	for i := from + 2; i < len(tokens); {
+		switch keyword(i) {
+		case "COLUMNS":
+			start := i + 1
+			i = start
+			for i < len(tokens) && keyword(i) != "WITH" {
+				i++
+			}
+			if i == start || info.columns != nil {
+				return statementInfo{}
+			}
+			info.columns = tokens[start:i]
+		case "WITH":
+			if keyword(i+1) == "VERSION" && info.kind == statementGetBlock && !info.withVersion {
+				info.withVersion = true
+			} else if keyword(i+1) == "SCHEMA" && info.kind != statementGetChunk && !info.withSchema {
+				info.withSchema = true
+			} else {
+				return statementInfo{}
+			}
+			i += 2
+		default:
 			return statementInfo{}
 		}
-		info.columns = tokens[from+3:]
 	}
 	return info
 }
@@ -229,6 +249,18 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		if err != nil {
 			return err
 		}
+		words := strings.Fields(statement)
+		if len(words) >= 2 && strings.EqualFold(words[0], "SHOW") {
+			if strings.EqualFold(words[1], "SLOTS") {
+				err = chunkclient.ValidateSlots(reply)
+			}
+			if strings.EqualFold(words[1], "STATUS") {
+				err = chunkclient.ValidateStatus(reply)
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if info.kind == statementDescribe {
 			schema, err := chunkclient.ParseDescribe(reply)
 			if err != nil {
@@ -267,6 +299,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		return err
 	}
 	reply := replies[1].Value
+	if info.withVersion || info.withSchema {
+		return printReadMetadata(stdout, schema, info, reply, opts)
+	}
 	switch info.kind {
 	case statementGetBlock:
 		return printBlock(stdout, schema, info.columns, reply, opts)

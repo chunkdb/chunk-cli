@@ -67,7 +67,7 @@ func watchTestColumns() []chunkclient.Column {
 func TestWatchFormatting(t *testing.T) {
 	columns := watchTestColumns()
 	row := watchArray(watchInt("18446744073709551615"), watchBulk("it’s 'door'"), watchBulk(string([]byte{13})), watchBulk(string([]byte{0, 255})))
-	event := watchPush("change", watchInt("-123"), watchBulk("admin"), watchInt("7"), watchArray(watchArray(watchInt("-2"), watchArray(watchInt("9223372036854775807"), watchInt("1")), chunkclient.Value{Kind: chunkclient.KindNull}, row)))
+	event := watchPush("change", watchInt("123"), watchBulk("admin"), watchInt("7"), watchArray(watchArray(watchInt("-2"), watchArray(watchInt("9223372036854775807"), watchInt("1")), chunkclient.Value{Kind: chunkclient.KindNull}, row)))
 	schemas := map[uint64][]chunkclient.Column{}
 	calls := 0
 	fetch := func(version uint64) ([]chunkclient.Column, error) {
@@ -81,7 +81,7 @@ func TestWatchFormatting(t *testing.T) {
 	if err := printWatchEvent(&human, event, false, schemas, fetch); err != nil {
 		t.Fatal(err)
 	}
-	want := "change revision 9 time_ms -123 user admin\n  block -2 [9223372036854775807,1]: (absent) -> {id = 18446744073709551615, name = 'it’s ''door''', flags = b'10110', blob = x'00ff'}\n"
+	want := "change revision 9 time_ms 123 user admin\n  block -2 [9223372036854775807,1]: (absent) -> {id = 18446744073709551615, name = 'it’s ''door''', flags = b'10110', blob = x'00ff'}\n"
 	if human.String() != want {
 		t.Fatalf("got %q, want %q", human.String(), want)
 	}
@@ -100,7 +100,7 @@ func TestWatchFormatting(t *testing.T) {
 	}
 	blocks := object["blocks"].([]any)
 	after := blocks[0].(map[string]any)["after"].(map[string]any)
-	if after["id"] != json.Number("18446744073709551615") || after["flags"] != "10110" || after["blob"] != "00ff" {
+	if after["id"] != "18446744073709551615" || after["flags"] != "10110" || after["blob"] != "00ff" {
 		t.Fatalf("values: %+v", after)
 	}
 	if before := blocks[0].(map[string]any)["before"]; before != nil {
@@ -113,7 +113,7 @@ func TestWatchFormatting(t *testing.T) {
 }
 
 func TestWatchRejectsMalformedEvents(t *testing.T) {
-	bad := []chunkclient.Value{watchPush("unknown"), watchPush("resync", watchInt("1")), watchPush("schema", watchInt("1"), watchArray()), watchPush("change", watchInt("0"), watchInt("1"), watchInt("1"), watchArray())}
+	bad := []chunkclient.Value{chunkclient.Value{Kind: chunkclient.KindPush, Items: []chunkclient.Value{watchInt("1")}}, watchPush("resync", watchInt("1")), watchPush("schema", watchInt("1"), watchArray()), watchPush("change", watchInt("0"), watchInt("1"), watchInt("1"), watchArray())}
 	for _, event := range bad {
 		if err := printWatchEvent(&bytes.Buffer{}, event, false, map[uint64][]chunkclient.Column{}, func(uint64) ([]chunkclient.Column, error) { return nil, fmt.Errorf("no schema") }); err == nil {
 			t.Fatalf("accepted %+v", event)

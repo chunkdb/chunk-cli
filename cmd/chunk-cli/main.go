@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,13 +20,14 @@ import (
 const version = "1.2.0"
 
 type globalOptions struct {
-	URI           string
-	User          string
-	PasswordFile  string
-	Timeout       time.Duration
-	TLSInsecure   bool
-	TLSServerName string
-	Statement     statementOptions
+	URI            string
+	User           string
+	PasswordFile   string
+	Timeout        time.Duration
+	TLSInsecure    bool
+	TLSServerName  string
+	Statement      statementOptions
+	SessionOptions map[string]chunkclient.Value
 }
 
 func main() {
@@ -34,9 +36,9 @@ func main() {
 
 // run runs the CLI and returns the exit status.
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	var opts globalOptions
 	fail := func(err error) int {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 1
+		return printError(stderr, err, opts.Statement.json)
 	}
 	opts, rest, err := parseGlobalFlags(args, stderr)
 	if err != nil {
@@ -141,10 +143,11 @@ func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
 
 func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
 	client, err := chunkclient.Dial(chunkclient.Config{
-		URI:           parsedURI,
-		Timeout:       opts.Timeout,
-		TLSInsecure:   opts.TLSInsecure,
-		TLSServerName: opts.TLSServerName,
+		URI:            parsedURI,
+		Timeout:        opts.Timeout,
+		TLSInsecure:    opts.TLSInsecure,
+		TLSServerName:  opts.TLSServerName,
+		SessionOptions: opts.SessionOptions,
 	})
 	if err != nil {
 		return nil, err
@@ -198,7 +201,7 @@ func runShell(client *chunkclient.Client, term console, stdout io.Writer, defaul
 			err = execute(client, txn, statement, opts, stdout, term)
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
+			printError(stderr, err, opts.json)
 		}
 		if broken := client.Broken(); broken != nil {
 			return broken
@@ -210,7 +213,7 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	opts := globalOptions{}
 
 	fs := flag.NewFlagSet("chunk-cli", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(io.Discard) // run formats the error, including JSON stderr.
 	fs.Usage = func() {}
 
 	fs.StringVar(&opts.URI, "uri", "chunk://127.0.0.1:4242/", "connection URI: chunk://user:password@host:port/ or chunks://user:password@host:port/")
@@ -219,6 +222,29 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "network timeout")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
+	fs.Func("hello-option", "HELLO key=value (repeatable; unknown values are bytes)", func(text string) error {
+		key, value, found := strings.Cut(text, "=")
+		key = strings.ToLower(key)
+		if !found || key == "" {
+			return errors.New("--hello-option needs key=value")
+		}
+		if opts.SessionOptions == nil {
+			opts.SessionOptions = map[string]chunkclient.Value{}
+		}
+		if _, found := opts.SessionOptions[key]; found {
+			return fmt.Errorf("duplicate HELLO option %s", key)
+		}
+		v := chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte(value)}
+		if key == "statement_timeout_ms" {
+			n, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return fmt.Errorf("statement_timeout_ms: %w", err)
+			}
+			v = chunkclient.Value{Kind: chunkclient.KindBigNumber, Text: strconv.FormatUint(n, 10)}
+		}
+		opts.SessionOptions[key] = v
+		return nil
+	})
 	fs.BoolVar(&opts.Statement.json, "json", false, "print replies as JSON")
 	fs.BoolVar(&opts.Statement.blocks, "blocks", false, "print the values of every present block of a chunk")
 	fs.StringVar(&opts.Statement.in, "in", "", "send the file as parameter $1")
@@ -226,7 +252,7 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.StringVar(&opts.Statement.newPasswordFile, "new-password-file", "", "the password of CREATE USER / ALTER USER ... PASSWORD")
 
 	if err := fs.Parse(args); err != nil {
-		return globalOptions{}, nil, err
+		return opts, nil, err
 	}
 	return opts, fs.Args(), nil
 }
@@ -246,7 +272,7 @@ func printUsage(w io.Writer) {
 Usage:
   chunk-cli [options] <CQL statement>
   chunk-cli [options] shell
-  chunk-cli [options] watch <table> [--slot name [--ack-every n]] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
+  chunk-cli [options] watch <table> [watch options]
   chunk-cli [options] migrate <file>
   chunk-cli [options] migrations
   chunk-cli version | help
@@ -259,6 +285,7 @@ Options:
   --timeout <duration>      (default 5s)
   --tls-insecure
   --tls-server-name <name>
+  --hello-option <key=value> repeatable HELLO session option
   --json                    print replies as JSON
   --blocks                  print the values of every present block of a chunk
   --in <file>               send the file as parameter $1 (SET CHUNK ... $1)
@@ -266,6 +293,18 @@ Options:
   --new-password-file <file>
                             the password of CREATE USER <name> PASSWORD and
                             ALTER USER <name> PASSWORD (asked for on a terminal)
+
+Watch options:
+  --slot <name>             durable consumer slot
+  --ack-every <n>           acknowledge every n printed eligible events (default 1)
+  --area <cx0,cy0,cx1,cy1>   inclusive chunk rectangle
+  --columns <a,b>           projected columns
+  --no-before               omit before rows
+  --chunks                  stream committed chunk forms
+  --after <epoch:revision>  resume from a retained position
+  --takeover                replace the slot's consumer (requires --slot)
+  --ack-timeout-ms <ms>      mutation ACK deadline (requires --slot)
+  --json                    one JSON object per event
 
 Examples:
   chunk-cli "CREATE TABLE world (id u16, name text(32) NULL) CHUNK 16 x 16"

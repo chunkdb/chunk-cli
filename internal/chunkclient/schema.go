@@ -20,6 +20,7 @@ const (
 	ColumnBits
 	ColumnText
 	ColumnBytes
+	ColumnUnknown
 )
 
 // ColumnType is a column type of DESCRIBE: `uN`, `iN`, `bool`, `f32`, `f64`,
@@ -28,6 +29,7 @@ const (
 type ColumnType struct {
 	Kind ColumnKind
 	Size int
+	Name string
 }
 
 const maxVarBytes = 16 << 20
@@ -80,6 +82,9 @@ func ParseColumnType(text string) (ColumnType, error) {
 }
 
 func (t ColumnType) String() string {
+	if t.Kind == ColumnUnknown {
+		return t.Name
+	}
 	switch t.Kind {
 	case ColumnUnsigned:
 		return "u" + strconv.Itoa(t.Size)
@@ -130,6 +135,10 @@ type Column struct {
 
 // Schema is the DESCRIBE reply of a table.
 type Schema struct {
+	Epoch         string
+	Revision      *uint64
+	Dims          int
+	ChunkColumns  []Column
 	Table         string
 	Version       uint64
 	Columns       []Column
@@ -174,7 +183,7 @@ func ParseDescribe(reply Value) (*Schema, error) {
 		if !ok {
 			return Value{}, fmt.Errorf("DESCRIBE: no %s", key)
 		}
-		if value.Kind != kind {
+		if value.Kind != kind && !(kind == KindInteger && value.Kind == KindBigNumber) {
 			return Value{}, fmt.Errorf("DESCRIBE: %s is a %s, expected a %s", key, value.Kind, kind)
 		}
 		return value, nil
@@ -185,6 +194,41 @@ func ParseDescribe(reply Value) (*Schema, error) {
 		return nil, err
 	}
 	schema.Table = string(table.Bulk)
+	schema.Dims = 2
+	if dims, found := reply.Lookup("dims"); found {
+		n, err := dims.Uint64()
+		if err != nil || n != 2 && n != 3 {
+			return nil, errors.New("DESCRIBE: invalid dims")
+		}
+		schema.Dims = int(n)
+	}
+	if epoch, found := reply.Lookup("epoch"); found {
+		if epoch.Kind != KindBulk || !ValidEpoch(string(epoch.Bulk)) {
+			return nil, errors.New("DESCRIBE: invalid epoch")
+		}
+		schema.Epoch = string(epoch.Bulk)
+		revision, found := reply.Lookup("revision")
+		if !found {
+			return nil, errors.New("DESCRIBE: no revision")
+		}
+		if revision.Kind != KindNull {
+			n, err := revision.Uint64()
+			if err != nil {
+				return nil, errors.New("DESCRIBE: invalid revision")
+			}
+			schema.Revision = &n
+		}
+	}
+	if columns, found := reply.Lookup("chunk_columns"); found {
+		if columns.Kind != KindArray {
+			return nil, errors.New("DESCRIBE: invalid chunk_columns")
+		}
+		var err error
+		schema.ChunkColumns, err = ParseColumns(columns)
+		if err != nil {
+			return nil, err
+		}
+	}
 	version, err := field("version", KindInteger)
 	if err != nil {
 		return nil, err
@@ -236,11 +280,11 @@ func ParseDescribe(reply Value) (*Schema, error) {
 }
 
 func sizePair(pair Value) (int, int, error) {
-	if len(pair.Items) != 2 {
+	if len(pair.Items) < 2 {
 		return 0, 0, errors.New("expected [w, h]")
 	}
 	var out [2]int
-	for i, item := range pair.Items {
+	for i, item := range pair.Items[:2] {
 		value, err := item.Uint64()
 		if err != nil || value == 0 || value > 1<<31 {
 			return 0, 0, fmt.Errorf("invalid size %q", item.Text)
@@ -275,7 +319,7 @@ func ParseColumn(item Value) (Column, error) {
 		return Column{}, fmt.Errorf("column %s has no type", column.Name)
 	}
 	if column.Type, err = ParseColumnType(string(typeName.Bulk)); err != nil {
-		return Column{}, fmt.Errorf("column %s: %w", column.Name, err)
+		column.Type = ColumnType{Kind: ColumnUnknown, Name: string(typeName.Bulk)}
 	}
 	for _, flag := range []struct {
 		key string
@@ -290,5 +334,30 @@ func ParseColumn(item Value) (Column, error) {
 	if column.Default, ok = item.Lookup("default"); !ok {
 		return Column{}, fmt.Errorf("column %s has no default", column.Name)
 	}
+	if column.Type.Kind == ColumnUnknown && column.Default.Kind != KindNull && column.Default.Kind != KindBulk {
+		return Column{}, fmt.Errorf("column %s: unknown type default must be raw bytes", column.Name)
+	}
 	return column, nil
+}
+
+func ParseColumns(values Value) ([]Column, error) {
+	if values.Kind != KindArray {
+		return nil, errors.New("expected column array")
+	}
+	columns := make([]Column, 0, len(values.Items))
+	names := map[string]bool{}
+	ids := map[uint32]bool{}
+	for _, value := range values.Items {
+		column, err := ParseColumn(value)
+		if err != nil {
+			return nil, err
+		}
+		if names[column.Name] || ids[column.ID] {
+			return nil, errors.New("duplicate schema column")
+		}
+		names[column.Name] = true
+		ids[column.ID] = true
+		columns = append(columns, column)
+	}
+	return columns, nil
 }

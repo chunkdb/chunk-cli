@@ -10,18 +10,18 @@ import (
 
 func TestParseColumnType(t *testing.T) {
 	valid := map[string]ColumnType{
-		"u1":             {ColumnUnsigned, 1},
-		"u64":            {ColumnUnsigned, 64},
-		"i2":             {ColumnSigned, 2},
-		"i64":            {ColumnSigned, 64},
-		"bool":           {ColumnBool, 1},
-		"f32":            {ColumnFloat32, 32},
-		"f64":            {ColumnFloat64, 64},
-		"bits(1)":        {ColumnBits, 1},
-		"bits(65535)":    {ColumnBits, 65535},
-		"text(256)":      {ColumnText, 256},
-		"bytes(16)":      {ColumnBytes, 16},
-		"text(16777216)": {ColumnText, 16 << 20},
+		"u1":             {Kind: ColumnUnsigned, Size: 1},
+		"u64":            {Kind: ColumnUnsigned, Size: 64},
+		"i2":             {Kind: ColumnSigned, Size: 2},
+		"i64":            {Kind: ColumnSigned, Size: 64},
+		"bool":           {Kind: ColumnBool, Size: 1},
+		"f32":            {Kind: ColumnFloat32, Size: 32},
+		"f64":            {Kind: ColumnFloat64, Size: 64},
+		"bits(1)":        {Kind: ColumnBits, Size: 1},
+		"bits(65535)":    {Kind: ColumnBits, Size: 65535},
+		"text(256)":      {Kind: ColumnText, Size: 256},
+		"bytes(16)":      {Kind: ColumnBytes, Size: 16},
+		"text(16777216)": {Kind: ColumnText, Size: 16 << 20},
 	}
 	for text, want := range valid {
 		got, err := ParseColumnType(text)
@@ -83,7 +83,7 @@ func TestParseDescribe(t *testing.T) {
 	id, _ := schema.Column("id")
 	light, _ := schema.Column("light")
 	name, ok := schema.Column("name")
-	if !ok || id.ID != 1 || name.ID != 4 || !id.Required || id.Type != (ColumnType{ColumnUnsigned, 10}) || light.Default.Text != "15" ||
+	if !ok || id.ID != 1 || name.ID != 4 || !id.Required || id.Type != (ColumnType{Kind: ColumnUnsigned, Size: 10}) || light.Default.Text != "15" ||
 		!name.Null || name.Type.Kind != ColumnText || name.Default.Kind != KindNull {
 		t.Fatalf("unexpected columns %+v", schema.Columns)
 	}
@@ -92,7 +92,6 @@ func TestParseDescribe(t *testing.T) {
 	}
 
 	for _, broken := range []string{
-		strings.Replace(describeW, "$3\r\nu10", "$3\r\nu99", 1),
 		strings.Replace(describeW, "$5\r\nchunk\r\n*2\r\n:2\r\n:2", "$5\r\nchunk\r\n*2\r\n:2\r\n:0", 1),
 		strings.Replace(describeW, "$7\r\nversion\r\n:1", "$7\r\nversioX\r\n:1", 1),
 		strings.Replace(describeW, "$4\r\nname\r\n$4\r\nblob", "$4\r\nname\r\n$4\r\nname", 1),

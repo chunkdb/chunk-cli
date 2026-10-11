@@ -209,8 +209,13 @@ func (s *testServer) ok(t *testing.T, args ...string) string {
 
 func (s *testServer) fails(t *testing.T, want string, args ...string) {
 	t.Helper()
+	s.failsCode(t, 1, want, args...)
+}
+
+func (s *testServer) failsCode(t *testing.T, expected int, want string, args ...string) {
+	t.Helper()
 	code, out, errOut := s.cli(t, "", args...)
-	if code != 1 || out != "" || !strings.Contains(errOut, want) {
+	if code != expected || out != "" || !strings.Contains(errOut, want) {
 		t.Fatalf("%v: got exit %d, stdout %q, stderr %q; want an error with %q", args, code, out, errOut, want)
 	}
 }
@@ -245,7 +250,7 @@ func TestCLIBlocks(t *testing.T) {
 	if out := s.ok(t, "GET BLOCK 1 0 FROM world COLUMNS blob, id"); out != "blob = x'000d0a'\nid = 18446744073709551615\n" {
 		t.Fatalf("GET BLOCK COLUMNS: %q", out)
 	}
-	wantJSON := `{"id":18446744073709551615,"light":15,"s":-3,"f":1.5,"ok":true,"flags":"10110","name":"it's","blob":"000d0a"}` + "\n"
+	wantJSON := `{"id":"18446744073709551615","light":15,"s":-3,"f":1.5,"ok":true,"flags":"10110","name":"it's","blob":"000d0a"}` + "\n"
 	if out := s.ok(t, "--json", "GET BLOCK 1 0 FROM world"); out != wantJSON {
 		t.Fatalf("GET BLOCK --json: got %q, want %q", out, wantJSON)
 	}
@@ -264,7 +269,7 @@ func TestCLIBlocks(t *testing.T) {
 	// IF VERSION: a stale version fails with the current one and changes
 	// nothing.
 	current := strings.TrimSpace(s.ok(t, "SET BLOCK 1 0 IN world light = 3"))
-	s.fails(t, "VERSION_MISMATCH current="+current, "SET BLOCK 1 0 IN world light = 4 IF VERSION "+version)
+	s.failsCode(t, 2, "VERSION_MISMATCH current="+current, "SET BLOCK 1 0 IN world light = 4 IF VERSION "+version)
 	if out := s.ok(t, "GET BLOCK 1 0 FROM world COLUMNS light"); out != "light = 3\n" {
 		t.Fatalf("after the mismatch: %q", out)
 	}
@@ -370,7 +375,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 		t.Fatalf("--out: %q", out)
 	}
 	written := strings.TrimSpace(s.ok(t, "--in", file, "SET CHUNK 5 5 IN world $1"))
-	s.fails(t, "VERSION_MISMATCH current="+written, "--in", file, "SET CHUNK 5 5 IN world $1 IF VERSION 1")
+	s.failsCode(t, 2, "VERSION_MISMATCH current="+written, "--in", file, "SET CHUNK 5 5 IN world $1 IF VERSION 1")
 	if out := s.ok(t, "GET BLOCK 11 10 FROM world COLUMNS id, name, blob"); out != "id = 5\nname = 'hi'\nblob = x'00ff0d0a'\n" {
 		t.Fatalf("block of the loaded chunk: %q", out)
 	}
@@ -380,7 +385,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 
 	// After the table's columns changed, the dumped form no longer fits.
 	s.ok(t, "ALTER TABLE world ADD COLUMN extra u8")
-	s.fails(t, "SCHEMA_MISMATCH current=2", "--in", file, "SET CHUNK 6 6 IN world $1")
+	s.failsCode(t, 2, "SCHEMA_MISMATCH current=2", "--in", file, "SET CHUNK 6 6 IN world $1")
 }
 
 func TestCLITablesAndAlter(t *testing.T) {
@@ -806,7 +811,7 @@ func TestCLITransactions(t *testing.T) {
 	s.ok(t, "SET BLOCK 1 1 IN world id = 30")
 	sh.expect("GET BLOCK 1 1 FROM world COLUMNS id", "NULL\nchunk*> ", "")
 	sh.expect("SET BLOCK 0 0 IN world id = 12", "(applies at COMMIT)\nchunk*> ", "")
-	sh.expect("COMMIT", "chunk> ", "error: CONFLICT chunk_changed")
+	sh.expect("COMMIT", "chunk> ", "error: CONFLICT reason=chunk_changed")
 	if !strings.Contains(sh.stderr.String(), "(the transaction ended and wrote nothing; run it again from BEGIN)\n") {
 		t.Fatalf("CONFLICT: %q", sh.stderr.String())
 	}
@@ -828,7 +833,7 @@ func TestCLITransactions(t *testing.T) {
 	sh.expect("GET BLOCK 0 0 FROM world COLUMNS id", "id = 50\nchunk*> ", "")
 	s.ok(t, "ALTER TABLE world ADD COLUMN extra i8 NULL")
 	_, errOut = sh.send("GET BLOCK 0 0 FROM world COLUMNS id")
-	if !strings.HasPrefix(errOut, "error: CONFLICT table_changed") ||
+	if !strings.HasPrefix(errOut, "error: CONFLICT reason=table_changed") ||
 		!strings.HasSuffix(errOut, "(the transaction ended and wrote nothing; run it again from BEGIN)\n") {
 		t.Fatalf("CONFLICT from a statement: %q", errOut)
 	}

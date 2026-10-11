@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,11 @@ type watchPosition struct {
 	Epoch    string `json:"epoch"`
 	Revision uint64 `json:"revision"`
 }
+
+func (p watchPosition) MarshalJSON() ([]byte, error) {
+	return json.Marshal(orderedMap{{"epoch", p.Epoch}, {"revision", p.Revision}})
+}
+
 type watchOptions struct {
 	table     string
 	statement string
@@ -53,22 +59,33 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var area, after string
+	var columns string
+	var noBefore, chunks, takeover bool
+	var ackTimeout uint64
 	fs.StringVar(&area, "area", "", "inclusive chunk rectangle")
 	fs.StringVar(&after, "after", "", "epoch:revision")
 	fs.StringVar(&opts.slot, "slot", "", "durable slot name")
+	fs.StringVar(&columns, "columns", "", "comma-separated projected column names")
+	fs.BoolVar(&noBefore, "no-before", false, "omit before rows")
+	fs.BoolVar(&chunks, "chunks", false, "stream committed chunk forms")
+	fs.BoolVar(&takeover, "takeover", false, "replace a slot's active consumer")
+	fs.Uint64Var(&ackTimeout, "ack-timeout-ms", 0, "mutation acknowledgement deadline (requires --slot)")
 	fs.Uint64Var(&opts.ackEvery, "ack-every", 1, "acknowledge every n printed changes (requires --slot)")
 	fs.BoolVar(&opts.json, "json", json, "one JSON object per event")
 	if err := fs.Parse(args[1:]); err != nil {
 		return watchOptions{}, err
 	}
 	var emptyFlag string
-	var ackEverySet bool
+	var ackEverySet, ackTimeoutSet bool
 	fs.Visit(func(f *flag.Flag) {
-		if (f.Name == "area" || f.Name == "after" || f.Name == "slot") && f.Value.String() == "" {
+		if (f.Name == "area" || f.Name == "after" || f.Name == "slot" || f.Name == "columns") && f.Value.String() == "" {
 			emptyFlag = f.Name
 		}
 		if f.Name == "ack-every" {
 			ackEverySet = true
+		}
+		if f.Name == "ack-timeout-ms" {
+			ackTimeoutSet = true
 		}
 	})
 	if emptyFlag != "" {
@@ -76,6 +93,12 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	}
 	if ackEverySet && opts.slot == "" {
 		return watchOptions{}, errors.New("--ack-every requires --slot")
+	}
+	if (takeover || ackTimeoutSet) && opts.slot == "" {
+		return watchOptions{}, errors.New("--takeover and --ack-timeout-ms require --slot")
+	}
+	if ackTimeoutSet && ackTimeout == 0 {
+		return watchOptions{}, errors.New("--ack-timeout-ms must be positive")
 	}
 	if fs.NArg() != 0 {
 		return watchOptions{}, fmt.Errorf("unexpected watch argument %q", fs.Arg(0))
@@ -115,6 +138,27 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		}
 		opts.statement += fmt.Sprintf(" AFTER %s %d", p.Epoch, p.Revision)
 	}
+	if columns != "" {
+		names := strings.Split(columns, ",")
+		for _, name := range names {
+			if name == "" || name[0] >= '0' && name[0] <= '9' || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+				return watchOptions{}, fmt.Errorf("invalid column %q", name)
+			}
+		}
+		opts.statement += " COLUMNS " + strings.Join(names, ", ")
+	}
+	if noBefore {
+		opts.statement += " NO BEFORE"
+	}
+	if chunks {
+		opts.statement += " CHUNKS"
+	}
+	if takeover {
+		opts.statement += " TAKEOVER"
+	}
+	if ackTimeoutSet {
+		opts.statement += fmt.Sprintf(" ACK TIMEOUT %d", ackTimeout)
+	}
 	return opts, nil
 }
 
@@ -149,6 +193,7 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		return err
 	}
 	schemas := map[uint64][]chunkclient.Column{initial.Version: initial.Columns}
+	metadata := map[uint64]watchSchemaMetadata{initial.Version: {dims: initial.Dims, chunkColumns: initial.ChunkColumns}}
 	stream, err := connectWatchLogin(ctx, opts, uri, login)
 	if err != nil {
 		return err
@@ -188,8 +233,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if schema.Version != version {
 			return nil, fmt.Errorf("WATCH: need schema version %d, DESCRIBE returned %d", version, schema.Version)
 		}
+		metadata[version] = watchSchemaMetadata{dims: schema.Dims, chunkColumns: schema.ChunkColumns}
 		return schema.Columns, nil
-	})
+	}, metadata)
 }
 
 // watchStream is the dedicated connection after WATCH has started.
@@ -200,7 +246,11 @@ type watchStream interface {
 	Close() error
 }
 
-func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, stdout io.Writer, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error)) (resultErr error) {
+func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, stdout io.Writer, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error), contexts ...map[uint64]watchSchemaMetadata) (resultErr error) {
+	metadata := map[uint64]watchSchemaMetadata{}
+	if len(contexts) > 0 {
+		metadata = contexts[0]
+	}
 	done := make(chan struct{})
 	stopped := make(chan error, 1)
 	// Acknowledgements and UNWATCH share the writer. Keep pending state under
@@ -263,7 +313,7 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 		if ctx.Err() != nil {
 			continue
 		} // UNWATCH drains without decoding or printing.
-		if err := printWatchEvent(stdout, push, watch.json, schemas, fetch); err != nil {
+		if err := printWatchEvent(stdout, push, watch.json, schemas, fetch, metadata); err != nil {
 			if ctx.Err() != nil {
 				continue
 			}
@@ -276,7 +326,8 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 			sendMu.Unlock()
 			continue
 		}
-		if watch.slot != "" && string(push.Items[0].Bulk) == "change" {
+		kind := string(push.Items[0].Bulk)
+		if watch.slot != "" && (kind == "change" || kind == "chunks" || kind == "progress") {
 			lastRevision, _ = push.Items[2].Uint64() // validated by printWatchEvent
 			pending++
 			if pending >= watch.ackEvery {
@@ -300,11 +351,11 @@ func watchString(v chunkclient.Value) (string, error) {
 // watchCoordinate preserves the protocol's [chunk, offset] representation
 // when an absolute block coordinate does not fit int64.
 func watchCoordinate(v chunkclient.Value) (any, string, error) {
-	if v.Kind == chunkclient.KindInteger {
+	if v.Kind == chunkclient.KindInteger || v.Kind == chunkclient.KindBigNumber {
 		n, err := v.Int64()
 		return n, v.Text, err
 	}
-	if v.Kind != chunkclient.KindArray || len(v.Items) != 2 {
+	if v.Kind != chunkclient.KindArray || len(v.Items) < 2 {
 		return nil, "", errors.New("WATCH: invalid block coordinate")
 	}
 	chunk, err := v.Items[0].Int64()
@@ -322,7 +373,7 @@ func watchRow(row chunkclient.Value, columns []chunkclient.Column) (any, string,
 	if row.Kind == chunkclient.KindNull {
 		return nil, "(absent)", nil
 	}
-	if row.Kind != chunkclient.KindArray || len(row.Items) != len(columns) {
+	if row.Kind != chunkclient.KindArray || len(row.Items) < len(columns) {
 		return nil, "", errors.New("WATCH: row does not match its schema")
 	}
 	values := orderedMap{}
@@ -364,6 +415,8 @@ func validateWatchValue(v chunkclient.Value, column chunkclient.Column) error {
 		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) <= typ.Size && utf8.Valid(v.Bulk)
 	case typ.Kind == chunkclient.ColumnBytes:
 		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) <= typ.Size
+	case typ.Kind == chunkclient.ColumnUnknown:
+		valid = v.Kind == chunkclient.KindBulk
 	}
 	if !valid {
 		return fmt.Errorf("WATCH: invalid value for column %s (%s)", column.Name, typ)
@@ -371,7 +424,22 @@ func validateWatchValue(v chunkclient.Value, column chunkclient.Column) error {
 	return nil
 }
 
-func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error)) error {
+func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error), contexts ...map[uint64]watchSchemaMetadata) error {
+	if chunkclient.UnknownPush(push) {
+		return nil
+	}
+	metadata := map[uint64]watchSchemaMetadata{}
+	if len(contexts) != 0 {
+		metadata = contexts[0]
+	}
+	var schemaMetadata watchSchemaMetadata
+	if push.Kind == chunkclient.KindPush && len(push.Items) > 0 && string(push.Items[0].Bulk) == "schema" {
+		var err error
+		push, schemaMetadata, err = normalizeSchemaPush(push)
+		if err != nil {
+			return err
+		}
+	}
 	items := push.Items
 	if push.Kind != chunkclient.KindPush || len(items) < 3 {
 		return errors.New("WATCH: invalid push")
@@ -395,13 +463,36 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 	fields := orderedMap{{"type", kind}, {"position", position}}
 	var out bytes.Buffer
 	switch kind {
+	case "progress":
+		fmt.Fprintf(&out, "progress %s:%d\n", epoch, revision)
 	case "resync":
-		if len(items) != 3 {
+		if len(items) == 4 {
 			return errors.New("WATCH: resync needs three fields")
 		}
+		var parent, fork any
+		if len(items) >= 5 {
+			if items[3].Kind != chunkclient.KindNull {
+				text, err := watchString(items[3])
+				if err != nil || !chunkclient.ValidEpoch(text) {
+					return errors.New("WATCH: invalid parent epoch")
+				}
+				parent = text
+			}
+			if items[4].Kind != chunkclient.KindNull {
+				n, err := items[4].Uint64()
+				if err != nil {
+					return err
+				}
+				fork = n
+			}
+			if (parent == nil) != (fork == nil) {
+				return errors.New("WATCH: incomplete lineage")
+			}
+		}
+		fields = append(fields, jsonField{"parent_epoch", parent}, jsonField{"fork_revision", fork})
 		fmt.Fprintf(&out, "resync %s:%d; keep reading while re-reading state on another connection; retain this frontier for --after %s:%d\n", epoch, revision, epoch, revision)
 	case "schema":
-		if len(items) != 5 || items[4].Kind != chunkclient.KindArray {
+		if len(items) < 5 || items[4].Kind != chunkclient.KindArray {
 			return errors.New("WATCH: invalid schema push")
 		}
 		version, err := items[3].Uint64()
@@ -427,13 +518,16 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			return errors.New("WATCH: empty schema")
 		}
 		schemas[version] = columns
+		metadata[version] = schemaMetadata
 		fields = append(fields, jsonField{"version", version}, jsonField{"columns", jsonValue(items[4], nil)})
+		fields = append(fields, jsonField{"dims", schemaMetadata.dims})
+		fields = append(fields, jsonField{"chunk_columns", columnsJSON(schemaMetadata.chunkColumns)})
 		fmt.Fprintf(&out, "schema %s:%d version %d\n", epoch, revision, version)
-	case "change":
-		if len(items) != 7 || items[6].Kind != chunkclient.KindArray {
+	case "change", "chunks":
+		if len(items) < 7 || items[6].Kind != chunkclient.KindArray || kind == "change" && len(items) != 7 && len(items) < 10 || kind == "chunks" && len(items) < 9 {
 			return errors.New("WATCH: invalid change push")
 		}
-		timestamp, err := items[3].Int64()
+		timestamp, err := items[3].Uint64()
 		if err != nil {
 			return err
 		}
@@ -459,10 +553,34 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			}
 			schemas[version] = columns
 		}
+		info, found := metadata[version]
+		if !found {
+			info = watchSchemaMetadata{dims: 2}
+		}
+		var tag, txn any
+		if len(items) >= 9 {
+			tag, err = nullableTag(items[7])
+			if err != nil {
+				return err
+			}
+			txn, err = nullableTxn(items[8])
+			if err != nil {
+				return err
+			}
+		}
+		if kind == "chunks" {
+			fmt.Fprintf(&out, "chunks revision %d time_ms %d user %s\n", revision, timestamp, userText)
+			chunks, err := printChunkPush(&out, items[6], info.dims)
+			if err != nil {
+				return err
+			}
+			fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"schema_version", version}, jsonField{"chunks", chunks}, jsonField{"tag", tag}, jsonField{"txn", txn})
+			break
+		}
 		fmt.Fprintf(&out, "change revision %d time_ms %d user %s\n", revision, timestamp, userText)
 		blocks := make([]any, 0, len(items[6].Items))
 		for _, block := range items[6].Items {
-			if block.Kind != chunkclient.KindArray || len(block.Items) != 4 {
+			if block.Kind != chunkclient.KindArray || len(block.Items) < info.dims+2 {
 				return errors.New("WATCH: invalid block")
 			}
 			x, xText, err := watchCoordinate(block.Items[0])
@@ -473,18 +591,62 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			if err != nil {
 				return err
 			}
-			before, beforeText, err := watchRow(block.Items[2], columns)
+			before, beforeText, err := watchRow(block.Items[info.dims], columns)
 			if err != nil {
 				return err
 			}
-			after, afterText, err := watchRow(block.Items[3], columns)
+			after, afterText, err := watchRow(block.Items[info.dims+1], columns)
 			if err != nil {
 				return err
 			}
-			blocks = append(blocks, orderedMap{{"x", x}, {"y", y}, {"before", before}, {"after", after}})
-			fmt.Fprintf(&out, "  block %s %s: %s -> %s\n", xText, yText, beforeText, afterText)
+			blockFields := orderedMap{{"x", x}, {"y", y}}
+			coordinateText := xText + " " + yText
+			if info.dims == 3 {
+				z, zText, err := watchCoordinate(block.Items[2])
+				if err != nil {
+					return err
+				}
+				blockFields = append(blockFields, jsonField{"z", z})
+				coordinateText += " " + zText
+			}
+			blocks = append(blocks, append(blockFields, jsonField{"before", before}, jsonField{"after", after}))
+			fmt.Fprintf(&out, "  block %s: %s -> %s\n", coordinateText, beforeText, afterText)
 		}
 		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"schema_version", version}, jsonField{"blocks", blocks})
+		changes := []any{}
+		if len(items) >= 10 {
+			changes, err = chunkChangesJSON(&out, items[9], info)
+			if err != nil {
+				return err
+			}
+		}
+		fields = append(fields, jsonField{"tag", tag}, jsonField{"txn", txn}, jsonField{"chunk_changes", changes})
+	case "catalog":
+		if len(items) < 7 || items[5].Kind != chunkclient.KindArray {
+			return errors.New("WATCH: invalid catalog event")
+		}
+		timestamp, err := items[3].Uint64()
+		if err != nil {
+			return err
+		}
+		var user any
+		if items[4].Kind != chunkclient.KindNull {
+			user, err = watchString(items[4])
+			if err != nil {
+				return err
+			}
+		}
+		txn, err := nullableTxn(items[6])
+		if err != nil {
+			return err
+		}
+		for _, event := range items[5].Items {
+			if event.Kind != chunkclient.KindMap {
+				return errors.New("WATCH: invalid catalog entry")
+			}
+		}
+		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"events", jsonValue(items[5], nil)}, jsonField{"txn", txn})
+		fmt.Fprintf(&out, "catalog %s:%d\n", epoch, revision)
 	default:
 		return fmt.Errorf("WATCH: unknown event %q", kind)
 	}
@@ -516,7 +678,7 @@ func watchCall(ctx context.Context, client *chunkclient.Client, call func() erro
 }
 
 func connectWatchLogin(ctx context.Context, opts globalOptions, uri chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
-	client, err := chunkclient.DialContext(ctx, chunkclient.Config{URI: uri, Timeout: opts.Timeout, TLSInsecure: opts.TLSInsecure, TLSServerName: opts.TLSServerName})
+	client, err := chunkclient.DialContext(ctx, chunkclient.Config{URI: uri, Timeout: opts.Timeout, TLSInsecure: opts.TLSInsecure, TLSServerName: opts.TLSServerName, SessionOptions: opts.SessionOptions})
 	if err != nil {
 		return nil, err
 	}

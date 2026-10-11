@@ -215,7 +215,7 @@ func TestCLIWatchIntegration(t *testing.T) {
 		t.Fatalf("start JSON %+v %v", startJSON, err)
 	}
 	first := resumed.line(t)
-	if !strings.Contains(first, `"type":"change"`) || !strings.Contains(first, `"id":18446744073709551615`) || !strings.Contains(first, `"name":"door"`) || strings.Contains(first, `"id":99`) {
+	if !strings.Contains(first, `"type":"change"`) || !strings.Contains(first, `"id":"18446744073709551615"`) || !strings.Contains(first, `"name":"door"`) || strings.Contains(first, `"id":99`) {
 		t.Fatal(first)
 	}
 	if line := resumed.line(t); !json.Valid([]byte(line)) || !strings.Contains(line, `"name":"new"`) {
