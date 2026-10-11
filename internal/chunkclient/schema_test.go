@@ -49,9 +49,10 @@ const describeW = "%6\r\n$5\r\ntable\r\n$1\r\nw\r\n$7\r\nversion\r\n:1\r\n$7\r\n
 	"%6\r\n$2\r\nid\r\n:3\r\n$4\r\nname\r\n$1\r\nf\r\n$4\r\ntype\r\n$3\r\nf32\r\n$4\r\nnull\r\n#t\r\n$8\r\nrequired\r\n#f\r\n$7\r\ndefault\r\n_\r\n" +
 	"%6\r\n$2\r\nid\r\n:4\r\n$4\r\nname\r\n$4\r\nname\r\n$4\r\ntype\r\n$8\r\ntext(16)\r\n$4\r\nnull\r\n#t\r\n$8\r\nrequired\r\n#f\r\n$7\r\ndefault\r\n_\r\n" +
 	"%6\r\n$2\r\nid\r\n:5\r\n$4\r\nname\r\n$4\r\nblob\r\n$4\r\ntype\r\n$8\r\nbytes(8)\r\n$4\r\nnull\r\n#f\r\n$8\r\nrequired\r\n#f\r\n$7\r\ndefault\r\n_\r\n" +
-	"$5\r\nchunk\r\n*2\r\n:2\r\n:2\r\n$5\r\nlarge\r\n*2\r\n:8\r\n:8\r\n$7\r\noptions\r\n%6\r\n" +
+	"$5\r\nchunk\r\n*2\r\n:2\r\n:2\r\n$5\r\nlarge\r\n*2\r\n:8\r\n:8\r\n$7\r\noptions\r\n%8\r\n" +
 	"$15\r\ndurability_mode\r\n$7\r\nrelaxed\r\n$18\r\ncheckpoint_updates\r\n:256\r\n$20\r\ncheckpoint_wal_bytes\r\n:1048576\r\n" +
-	"$24\r\nwal_group_commit_updates\r\n:8\r\n$22\r\ncheckpoint_compression\r\n$4\r\nnone\r\n$19\r\nvar_max_chunk_bytes\r\n:1048576\r\n"
+	"$24\r\nwal_group_commit_updates\r\n:8\r\n$22\r\ncheckpoint_compression\r\n$4\r\nnone\r\n$19\r\nvar_max_chunk_bytes\r\n:1048576\r\n" +
+	"$17\r\nfeed_buffer_bytes\r\n:67108864\r\n$14\r\nslot_max_bytes\r\n:1073741824\r\n"
 
 func mustSchema(t *testing.T, reply string) *Schema {
 	t.Helper()
@@ -69,8 +70,15 @@ func mustSchema(t *testing.T, reply string) *Schema {
 func TestParseDescribe(t *testing.T) {
 	schema := mustSchema(t, describeW)
 	if schema.Table != "w" || schema.Version != 1 || schema.ChunkWidth != 2 || schema.ChunkHeight != 2 ||
-		schema.LargeWidth != 8 || schema.LargeHeight != 8 || len(schema.Options) != 6 || len(schema.Columns) != 5 {
+		schema.LargeWidth != 8 || schema.LargeHeight != 8 || len(schema.Options) != 8 || len(schema.Columns) != 5 {
 		t.Fatalf("unexpected schema %+v", schema)
+	}
+	options := Value{Kind: KindMap, Map: schema.Options}
+	for key, want := range map[string]string{"feed_buffer_bytes": "67108864", "slot_max_bytes": "1073741824"} {
+		value, ok := options.Lookup(key)
+		if !ok || value.Kind != KindInteger || value.Text != want {
+			t.Fatalf("option %s: %+v, present %v", key, value, ok)
+		}
 	}
 	id, _ := schema.Column("id")
 	light, _ := schema.Column("light")
