@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,11 +90,14 @@ func TestDocOutputNormalization(t *testing.T) {
 }
 
 type docWatch struct {
-	command  *exec.Cmd
-	lines    chan string
-	done     chan error
-	stderr   bytes.Buffer
-	finished bool
+	command      *exec.Cmd
+	lines        chan string
+	done         chan error
+	stderr       bytes.Buffer
+	stdout       io.ReadCloser
+	cancel       context.CancelFunc
+	backpressure chan struct{}
+	finished     bool
 }
 
 func (w *docWatch) line(t *testing.T, label string) string {
@@ -115,20 +119,42 @@ func (w *docWatch) line(t *testing.T, label string) string {
 
 func startDocWatch(t *testing.T, code, directory string, env []string) *docWatch {
 	t.Helper()
-	w := &docWatch{lines: make(chan string, 16), done: make(chan error, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &docWatch{lines: make(chan string, 16), done: make(chan error, 1), cancel: cancel,
+		backpressure: make(chan struct{}, 1)}
 	w.command = exec.Command("bash", "-eu", "-o", "pipefail", "-c", "exec "+code)
 	w.command.Dir, w.command.Env, w.command.Stderr = directory, env, &w.stderr
 	stdout, err := w.command.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	w.stdout = stdout
 	if err := w.command.Start(); err != nil {
+		cancel()
+		_ = stdout.Close()
 		t.Fatal(err)
 	}
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+	scan:
 		for scanner.Scan() {
-			w.lines <- scanner.Text()
+			// Normal reads are lossless. Once a failed consumer cancels,
+			// neither a full output channel nor a blocked pipe read can
+			// prevent the owned child from being reaped.
+			select {
+			case w.lines <- scanner.Text():
+				continue
+			default:
+			}
+			select {
+			case w.backpressure <- struct{}{}:
+			default:
+			}
+			select {
+			case w.lines <- scanner.Text():
+			case <-ctx.Done():
+				break scan
+			}
 		}
 		err := scanner.Err()
 		if waitErr := w.command.Wait(); err == nil {
@@ -138,17 +164,76 @@ func startDocWatch(t *testing.T, code, directory string, env []string) *docWatch
 		w.done <- err
 	}()
 	t.Cleanup(func() {
-		if !w.finished {
-			_ = w.command.Process.Signal(os.Interrupt)
-			select {
-			case <-w.done:
-			case <-time.After(5 * time.Second):
-				_ = w.command.Process.Kill()
-				<-w.done
-			}
+		if err := w.cleanup(); err != nil {
+			t.Error(err)
 		}
 	})
 	return w
+}
+
+// cleanup abandons output only after the test stops consuming it. Closing
+// the pipe interrupts Scan; cancelling the channel send interrupts backpressure.
+func (w *docWatch) cleanup() error {
+	w.cancel()
+	if w.finished {
+		return nil
+	}
+	_ = w.stdout.Close()
+	_ = w.command.Process.Signal(os.Interrupt)
+	select {
+	case <-w.done:
+		w.finished = true
+		return nil
+	case <-time.After(5 * time.Second):
+		_ = w.command.Process.Kill()
+	}
+	select {
+	case <-w.done:
+		w.finished = true
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("docs watch cleanup timed out waiting to reap killed child")
+	}
+}
+
+func TestDocWatchCleanupAfterBackpressure(t *testing.T) {
+	code := `bash -c 'for ((i=0; i<40; i++)); do printf "unexpected %d\n" "$i"; done'`
+	t.Run("abandoned_output", func(t *testing.T) {
+		w := startDocWatch(t, code, t.TempDir(), os.Environ())
+		// A real full-channel signal reproduces the failed-consumer path.
+		// No more lines are consumed after this point.
+		if line := w.line(t, "first unexpected line"); line != "unexpected 0\n" {
+			t.Fatalf("unexpected synthetic output: %q", line)
+		}
+		select {
+		case <-w.backpressure:
+		case <-time.After(5 * time.Second):
+			t.Fatal("synthetic watch did not fill its output channel")
+		}
+		if err := w.cleanup(); err != nil {
+			t.Fatal(err)
+		}
+		if !w.finished || w.command.ProcessState == nil {
+			t.Fatal("cleanup returned before reaping the synthetic watch")
+		}
+	})
+	t.Run("complete_output", func(t *testing.T) {
+		w := startDocWatch(t, code, t.TempDir(), os.Environ())
+		for i := 0; i < 40; i++ {
+			if got, want := w.line(t, "complete synthetic transcript"), fmt.Sprintf("unexpected %d\n", i); got != want {
+				t.Fatalf("synthetic transcript: got %q; want %q", got, want)
+			}
+		}
+		select {
+		case err := <-w.done:
+			w.finished = true
+			if err != nil {
+				t.Fatalf("synthetic watch exit: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("synthetic watch did not exit after its complete transcript")
+		}
+	})
 }
 
 func (w *docWatch) finish(t *testing.T) {
