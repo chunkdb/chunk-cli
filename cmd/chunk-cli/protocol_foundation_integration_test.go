@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -57,6 +58,9 @@ func TestFoundationServerContract(t *testing.T) {
 			if code != 2 || out != "" || !strings.Contains(failure, `"class":"reread"`) || !strings.Contains(failure, `"code":"VERSION_MISMATCH"`) {
 				t.Fatal(code, out, failure)
 			}
+			s.ok(t, "MIGRATE 'foundation_step' CREATE TABLE migration_example (id u8) CHUNK 2 x 2")
+			code, out, failure = s.cli(t, "", "--json", "MIGRATE 'foundation_step' CREATE TABLE migration_example (id u16) CHUNK 2 x 2")
+			assertFoundationFatalError(t, code, out, failure, "MIGRATION_MISMATCH", "migration_mismatch")
 			s.ok(t, "CREATE SLOT 'consumer' ON world AREA 0 0 TO 0 0 COLUMNS id NO BEFORE CHUNKS")
 			slots, err := client.Do("SHOW SLOTS ON world")
 			if err != nil {
@@ -74,6 +78,8 @@ func TestFoundationServerContract(t *testing.T) {
 			watchURI, proxy := watchProxy(t, s)
 			p := startWatchProcessTrusted(t, watchURI, s.tlsCert, "--slot", "consumer", "--json")
 			trace := fixtureStart(t, p, true)
+			code, out, failure = s.cli(t, "", "watch", "world", "--slot", "consumer", "--json")
+			assertFoundationFatalError(t, code, out, failure, "SLOT_BUSY", "slot_attached")
 			written := strings.TrimSpace(s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 			revision := fixtureVersion(t, written)
 			line, _ := trace.waitMutation(t, p, "chunks", revision, 1)
@@ -87,4 +93,18 @@ func TestFoundationServerContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertFoundationFatalError(t *testing.T, code int, out, failure, expected, reason string) {
+	t.Helper()
+	var response struct {
+		Error struct {
+			Code, Class string
+			Keys        map[string]string
+		}
+	}
+	if err := json.Unmarshal([]byte(failure), &response); err != nil || code != 1 || out != "" || response.Error.Code != expected || response.Error.Class != "fatal" || response.Error.Keys["reason"] != reason {
+		t.Fatalf("%s must preserve fatal code and metadata: exit %d stdout %q stderr %q", expected, code, out, failure)
+	}
+	t.Logf("Native fatal error: %s", strings.TrimSpace(failure))
 }

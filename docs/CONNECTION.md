@@ -75,7 +75,7 @@ chunk-cli --uri "${CHUNKDB_URI/admin@/}" PING
 ```
 
 ```output
-error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
+error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
 ```
 Failed commands preserve the server's error code and metadata.
 See [error exit codes](COMMANDS.md#errors) before deciding whether to retry.
