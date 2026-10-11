@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 type docExample struct {
@@ -50,6 +52,7 @@ func normalizeDocOutput(output string) string {
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
+		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
 		{`(?m)^(\d+\) name = [a-z_][a-z0-9_]*, applied_ms = )\d+`, `${1}<time-ms>`},
 	} {
@@ -86,6 +89,70 @@ func TestDocOutputNormalization(t *testing.T) {
 	data := "kind = 42\nname = '" + epoch + "'\nname = 'time_ms 123'\nversion = 2\n"
 	if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
 		t.Fatalf("changed data values: %q", got)
+	}
+}
+
+func TestDocSlotTranscript(t *testing.T) {
+	// Use the production formatter, including the nested filters map. The
+	// docs fence must keep every field and value rather than flattening it.
+	null := chunkclient.Value{Kind: chunkclient.KindNull}
+	filters := foundationMapValue(
+		watchBulk("area"), watchArray(watchInt("0"), watchInt("0"), watchInt("0"), watchInt("0")),
+		watchBulk("columns"), null, watchBulk("column_ids"), null,
+		watchBulk("no_before"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("chunks"), chunkclient.Value{Kind: chunkclient.KindBool},
+	)
+	slot := foundationMapValue(
+		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
+		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("3"),
+		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("filters"), filters, watchBulk("lost_reason"), null,
+	)
+	var out bytes.Buffer
+	if err := printReply(&out, watchArray(slot), statementOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	out.WriteString("OK\n")
+	source, err := os.ReadFile(filepath.Join("..", "..", "docs", "FEED.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples, err := parseDocExamples(string(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected string
+	for _, example := range examples {
+		if strings.Contains(example.input, "SHOW SLOTS ON world") {
+			expected = example.expected
+		}
+	}
+	if expected == "" || normalizeDocOutput(out.String()) != expected {
+		t.Fatalf("formatted SHOW SLOTS:\n%s\nexpected marked transcript:\n%s", normalizeDocOutput(out.String()), expected)
+	}
+	t.Logf("Synthetic production formatter transcript:\n%s", out.String())
+	for _, replacement := range [][2]string{
+		{"acked = 3", "acked = 4"}, {"retained_bytes = 0", "retained_bytes = 7"},
+		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
+		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
+		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
+		{"lost_reason = NULL", "lost_reason = schema_filter"},
+	} {
+		changed := strings.Replace(out.String(), replacement[0], replacement[1], 1)
+		if normalizeDocOutput(changed) == expected {
+			t.Fatalf("normalization hid changed metadata: %v", replacement)
+		}
+	}
+	for _, data := range []string{
+		"epoch = " + watchEpoch + "\n",
+		"  epoch = " + watchEpoch + "\n",
+		"value = 'epoch = " + watchEpoch + "'\n",
+		"1)\n  table = world\n  name = consumer\n  epoch = " + watchEpoch + "\n  value = 3\n",
+		"1)\n  table = world\n  name = consumer\n  epoch = " + watchEpoch + " extra\n  acked = 3\n  retained_bytes = 0\n  lost = false\n  filters:\n",
+	} {
+		if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
+			t.Fatalf("normalization changed epoch-like data: %q -> %q", data, got)
+		}
 	}
 }
 

@@ -54,7 +54,20 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
 ```
 
 ```output
-1) table = world, name = consumer, epoch = <epoch>, acked = 3, retained_bytes = 0, lost = false, filters = area = [0, 0, 0, 0], columns = NULL, column_ids = NULL, no_before = false, chunks = false, lost_reason = NULL
+1)
+  table = world
+  name = consumer
+  epoch = <epoch>
+  acked = 3
+  retained_bytes = 0
+  lost = false
+  filters:
+    area = [0, 0, 0, 0]
+    columns = NULL
+    column_ids = NULL
+    no_before = false
+    chunks = false
+  lost_reason = NULL
 OK
 ```
 
