@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
@@ -13,16 +14,64 @@ import (
 // Only the advertised binary SET CHUNK path has chunk-form admission.
 // Preserve the original table token, including doubled identifier quotes.
 func rawChunkTable(statement string) (string, bool) {
-	words := tokenize(statement)
-	if len(words) < 7 || !strings.EqualFold(words[0], "SET") || !strings.EqualFold(words[1], "CHUNK") {
+	words := rawChunkTokens(statement)
+	if len(words) != 7 && len(words) != 10 || !strings.EqualFold(words[0], "SET") || !strings.EqualFold(words[1], "CHUNK") || !strings.EqualFold(words[4], "IN") {
 		return "", false
 	}
-	for i := 2; i+2 < len(words); i++ {
-		if strings.EqualFold(words[i], "IN") && words[i+2] == "$1" {
-			return words[i+1], true
+	for _, coordinate := range words[2:4] {
+		if _, err := strconv.ParseInt(coordinate, 10, 64); err != nil {
+			return "", false
 		}
 	}
-	return "", false
+	if !strings.HasPrefix(words[6], "$") {
+		return "", false
+	}
+	index, err := strconv.ParseUint(words[6][1:], 10, 64)
+	if err != nil || index != 1 {
+		return "", false
+	}
+	if len(words) == 10 {
+		if !strings.EqualFold(words[7], "IF") || !strings.EqualFold(words[8], "VERSION") {
+			return "", false
+		}
+		if _, err := strconv.ParseUint(words[9], 10, 64); err != nil {
+			return "", false
+		}
+	}
+	return words[5], true
+}
+
+// CQL separates words, integer coordinates and $digit parameters without
+// requiring spaces. Keep quoted identifiers intact; this splitter is local
+// to the binary import shape and does not change ordinary classification.
+func rawChunkTokens(statement string) []string {
+	var result []string
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
+	word := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
+	for _, token := range tokenize(statement) {
+		if strings.HasPrefix(token, "\"") {
+			result = append(result, token)
+			continue
+		}
+		for len(token) > 0 {
+			end := 1
+			switch {
+			case token[0] == '$', digit(token[0]), token[0] == '-' && len(token) > 1 && digit(token[1]):
+				for end < len(token) && digit(token[end]) {
+					end++
+				}
+			case word(token[0]):
+				for end < len(token) && (word(token[end]) || digit(token[end])) {
+					end++
+				}
+			default:
+				return nil
+			}
+			result = append(result, token[:end])
+			token = token[end:]
+		}
+	}
+	return result
 }
 
 func readChunkImport(client *chunkclient.Client, table, file string) ([]byte, error) {

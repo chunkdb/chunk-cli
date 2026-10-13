@@ -63,7 +63,11 @@ func rawAdmissionServer(t *testing.T, flow func(net.Conn, *bufio.Reader) error) 
 func TestRawChunkTableRecognition(t *testing.T) {
 	for _, tc := range []struct{ s, table string }{
 		{"SET CHUNK 0 0 IN world $1", "world"}, {"set chunk -2 4 in world $1 IF VERSION 9", "world"}, {"SET CHUNK 0 0 IN \"my \"\"in\"\" table\" $1", "\"my \"\"in\"\" table\""},
+		{"SET CHUNK 0 0 IN world $01", "world"}, {"SET CHUNK 0 0 IN world$1", "world"}, {"SET CHUNK 0-1IN world$01IF VERSION 9", "world"},
+		{"SET CHUNK 0 0 IN \"my \"\"in\"\" table\"$01", "\"my \"\"in\"\" table\""},
 		{"SET BLOCK 0 0 IN world name = 'it''s SET CHUNK IN other', blob = $1", ""}, {"SET CHUNK 0 0 \"IN\" world $1", ""}, {"CREATE USER alice VERIFIER $1", ""}, {"SET CHUNK 0 0 IN world '$1'", ""},
+		{"SET CHUNK 0 0 IN world $2", ""}, {"SET CHUNK 0 0 IN world $0", ""}, {"SET CHUNK 0 0 IN world $18446744073709551616", ""},
+		{"SET CHUNK 0 0 IN world $", ""}, {"SET CHUNK 0 0 IN world $-1", ""}, {"SET CHUNK 0 0 IN world $1$2", ""}, {"SET CHUNK 0 0 IN world $1x", ""},
 	} {
 		got, ok := rawChunkTable(tc.s)
 		if got != tc.table || ok != (tc.table != "") {
@@ -71,9 +75,90 @@ func TestRawChunkTableRecognition(t *testing.T) {
 		}
 	}
 }
+
+func TestRawImportInvalidParametersKeepGenericValidation(t *testing.T) {
+	for _, parameter := range []string{"$2", "$1x", "$1$3", "$", "'$1'"} {
+		t.Run(parameter, func(t *testing.T) {
+			statement := "SET CHUNK 0 0 IN world " + parameter
+			data := []byte{0, 255, 13, 10}
+			file := filepath.Join(t.TempDir(), "input.bin")
+			if err := os.WriteFile(file, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			framed := parameter == "$2" || parameter == "$1x"
+			uri, done := rawAdmissionServer(t, func(conn net.Conn, r *bufio.Reader) error {
+				if framed {
+					// A non-chunk parameter stays on the original Do validation path.
+					if err := expectSlotLine(r, statement); err != nil {
+						return err
+					}
+					if err := expectSlotLine(r, fmt.Sprintf("$%d", len(data))); err != nil {
+						return err
+					}
+					body := make([]byte, len(data)+2)
+					if _, err := io.ReadFull(r, body); err != nil {
+						return err
+					}
+					if !bytes.Equal(body, append(append([]byte{}, data...), 13, 10)) {
+						return fmt.Errorf("generic parameter changed: %x", body)
+					}
+					io.WriteString(conn, "-ERR SYNTAX invalid parameter\r\n")
+				}
+				// Gap, absent and quoted parameters fail request framing locally.
+				// Neither path may send DESCRIBE or break the ordinary connection.
+				if err := expectSlotLine(r, "PING"); err != nil {
+					return err
+				}
+				io.WriteString(conn, "+PONG\r\n")
+				line, err := r.ReadString('\n')
+				if line != "" || !errors.Is(err, io.EOF) {
+					return fmt.Errorf("later request %q: %v", line, err)
+				}
+				return nil
+			})
+			client, err := connect(globalOptions{URI: uri, Timeout: 2 * time.Second}, console{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			var out bytes.Buffer
+			err = execute(client, nil, statement, statementOptions{in: file}, &out, console{})
+			want := "the statement names"
+			if framed {
+				want = "SYNTAX invalid parameter"
+			}
+			if err == nil || !strings.Contains(err.Error(), want) || out.Len() != 0 || client.Broken() != nil {
+				t.Fatalf("generic validation: %v; output %q; broken %v", err, out.String(), client.Broken())
+			}
+			if _, err := client.Do("PING"); err != nil {
+				t.Fatal(err)
+			}
+			client.Close()
+			waitSlotServer(t, done)
+		})
+	}
+}
+
+func rawImportSpelling(mode, table string) string {
+	switch mode {
+	case "leading-zero", "out-leading-zero", "known-leading-zero":
+		return "SET CHUNK 0 0 IN " + table + " $01"
+	case "adjacent", "transaction-adjacent", "known-adjacent", "quoted-adjacent":
+		return "SET CHUNK 0 0 IN " + table + "$1"
+	case "coordinate-in", "known-coordinate-in":
+		return "SET CHUNK 0-1IN " + table + "$01"
+	case "parameter-if", "known-parameter-if":
+		return "SET CHUNK 0 0 IN " + table + "$01IF VERSION 9"
+	default:
+		return "SET CHUNK 0 0 IN " + table + " $1"
+	}
+}
+
 func TestRawImportRefusesBeforeMutation(t *testing.T) {
-	for _, mode := range []string{"ordinary", "out", "quoted", "transaction", "oversize", "dimension", "password"} {
+	for _, mode := range []string{"ordinary", "out", "quoted", "transaction", "oversize", "dimension", "password", "leading-zero", "adjacent", "coordinate-in", "parameter-if", "out-leading-zero", "transaction-adjacent", "quoted-adjacent"} {
 		t.Run(mode, func(t *testing.T) {
+			transaction := strings.HasPrefix(mode, "transaction")
+			output := strings.HasPrefix(mode, "out")
 			file := filepath.Join(t.TempDir(), "chunk.bin")
 			data := []byte{0, 1, 13, 10, 255}
 			if mode == "oversize" {
@@ -83,10 +168,10 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 				t.Fatal(err)
 			}
 			table := "world"
-			if mode == "quoted" {
+			if strings.HasPrefix(mode, "quoted") {
 				table = "\"my \"\"in\"\" table\""
 			}
-			statement := "SET CHUNK 0 0 IN " + table + " $1"
+			statement := rawImportSpelling(mode, table)
 			cols := admissionColumn("id", "u8", 1) + admissionColumn("future_payload", "vector(7)", 2)
 			count, dims := 2, 2
 			if mode == "oversize" || mode == "dimension" {
@@ -97,7 +182,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 				dims = 3
 			}
 			uri, done := rawAdmissionServer(t, func(conn net.Conn, r *bufio.Reader) error {
-				if mode == "transaction" {
+				if transaction {
 					if err := expectSlotLine(r, "BEGIN"); err != nil {
 						return err
 					}
@@ -114,7 +199,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 					return err
 				}
 				io.WriteString(conn, "+PONG\r\n")
-				if mode == "transaction" {
+				if transaction {
 					if err := expectSlotLine(r, "ROLLBACK"); err != nil {
 						return err
 					}
@@ -133,7 +218,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 			defer client.Close()
 			var tx *shellTxn
 			var out bytes.Buffer
-			if mode == "transaction" {
+			if transaction {
 				tx = &shellTxn{}
 				if err = execute(client, tx, "BEGIN", statementOptions{}, &out, console{}); err != nil {
 					t.Fatal(err)
@@ -142,7 +227,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 			}
 			opts := statementOptions{in: file}
 			outputFile := filepath.Join(t.TempDir(), "out.bin")
-			if mode == "out" {
+			if output {
 				opts.out = outputFile
 			}
 			if mode == "password" {
@@ -165,7 +250,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 			if want == "future_payload" && !strings.Contains(err.Error(), "vector(7)") {
 				t.Fatal("lost type", err)
 			}
-			if mode == "out" {
+			if output {
 				if _, err := os.Stat(outputFile); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("created output on refusal", err)
 				}
@@ -201,12 +286,12 @@ func knownAdmissionForm() []byte {
 }
 
 func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
-	for _, mode := range []string{"known", "transaction", "export", "generic", "verifier"} {
+	for _, mode := range []string{"known", "transaction", "export", "generic", "verifier", "known-leading-zero", "known-adjacent", "known-coordinate-in", "known-parameter-if"} {
 		t.Run(mode, func(t *testing.T) {
 			data := knownAdmissionForm()
 			file := filepath.Join(t.TempDir(), "form.bin")
 			os.WriteFile(file, data, 0600)
-			statement := "SET CHUNK 0 0 IN world $1"
+			statement := rawImportSpelling(mode, "world")
 			if mode == "export" {
 				statement = "GET CHUNK 0 0 FROM world"
 			}
@@ -223,7 +308,7 @@ func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
 					}
 					io.WriteString(conn, "+OK\r\n")
 				}
-				if mode == "known" || mode == "transaction" {
+				if strings.HasPrefix(mode, "known") || mode == "transaction" {
 					if err := expectSlotLine(r, "DESCRIBE world"); err != nil {
 						return err
 					}
