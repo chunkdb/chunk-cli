@@ -48,6 +48,9 @@ const formHeaderBytes = 16
 // the COLUMNS of the read, or empty for every column. A form of another
 // schema version than schema's is refused.
 func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, error) {
+	if schema.Dims != 0 && schema.Dims != 2 {
+		return nil, fmt.Errorf("unsupported chunk form dimensions %d", schema.Dims)
+	}
 	chunk := &Chunk{Width: schema.ChunkWidth, Height: schema.ChunkHeight}
 	blocks := schema.BlockCount()
 	maskBytes := (blocks + 7) / 8
@@ -76,6 +79,9 @@ func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, err
 	// The fixed part: versions, presence, then the sections.
 	need := formHeaderBytes + maskBytes
 	for _, column := range chunk.Columns {
+		if column.Type.Kind == ColumnUnknown {
+			return nil, fmt.Errorf("cannot decode chunk form with unknown column type %s", column.Type)
+		}
 		need += sectionBytes(column, blocks)
 	}
 	if len(form) < need {

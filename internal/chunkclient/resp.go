@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -23,6 +24,7 @@ const (
 	KindArray
 	KindMap
 	KindPush
+	KindBigNumber
 )
 
 // Value is one decoded RESP3 reply value.
@@ -46,7 +48,7 @@ type MapEntry struct {
 
 // Int64 returns an integer value that fits int64.
 func (v Value) Int64() (int64, error) {
-	if v.Kind != KindInteger {
+	if v.Kind != KindInteger && v.Kind != KindBigNumber {
 		return 0, fmt.Errorf("expected an integer, got %s", v.Kind)
 	}
 	return strconv.ParseInt(v.Text, 10, 64)
@@ -54,10 +56,22 @@ func (v Value) Int64() (int64, error) {
 
 // Uint64 returns a non-negative integer value.
 func (v Value) Uint64() (uint64, error) {
-	if v.Kind != KindInteger {
+	if v.Kind != KindInteger && v.Kind != KindBigNumber {
 		return 0, fmt.Errorf("expected an integer, got %s", v.Kind)
 	}
 	return strconv.ParseUint(v.Text, 10, 64)
+}
+
+// BigInt returns a new exact integer, including integers wider than uint64.
+func (v Value) BigInt() (*big.Int, error) {
+	if v.Kind != KindInteger && v.Kind != KindBigNumber {
+		return nil, fmt.Errorf("expected an integer, got %s", v.Kind)
+	}
+	number, ok := new(big.Int).SetString(v.Text, 10)
+	if !ok {
+		return nil, fmt.Errorf("invalid integer %q", v.Text)
+	}
+	return number, nil
 }
 
 // Float64 returns a double value.
@@ -86,6 +100,8 @@ func (k Kind) String() string {
 		return "simple string"
 	case KindInteger:
 		return "integer"
+	case KindBigNumber:
+		return "big number"
 	case KindDouble:
 		return "double"
 	case KindBool:
@@ -102,19 +118,6 @@ func (k Kind) String() string {
 		return "push"
 	}
 	return "unknown"
-}
-
-// ServerError is an `-ERR <CODE> <message>` reply.
-type ServerError struct {
-	Code    string
-	Message string
-}
-
-func (e *ServerError) Error() string {
-	if e.Message == "" {
-		return e.Code
-	}
-	return e.Code + " " + e.Message
 }
 
 // The server errors of logins and rights, for errors.Is: a *ServerError
@@ -140,7 +143,10 @@ func (e *ServerError) CurrentVersion() (uint64, bool) {
 	if e.Code != "VERSION_MISMATCH" {
 		return 0, false
 	}
-	value, ok := strings.CutPrefix(e.Message, "current=")
+	value, ok := e.Keys["current"]
+	if !ok {
+		value, ok = strings.CutPrefix(e.Message, "current=")
+	}
 	if !ok {
 		return 0, false
 	}
@@ -189,6 +195,12 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 			return Value{}, fmt.Errorf("invalid integer %q", body)
 		}
 		return Value{Kind: KindInteger, Text: body}, nil
+	case '(':
+		digits := strings.TrimPrefix(body, "-")
+		if digits == "" || strings.Trim(digits, "0123456789") != "" {
+			return Value{}, fmt.Errorf("invalid big number %q", body)
+		}
+		return Value{Kind: KindBigNumber, Text: body}, nil
 	case ',':
 		if _, err := parseDouble(body); err != nil {
 			return Value{}, fmt.Errorf("invalid double %q", body)
@@ -316,5 +328,15 @@ func parseDouble(text string) (float64, error) {
 func parseServerError(body string) *ServerError {
 	body = strings.TrimPrefix(body, "ERR ")
 	code, message, _ := strings.Cut(body, " ")
-	return &ServerError{Code: code, Message: message}
+	keys := map[string]string{}
+	for message != "" {
+		token, rest, _ := strings.Cut(message, " ")
+		key, value, found := strings.Cut(token, "=")
+		if !found || key == "" {
+			break
+		}
+		keys[key] = decodeErrorKey(value)
+		message = strings.TrimLeft(rest, " ")
+	}
+	return &ServerError{Code: code, Message: message, Keys: keys}
 }

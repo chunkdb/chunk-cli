@@ -23,6 +23,7 @@ chunk-cli help
 | `--timeout <duration>` | Network timeout; default `5s` |
 | `--tls-insecure` | Accept an untrusted TLS certificate |
 | `--tls-server-name <name>` | Override the TLS certificate name |
+| `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
 | `--blocks` | Include present blocks in chunk and area output |
 | `--in <file>` | Supply binary parameter `$1` |
@@ -43,6 +44,9 @@ A block is one cell with named values.
 A chunk groups blocks under a version, which changes when its stored data changes.
 A schema version identifies the columns used to encode the chunk.
 A revision orders committed changes within a table.
+Within one table epoch, committed chunk versions are revisions and can be compared numerically.
+`DESCRIBE` includes the epoch, completed revision frontier, dimensions, block columns and chunk columns.
+Its revision is `NULL` when a read-only server cannot establish the writer's frontier.
 
 - Blocks print `column = value` lines; an absent block prints `NULL`.
 - Never-written chunks print `(null)`, or JSON `null`.
@@ -56,7 +60,19 @@ Bits print lowest bit first.
 JSON uses objects for blocks, hex strings for bytes and strings for bits.
 
 Integers print exactly.
+JSON integers within inclusive ±9007199254740991 are numbers; larger magnitudes are decimal strings.
+This applies to values, coordinates, versions, revisions, timestamps, transaction IDs and numeric error metadata.
 Non-finite floats print as strings.
+Unknown column types retain their type names and print raw bytes as hex for that column.
+Binary chunk decoding requires known types for selected columns.
+
+`GET BLOCK ... WITH VERSION` adds a nullable chunk version beside the values.
+The version is `NULL` for never-written chunks, collected empty chunks and transaction-private modified chunks.
+An absent block can still have a retained committed chunk version.
+`WITH SCHEMA` adds the schema version to a block or area read.
+Both clauses together produce version, schema version and values, regardless of clause order.
+JSON uses `{version,values}`, `{schema_version,values}` or `{version,schema_version,values}` for blocks and `{schema_version,entries}` for areas.
+The CLI refuses to decode rows when returned schema metadata differs from its fetched schema.
 
 ## Errors
 
@@ -67,7 +83,21 @@ Non-finite floats print as strings.
 | NULL binary export | `--out` receives a NULL reply | Write data before exporting |
 | `AUTH_REQUIRED` | No login is supplied | Follow [Connection](CONNECTION.md) |
 
-Failed commands exit 1 and print `error: <CODE> <message>` to stderr.
+Failed commands print `error: <CODE> <keys> <message>` to stderr.
+With `--json`, stderr contains `{error:{code,class,keys,message}}`; local failures use `CLIENT_ERROR` and class `fatal`.
+Unknown error codes are fatal; unknown keys remain diagnostic strings.
+Classification depends only on the error code, never message text or keys.
+
+| Exit | Class | Codes |
+| --- | --- | --- |
+| 1 | `fatal` | All other codes, including `SLOT_BUSY`, `MIGRATION_MISMATCH`, `CANCELLED`, `TIMEOUT`, `KILLED` and unknown codes |
+| 2 | `reread` | `VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH` |
+| 3 | `rerun` | `CONFLICT`; roll back and rerun the transaction |
+| 4 | `backoff` | `BUSY`, `DISK_FULL`, `RATE_LIMITED` |
+| 5 | `unknown_outcome` | `OUTCOME_UNKNOWN`; determine whether the write applied before retrying |
+
+The CLI never retries automatically.
+The interactive shell prints statement errors and continues; its exit status describes the session, rather than each statement.
 A refused NULL export leaves an existing output file unchanged.
 
 ## Examples
@@ -95,11 +125,23 @@ block 1 1
 (null)
 ```
 
-Use a version from a non-NULL chunk reply for a conditional write.
-This example requires Python 3.
+Read values with their version and schema metadata:
 
 ```sh docs-check-shell
-version=$(chunk-cli --uri "$CHUNKDB_URI" --json "GET CHUNK 0 0 FROM world" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+chunk-cli --uri "$CHUNKDB_URI" --json "GET BLOCK 1 1 FROM world WITH VERSION WITH SCHEMA"
+chunk-cli --uri "$CHUNKDB_URI" --json "GET BLOCK 16 16 FROM world WITH VERSION WITH SCHEMA"
+```
+
+```output
+{"version":2,"schema_version":1,"values":{"kind":2,"name":"door"}}
+{"version":null,"schema_version":1,"values":null}
+```
+
+Use a version from a non-NULL chunk reply for a conditional write.
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "GET CHUNK 0 0 FROM world" > chunk.txt
+read -r label separator version < chunk.txt
 chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 1 IN world kind = 3 IF VERSION $version"
 chunk-cli --uri "$CHUNKDB_URI" --out chunk.bin "GET CHUNK 0 0 FROM world"
 chunk-cli --uri "$CHUNKDB_URI" --in chunk.bin 'SET CHUNK 1 0 IN world $1'
@@ -116,6 +158,14 @@ name = 'door'
 
 ## Notes
 
+`--out` exports the raw chunk form, including columns whose types this client does not know.
+Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.
+Supported `text(max)` and `bytes(max)` columns are variable-length known types.
+An unknown type is refused before sending the write, with its column name and type in the error.
 After a schema change, old chunk files may fail with `SCHEMA_MISMATCH`.
 For statement options, see [CQL reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md).
 For connection state, see [Transactions](TRANSACTIONS.md).
+
+`SHOW STATUS` reports enabled directory/table features, raw unsigned `compat`, `ro_compat` and `incompat` masks, and `activation_pending`.
+`ENABLE FEATURE <name>` explicitly enables a registered feature for the directory and its affected tables.
+Both operations require `ADMIN` on `*`; feature activation can change which server versions can open the data.

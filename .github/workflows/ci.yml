@@ -40,11 +40,32 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Select server branch
+        id: server-branch
+        shell: bash
+        run: |
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          ref=main
+          if refs=$(git ls-remote --exit-code --heads https://github.com/chunkdb/chunkdb.git "refs/heads/$branch"); then
+            while IFS=$'\t' read -r oid remote_ref; do
+              if [ "$remote_ref" = "refs/heads/$branch" ]; then
+                ref="$branch"
+                break
+              fi
+            done <<< "$refs"
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+          fi
+          printf 'ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+
       - name: Checkout server
         uses: actions/checkout@v5
         with:
           repository: chunkdb/chunkdb
-          ref: main
+          ref: ${{ steps.server-branch.outputs.ref }}
           path: chunkdb-server
 
       - name: Install OpenSSL

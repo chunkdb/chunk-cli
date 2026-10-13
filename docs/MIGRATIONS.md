@@ -61,11 +61,12 @@ Listing history requires `MANAGES USERS`.
 
 ## If it fails
 
-- **CONFLICT:** an applied name has different text; restore the original step and add a new name.
+- **MIGRATION_MISMATCH:** an applied name has different text; restore the original step and add a new name.
 - **File error:** fix the reported line before connecting.
 - **Server error:** fix the failing step; earlier applied steps remain committed.
 
-The command stops at the first error, prints its step and server code, and exits 1.
+The command stops at the first error and prints its step and server code.
+`MIGRATION_MISMATCH` exits 1; other errors use the [class exit codes](COMMANDS.md#errors).
 `--json` prints `{name,status}` per step or a history array for `migrations`.
 
 Raw `MIGRATE 'name' <statement>` also works.
