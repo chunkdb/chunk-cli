@@ -159,9 +159,9 @@ func TestFoundationWatchNestedExtensionsAndChunkMetadata(t *testing.T) {
 	null := chunkclient.Value{Kind: chunkclient.KindNull}
 	column := foundationMapValue(watchBulk("id"), watchInt("1"), watchBulk("name"), watchBulk("value"), watchBulk("type"), watchBulk("decimal(20)"), watchBulk("null"), chunkclient.Value{Kind: chunkclient.KindBool}, watchBulk("required"), chunkclient.Value{Kind: chunkclient.KindBool}, watchBulk("default"), null, watchBulk("future"), watchArray(null))
 	schema := chunkclient.Value{Kind: chunkclient.KindPush, Items: []chunkclient.Value{watchBulk("schema"), foundationMapValue(watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("revision"), watchInt("9"), watchBulk("schema_version"), watchInt("1"), watchBulk("dims"), watchInt("3"), watchBulk("columns"), watchArray(column), watchBulk("chunk_columns"), watchArray(column), watchBulk("future"), watchArray(null)), null}}
-	schemas := map[uint64][]chunkclient.Column{}
-	metadata := map[uint64]watchSchemaMetadata{}
-	fetch := func(uint64) ([]chunkclient.Column, error) { t.Fatal("schema push not cached"); return nil, nil }
+	schemas := map[watchSchemaKey][]chunkclient.Column{}
+	metadata := map[watchSchemaKey]watchSchemaMetadata{}
+	fetch := func(watchSchemaKey) (*chunkclient.Schema, error) { t.Fatal("schema push not cached"); return nil, nil }
 	var out bytes.Buffer
 	if err := printWatchEvent(&out, schema, true, schemas, fetch, metadata); err != nil || !strings.Contains(out.String(), `"dims":3`) || !strings.Contains(out.String(), `"chunk_columns":[{"id":1,"name":"value","type":"decimal(20)"`) {
 		t.Fatal(err, out.String())

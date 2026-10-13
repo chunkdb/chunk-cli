@@ -8,6 +8,21 @@ import (
 	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
+// watchSchemaKey identifies a layout within its table incarnation. Empty
+// epoch is reserved for explicitly legacy descriptions without identity.
+type watchSchemaKey struct {
+	epoch   string
+	version uint64
+}
+
+func schemaMetadataOf(schema *chunkclient.Schema) watchSchemaMetadata {
+	dims := schema.Dims
+	if dims == 0 {
+		dims = 2
+	} // Legacy descriptions omit dimensions.
+	return watchSchemaMetadata{dims: dims, chunkColumns: schema.ChunkColumns}
+}
+
 type watchSchemaMetadata struct {
 	dims         int
 	chunkColumns []chunkclient.Column

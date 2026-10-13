@@ -68,14 +68,15 @@ func TestWatchFormatting(t *testing.T) {
 	columns := watchTestColumns()
 	row := watchArray(watchInt("18446744073709551615"), watchBulk("it’s 'door'"), watchBulk(string([]byte{13})), watchBulk(string([]byte{0, 255})))
 	event := watchPush("change", watchInt("123"), watchBulk("admin"), watchInt("7"), watchArray(watchArray(watchInt("-2"), watchArray(watchInt("9223372036854775807"), watchInt("1")), chunkclient.Value{Kind: chunkclient.KindNull}, row)))
-	schemas := map[uint64][]chunkclient.Column{}
+	schemas := map[watchSchemaKey][]chunkclient.Column{}
 	calls := 0
-	fetch := func(version uint64) ([]chunkclient.Column, error) {
+	fetch := func(key watchSchemaKey) (*chunkclient.Schema, error) {
+		version := key.version
 		calls++
 		if version != 7 {
 			t.Fatal(version)
 		}
-		return columns, nil
+		return &chunkclient.Schema{Epoch: watchEpoch, Version: version, Columns: columns}, nil
 	}
 	var human bytes.Buffer
 	if err := printWatchEvent(&human, event, false, schemas, fetch); err != nil {
@@ -115,7 +116,7 @@ func TestWatchFormatting(t *testing.T) {
 func TestWatchRejectsMalformedEvents(t *testing.T) {
 	bad := []chunkclient.Value{chunkclient.Value{Kind: chunkclient.KindPush, Items: []chunkclient.Value{watchInt("1")}}, watchPush("resync", watchInt("1")), watchPush("schema", watchInt("1"), watchArray()), watchPush("change", watchInt("0"), watchInt("1"), watchInt("1"), watchArray())}
 	for _, event := range bad {
-		if err := printWatchEvent(&bytes.Buffer{}, event, false, map[uint64][]chunkclient.Column{}, func(uint64) ([]chunkclient.Column, error) { return nil, fmt.Errorf("no schema") }); err == nil {
+		if err := printWatchEvent(&bytes.Buffer{}, event, false, map[watchSchemaKey][]chunkclient.Column{}, func(watchSchemaKey) (*chunkclient.Schema, error) { return nil, fmt.Errorf("no schema") }); err == nil {
 			t.Fatalf("accepted %+v", event)
 		}
 	}
@@ -129,8 +130,8 @@ func TestWatchSchemaVersions(t *testing.T) {
 	columnMap := func(typ string) chunkclient.Value {
 		return chunkclient.Value{Kind: chunkclient.KindMap, Map: []chunkclient.MapEntry{{Key: watchBulk("id"), Value: watchInt("1")}, {Key: watchBulk("name"), Value: watchBulk("value")}, {Key: watchBulk("type"), Value: watchBulk(typ)}, {Key: watchBulk("null"), Value: chunkclient.Value{Kind: chunkclient.KindBool}}, {Key: watchBulk("required"), Value: chunkclient.Value{Kind: chunkclient.KindBool}}, {Key: watchBulk("default"), Value: chunkclient.Value{Kind: chunkclient.KindNull}}}}
 	}
-	schemas := map[uint64][]chunkclient.Column{}
-	fetch := func(uint64) ([]chunkclient.Column, error) { t.Fatal("schema push was ignored"); return nil, nil }
+	schemas := map[watchSchemaKey][]chunkclient.Column{}
+	fetch := func(watchSchemaKey) (*chunkclient.Schema, error) { t.Fatal("schema push was ignored"); return nil, nil }
 	for version, typ := range []string{"text(16)", "bits(5)"} {
 		var out bytes.Buffer
 		if err := printWatchEvent(&out, watchPush("schema", watchInt(fmt.Sprint(version+1)), watchArray(columnMap(typ))), false, schemas, fetch); err != nil || !strings.Contains(out.String(), "version ") {

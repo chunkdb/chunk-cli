@@ -67,6 +67,22 @@ func tokenize(statement string) []string {
 		case c == '\'':
 			quoted = !quoted
 			flush()
+		case !quoted && c == '"':
+			flush()
+			start := i
+			for i++; i < len(statement); i++ {
+				if statement[i] == '"' {
+					if i+1 < len(statement) && statement[i+1] == '"' {
+						i++
+						continue
+					}
+					break
+				}
+			}
+			if i == len(statement) {
+				return nil
+			}
+			tokens = append(tokens, statement[start:i+1])
 		case quoted:
 		case c == ' ' || c == '\t' || c == ',' || c == '(' || c == ')' || c == '=':
 			flush()
@@ -218,7 +234,13 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		}
 		statement, parameters = rewritten, [][]byte{[]byte(verifier)}
 	} else if opts.in != "" {
-		data, err := os.ReadFile(opts.in)
+		var data []byte
+		var err error
+		if table, ok := rawChunkTable(statement); ok {
+			data, err = readChunkImport(client, table, opts.in)
+		} else {
+			data, err = os.ReadFile(opts.in)
+		}
 		if err != nil {
 			return fmt.Errorf("read %s: %w", opts.in, err)
 		}

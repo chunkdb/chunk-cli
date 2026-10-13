@@ -288,7 +288,7 @@ Options:
   --hello-option <key=value> repeatable HELLO session option
   --json                    print replies as JSON
   --blocks                  print the values of every present block of a chunk
-  --in <file>               send the file as parameter $1 (SET CHUNK ... $1)
+  --in <file>               send parameter $1; SET CHUNK needs known column types
   --out <file>              write the reply's bytes to the file (GET CHUNK)
   --new-password-file <file>
                             the password of CREATE USER <name> PASSWORD and

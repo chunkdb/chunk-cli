@@ -138,10 +138,10 @@ chunk-cli --uri "$CHUNKDB_URI" --json "GET BLOCK 16 16 FROM world WITH VERSION W
 ```
 
 Use a version from a non-NULL chunk reply for a conditional write.
-This example requires Python 3.
 
 ```sh docs-check-shell
-version=$(chunk-cli --uri "$CHUNKDB_URI" --json "GET CHUNK 0 0 FROM world" | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])')
+chunk-cli --uri "$CHUNKDB_URI" "GET CHUNK 0 0 FROM world" > chunk.txt
+read -r label separator version < chunk.txt
 chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 1 IN world kind = 3 IF VERSION $version"
 chunk-cli --uri "$CHUNKDB_URI" --out chunk.bin "GET CHUNK 0 0 FROM world"
 chunk-cli --uri "$CHUNKDB_URI" --in chunk.bin 'SET CHUNK 1 0 IN world $1'
@@ -158,6 +158,10 @@ name = 'door'
 
 ## Notes
 
+`--out` exports the raw chunk form, including columns whose types this client does not know.
+Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.
+Supported `text(max)` and `bytes(max)` columns are variable-length known types.
+An unknown type is refused before sending the write, with its column name and type in the error.
 After a schema change, old chunk files may fail with `SCHEMA_MISMATCH`.
 For statement options, see [CQL reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md).
 For connection state, see [Transactions](TRANSACTIONS.md).

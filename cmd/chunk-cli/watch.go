@@ -192,8 +192,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	if err != nil {
 		return err
 	}
-	schemas := map[uint64][]chunkclient.Column{initial.Version: initial.Columns}
-	metadata := map[uint64]watchSchemaMetadata{initial.Version: {dims: initial.Dims, chunkColumns: initial.ChunkColumns}}
+	initialKey := watchSchemaKey{initial.Epoch, initial.Version}
+	schemas := map[watchSchemaKey][]chunkclient.Column{initialKey: initial.Columns}
+	metadata := map[watchSchemaKey]watchSchemaMetadata{initialKey: schemaMetadataOf(initial)}
 	stream, err := connectWatchLogin(ctx, opts, uri, login)
 	if err != nil {
 		return err
@@ -225,17 +226,7 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	if err != nil {
 		return err
 	}
-	return consumeWatch(ctx, watch, stream, stdout, schemas, func(version uint64) ([]chunkclient.Column, error) {
-		schema, err := lookup()
-		if err != nil {
-			return nil, err
-		}
-		if schema.Version != version {
-			return nil, fmt.Errorf("WATCH: need schema version %d, DESCRIBE returned %d", version, schema.Version)
-		}
-		metadata[version] = watchSchemaMetadata{dims: schema.Dims, chunkColumns: schema.ChunkColumns}
-		return schema.Columns, nil
-	}, metadata)
+	return consumeWatch(ctx, watch, stream, stdout, schemas, func(watchSchemaKey) (*chunkclient.Schema, error) { return lookup() }, metadata)
 }
 
 // watchStream is the dedicated connection after WATCH has started.
@@ -246,8 +237,8 @@ type watchStream interface {
 	Close() error
 }
 
-func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, stdout io.Writer, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error), contexts ...map[uint64]watchSchemaMetadata) (resultErr error) {
-	metadata := map[uint64]watchSchemaMetadata{}
+func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, stdout io.Writer, schemas map[watchSchemaKey][]chunkclient.Column, fetch func(watchSchemaKey) (*chunkclient.Schema, error), contexts ...map[watchSchemaKey]watchSchemaMetadata) (resultErr error) {
+	metadata := map[watchSchemaKey]watchSchemaMetadata{}
 	if len(contexts) > 0 {
 		metadata = contexts[0]
 	}
@@ -424,11 +415,11 @@ func validateWatchValue(v chunkclient.Value, column chunkclient.Column) error {
 	return nil
 }
 
-func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map[uint64][]chunkclient.Column, fetch func(uint64) ([]chunkclient.Column, error), contexts ...map[uint64]watchSchemaMetadata) error {
+func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map[watchSchemaKey][]chunkclient.Column, fetch func(watchSchemaKey) (*chunkclient.Schema, error), contexts ...map[watchSchemaKey]watchSchemaMetadata) error {
 	if chunkclient.UnknownPush(push) {
 		return nil
 	}
-	metadata := map[uint64]watchSchemaMetadata{}
+	metadata := map[watchSchemaKey]watchSchemaMetadata{}
 	if len(contexts) != 0 {
 		metadata = contexts[0]
 	}
@@ -517,8 +508,9 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 		if len(columns) == 0 {
 			return errors.New("WATCH: empty schema")
 		}
-		schemas[version] = columns
-		metadata[version] = schemaMetadata
+		key := watchSchemaKey{position.Epoch, version}
+		schemas[key] = columns
+		metadata[key] = schemaMetadata
 		fields = append(fields, jsonField{"version", version}, jsonField{"columns", jsonValue(items[4], nil)})
 		fields = append(fields, jsonField{"dims", schemaMetadata.dims})
 		fields = append(fields, jsonField{"chunk_columns", columnsJSON(schemaMetadata.chunkColumns)})
@@ -545,18 +537,41 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			user = name
 			userText = name
 		}
-		columns, ok := schemas[version]
+		key := watchSchemaKey{position.Epoch, version}
+		columns, ok := schemas[key]
 		if !ok {
-			columns, err = fetch(version)
-			if err != nil {
-				return err
-			}
-			schemas[version] = columns
+			// Empty epochs are deliberate legacy descriptions, never evidence
+			// that a layout belongs to the current event's table incarnation.
+			key = watchSchemaKey{version: version}
+			columns, ok = schemas[key]
 		}
-		info, found := metadata[version]
+		if !ok {
+			if fetch == nil {
+				return errors.New("WATCH: no schema for event")
+			}
+			schema, fetchErr := fetch(watchSchemaKey{position.Epoch, version})
+			if fetchErr != nil {
+				return fetchErr
+			}
+			if schema == nil {
+				return errors.New("WATCH: DESCRIBE returned no schema")
+			}
+			if schema.Version != version {
+				return fmt.Errorf("WATCH: need schema version %d, DESCRIBE returned %d", version, schema.Version)
+			}
+			if schema.Epoch != "" && schema.Epoch != position.Epoch {
+				return fmt.Errorf("WATCH: need schema epoch %s, DESCRIBE returned %s", position.Epoch, schema.Epoch)
+			}
+			key = watchSchemaKey{schema.Epoch, schema.Version}
+			columns = schema.Columns
+			schemas[key] = columns
+			metadata[key] = schemaMetadataOf(schema)
+		}
+		info, found := metadata[key]
 		if !found {
 			info = watchSchemaMetadata{dims: 2}
 		}
+
 		var tag, txn any
 		if len(items) >= 9 {
 			tag, err = nullableTag(items[7])
