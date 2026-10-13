@@ -284,7 +284,7 @@ func TestCLIBlocks(t *testing.T) {
 		t.Fatalf("deleted block: %q", out)
 	}
 
-	s.fails(t, "SYNTAX", "BOGUS")
+	s.fails(t, "UNKNOWN_COMMAND reason=unknown_command column 1: unknown statement 'BOGUS'", "BOGUS")
 	s.fails(t, "INVALID_ARGUMENT", "SET BLOCK 0 0 IN world id = 1, light = 16")
 	s.fails(t, "NO_TABLE", "GET BLOCK 0 0 FROM missing")
 	s.fails(t, "1 parameter(s)", "SET BLOCK 0 0 IN world name = $1")
@@ -387,7 +387,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 
 	// After the table's columns changed, the dumped form no longer fits.
 	s.ok(t, "ALTER TABLE world ADD COLUMN extra u8")
-	s.failsCode(t, 2, "SCHEMA_MISMATCH current=2", "--in", file, "SET CHUNK 6 6 IN world $1")
+	s.failsCode(t, 2, "SCHEMA_MISMATCH actual=1 current=2 reason=schema_mismatch table=world", "--in", file, "SET CHUNK 6 6 IN world $1")
 }
 
 func TestCLITablesAndAlter(t *testing.T) {
@@ -512,7 +512,7 @@ func TestCLIShell(t *testing.T) {
 	if strings.Count(out, "PONG") != 1 {
 		t.Fatalf("the shell went on after exit: %q", out)
 	}
-	for _, want := range []string{"error: SYNTAX column 1: unknown statement 'BOGUS'\n", `error: unknown option "--bogus"`, "1 parameter(s)"} {
+	for _, want := range []string{"error: UNKNOWN_COMMAND reason=unknown_command column 1: unknown statement 'BOGUS'\n", `error: unknown option "--bogus"`, "1 parameter(s)"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("expected %q in stderr %q", want, errOut)
 		}
@@ -538,9 +538,9 @@ func TestCLIConnection(t *testing.T) {
 	expect("URI login", s.uri, 0, "PONG\n", "", "PING")
 	expect("--user and --password-file", s.uriFor("", ""), 0, "PONG\n", "", "--user", adminUser, "--password-file", writePasswordFile(t, adminPassword), "PING")
 	expect("--password-file over the URI", s.uriFor(adminUser, "wrong"), 0, "PONG\n", "", "--password-file", writePasswordFile(t, adminPassword), "PING")
-	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password; check the username and password in your connection URI\n", "PING")
-	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED invalid user or password; check the username and password in your connection URI\n", "PING")
-	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI", "PING")
+	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED reason=auth_failed invalid user or password; check the username and password in your connection URI\n", "PING")
+	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED reason=auth_failed invalid user or password; check the username and password in your connection URI\n", "PING")
+	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI", "PING")
 	expect("no user", s.uriFor("", ""), 1, "", "(log in with --user or chunk://user:password@host/)", "PING")
 	expect("no password", s.uriFor(adminUser, ""), 1, "", "error: no password for user admin", "PING")
 	t.Setenv(passwordEnv, adminPassword)
@@ -600,9 +600,9 @@ func TestCLIUsers(t *testing.T) {
 		t.Fatalf("bot reads: %d %q %q", code, out, errOut)
 	}
 	for statement, want := range map[string]string{
-		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED WRITE on world; ask an administrator to grant this right\n",
-		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED MANAGES USERS; ask an administrator to grant this right\n",
-		"SHOW METRICS":                  "error: PERMISSION_DENIED ADMIN on *; ask an administrator to grant this right\n",
+		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED reason=permission_denied WRITE on world; ask an administrator to grant this right\n",
+		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED reason=permission_denied MANAGES USERS; ask an administrator to grant this right\n",
+		"SHOW METRICS":                  "error: PERMISSION_DENIED reason=permission_denied ADMIN on *; ask an administrator to grant this right\n",
 	} {
 		if code, out, errOut := bot("bot: first@", statement); code != 1 || out != "" || !strings.HasPrefix(errOut, want) {
 			t.Fatalf("bot %s: %d %q %q", statement, code, out, errOut)
@@ -790,10 +790,10 @@ func TestCLITransactions(t *testing.T) {
 		t.Fatalf("DESCRIBE in a transaction: %q, %q", out, errOut)
 	}
 	// Refused statements leave the transaction open.
-	sh.expect("SHOW TABLES", "chunk*> ", "error: INVALID_ARGUMENT inside a transaction")
-	sh.expect("SET BLOCK 0 0 IN world id = 11 IF VERSION 1", "chunk*> ", "error: INVALID_ARGUMENT IF VERSION")
-	sh.expect("COMMIT now", "chunk*> ", "error: SYNTAX")
-	sh.expect("BEGIN", "chunk*> ", "error: INVALID_ARGUMENT a transaction is already open")
+	sh.expect("SHOW TABLES", "chunk*> ", "error: INVALID_ARGUMENT reason=invalid_argument inside a transaction")
+	sh.expect("SET BLOCK 0 0 IN world id = 11 IF VERSION 1", "chunk*> ", "error: INVALID_ARGUMENT reason=invalid_argument IF VERSION")
+	sh.expect("COMMIT now", "chunk*> ", "error: SYNTAX reason=syntax")
+	sh.expect("BEGIN", "chunk*> ", "error: INVALID_ARGUMENT reason=invalid_argument a transaction is already open")
 	out, errOut := sh.send("COMMIT")
 	committed, ok := strings.CutSuffix(out, "\nchunk> ")
 	if errOut != "" || !ok {
@@ -843,7 +843,7 @@ func TestCLITransactions(t *testing.T) {
 	if out, errOut := sh.send("SET BLOCK 1 1 IN world id = 31"); errOut != "" || strings.Contains(out, "COMMIT") || !strings.HasSuffix(out, "\nchunk> ") {
 		t.Fatalf("a write after the CONFLICT: %q, %q", out, errOut)
 	}
-	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT no transaction is open")
+	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT reason=invalid_argument no transaction is open")
 	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
 		t.Fatalf("the transaction applied after its CONFLICT: %q", out)
 	}
@@ -856,7 +856,7 @@ func TestCLITransactions(t *testing.T) {
 	sh.expect("DELETE BLOCK 0 0 FROM world", "(applies at COMMIT)\nchunk*> ", "")
 	sh.expect("ROLLBACK", "OK\nchunk> ", "")
 	sh.expect("ROLLBACK", "OK\nchunk> ", "")
-	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT no transaction is open")
+	sh.expect("COMMIT", "chunk> ", "error: INVALID_ARGUMENT reason=invalid_argument no transaction is open")
 	sh.expect("BEGIN", "OK\nchunk*> ", "")
 	sh.expect("COMMIT", "(nothing written)\nchunk> ", "")
 	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
