@@ -64,10 +64,16 @@ func TestRawChunkTableRecognition(t *testing.T) {
 	for _, tc := range []struct{ s, table string }{
 		{"SET CHUNK 0 0 IN world $1", "world"}, {"set chunk -2 4 in world $1 IF VERSION 9", "world"}, {"SET CHUNK 0 0 IN \"my \"\"in\"\" table\" $1", "\"my \"\"in\"\" table\""},
 		{"SET CHUNK 0 0 IN world $01", "world"}, {"SET CHUNK 0 0 IN world$1", "world"}, {"SET CHUNK 0-1IN world$01IF VERSION 9", "world"},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION -0", "world"}, {"SET CHUNK 0 0 IN world$01IF VERSION-00", "world"},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION 000", "world"}, {"SET CHUNK 0 0 IN world $1 IF VERSION 18446744073709551615", "world"},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION -0000000000000000000000000000000000000000", "world"},
 		{"SET CHUNK 0 0 IN \"my \"\"in\"\" table\"$01", "\"my \"\"in\"\" table\""},
 		{"SET BLOCK 0 0 IN world name = 'it''s SET CHUNK IN other', blob = $1", ""}, {"SET CHUNK 0 0 \"IN\" world $1", ""}, {"CREATE USER alice VERIFIER $1", ""}, {"SET CHUNK 0 0 IN world '$1'", ""},
 		{"SET CHUNK 0 0 IN world $2", ""}, {"SET CHUNK 0 0 IN world $0", ""}, {"SET CHUNK 0 0 IN world $18446744073709551616", ""},
 		{"SET CHUNK 0 0 IN world $", ""}, {"SET CHUNK 0 0 IN world $-1", ""}, {"SET CHUNK 0 0 IN world $1$2", ""}, {"SET CHUNK 0 0 IN world $1x", ""},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION -1", ""}, {"SET CHUNK 0 0 IN world $1 IF VERSION 18446744073709551616", ""},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION +0", ""}, {"SET CHUNK 0 0 IN world $1 IF VERSION 0.0", ""}, {"SET CHUNK 0 0 IN world $1 IF VERSION 0e0", ""},
+		{"SET CHUNK 0 0 IN world $1 IF VERSION '0'", ""}, {"SET CHUNK 0 0 IN world $1 IF VERSION x'00'", ""}, {"SET CHUNK 0 0 IN world $1 IF VERSION b'0'", ""},
 	} {
 		got, ok := rawChunkTable(tc.s)
 		if got != tc.table || ok != (tc.table != "") {
@@ -77,7 +83,7 @@ func TestRawChunkTableRecognition(t *testing.T) {
 }
 
 func TestRawImportInvalidParametersKeepGenericValidation(t *testing.T) {
-	for _, parameter := range []string{"$2", "$1x", "$1$3", "$", "'$1'"} {
+	for _, parameter := range []string{"$2", "$1x", "$1$3", "$", "'$1'", "$1 IF VERSION -1", "$1 IF VERSION 18446744073709551616", "$1 IF VERSION 0.0", "$1 IF VERSION '0'", "$1 IF VERSION x'00'"} {
 		t.Run(parameter, func(t *testing.T) {
 			statement := "SET CHUNK 0 0 IN world " + parameter
 			data := []byte{0, 255, 13, 10}
@@ -85,7 +91,7 @@ func TestRawImportInvalidParametersKeepGenericValidation(t *testing.T) {
 			if err := os.WriteFile(file, data, 0600); err != nil {
 				t.Fatal(err)
 			}
-			framed := parameter == "$2" || parameter == "$1x"
+			framed := parameter == "$2" || parameter == "$1x" || strings.HasPrefix(parameter, "$1 IF VERSION")
 			uri, done := rawAdmissionServer(t, func(conn net.Conn, r *bufio.Reader) error {
 				if framed {
 					// A non-chunk parameter stays on the original Do validation path.
@@ -149,13 +155,19 @@ func rawImportSpelling(mode, table string) string {
 		return "SET CHUNK 0-1IN " + table + "$01"
 	case "parameter-if", "known-parameter-if":
 		return "SET CHUNK 0 0 IN " + table + "$01IF VERSION 9"
+	case "negative-zero", "out-negative-zero", "transaction-negative-zero", "known-negative-zero":
+		return "SET CHUNK 0 0 IN " + table + " $1 IF VERSION -0"
+	case "negative-zeros", "known-negative-zeros":
+		return "SET CHUNK 0 0 IN " + table + " $1 IF VERSION -00"
+	case "negative-zero-adjacent", "known-negative-zero-adjacent":
+		return "SET CHUNK 0 0 IN " + table + "$01IF VERSION-00"
 	default:
 		return "SET CHUNK 0 0 IN " + table + " $1"
 	}
 }
 
 func TestRawImportRefusesBeforeMutation(t *testing.T) {
-	for _, mode := range []string{"ordinary", "out", "quoted", "transaction", "oversize", "dimension", "password", "leading-zero", "adjacent", "coordinate-in", "parameter-if", "out-leading-zero", "transaction-adjacent", "quoted-adjacent"} {
+	for _, mode := range []string{"ordinary", "out", "quoted", "transaction", "oversize", "dimension", "password", "leading-zero", "adjacent", "coordinate-in", "parameter-if", "out-leading-zero", "transaction-adjacent", "quoted-adjacent", "negative-zero", "negative-zeros", "negative-zero-adjacent", "out-negative-zero", "transaction-negative-zero"} {
 		t.Run(mode, func(t *testing.T) {
 			transaction := strings.HasPrefix(mode, "transaction")
 			output := strings.HasPrefix(mode, "out")
@@ -286,7 +298,7 @@ func knownAdmissionForm() []byte {
 }
 
 func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
-	for _, mode := range []string{"known", "transaction", "export", "generic", "verifier", "known-leading-zero", "known-adjacent", "known-coordinate-in", "known-parameter-if"} {
+	for _, mode := range []string{"known", "transaction", "export", "generic", "verifier", "known-leading-zero", "known-adjacent", "known-coordinate-in", "known-parameter-if", "known-negative-zero", "known-negative-zeros", "known-negative-zero-adjacent"} {
 		t.Run(mode, func(t *testing.T) {
 			data := knownAdmissionForm()
 			file := filepath.Join(t.TempDir(), "form.bin")

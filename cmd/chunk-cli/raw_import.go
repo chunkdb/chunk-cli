@@ -34,7 +34,10 @@ func rawChunkTable(statement string) (string, bool) {
 		if !strings.EqualFold(words[7], "IF") || !strings.EqualFold(words[8], "VERSION") {
 			return "", false
 		}
-		if _, err := strconv.ParseUint(words[9], 10, 64); err != nil {
+		// Core integer parsing canonicalizes negative zero before its
+		// unsigned check. Preserve the suffix bytes sent to the server.
+		version, err := strconv.ParseUint(strings.TrimPrefix(words[9], "-"), 10, 64)
+		if err != nil || strings.HasPrefix(words[9], "-") && version != 0 {
 			return "", false
 		}
 	}
