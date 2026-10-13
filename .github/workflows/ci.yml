@@ -74,14 +74,4 @@ jobs:
           test -x "$CHUNKDB_SERVER_BIN"
           set -o pipefail
           go test -race -count=1 -timeout=10m -json ./... | tee test-results.jsonl
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          events = [json.loads(line) for line in Path("test-results.jsonl").read_text().splitlines()]
-          skipped = [event["Test"] for event in events if event.get("Action") == "skip" and "Test" in event]
-          passed = {event["Test"] for event in events if event.get("Action") == "pass" and "Test" in event}
-          required = {"TestCLIDocExamples", "TestCLIWorldExample", "TestCLIConnection", "TestCLIBackupStatement", "TestCLIWatchTLS"}
-          if skipped or not required <= passed:
-              raise SystemExit(f"Skipped tests: {skipped}; missing integration results: {sorted(required - passed)}")
-          print(f"Passed {len(passed)} test cases with no skipped tests")
-          PY
+          go run ./internal/ci/testresults test-results.jsonl TestCLIDocExamples,TestCLIWorldExample,TestCLIConnection,TestCLIBackupStatement,TestCLIWatchTLS
