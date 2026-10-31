@@ -358,10 +358,68 @@ func TestCLIWatchConnectionLoss(t *testing.T) {
 	s := startServer(t, false)
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
 	uri, proxy := watchProxy(t, s)
-	p := startWatchProcess(t, uri)
+	p := startWatchProcess(t, uri, "--no-reconnect")
 	trace := fixtureStart(t, p, false)
 	proxy.closeConnections()
 	trace.expectFailure(t, p, trace.frontier, "connection closed by the server")
+}
+
+func TestCLIWatchReconnectIntegration(t *testing.T) {
+	for _, slot := range []bool{false, true} {
+		t.Run(fmt.Sprint(slot), func(t *testing.T) {
+			s := startServer(t, false)
+			s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+			var args []string
+			if slot {
+				s.ok(t, "CREATE SLOT 'consumer' ON world")
+				args = []string{"--slot", "consumer"}
+			}
+			keeper, err := connect(globalOptions{URI: s.uri, Timeout: 2 * time.Second}, console{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer keeper.Close()
+			if _, err := keeper.BeginWatch("WATCH world"); err != nil {
+				t.Fatal(err)
+			}
+			uri, proxy := watchProxy(t, s)
+			p := startWatchProcess(t, uri, args...)
+			trace := fixtureStart(t, p, false)
+			first := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
+			trace.waitMutation(t, p, "change", first, 1)
+			if slot {
+				trace.awaitACK(t, proxy, p.lines, first, 1)
+			}
+			proxy.closeConnections()
+			for {
+				line := p.line(t)
+				if strings.HasPrefix(line, "start ") {
+					reconnected, err := newWatchFixture(line, false)
+					if err != nil || reconnected.epoch != trace.epoch || reconnected.frontier != first {
+						t.Fatalf("reconnect position %q: %v", line, err)
+					}
+					trace = reconnected
+					break
+				}
+				if known, err := trace.ancillary(line, first, first, 1); !known || err != nil {
+					t.Fatalf("before reconnect: %q: %v", line, err)
+				}
+			}
+			second := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 9"))
+			_, row := trace.waitMutation(t, p, "change", second, 1)
+			if row != "  block 0 0: {id = 7} -> {id = 9}" {
+				t.Fatal(row)
+			}
+			trace.stop(t, p, second, 1)
+			want := fmt.Sprintf(" AFTER %s %d\r\n", trace.epoch, first)
+			if !strings.Contains(proxy.text(), want) {
+				t.Fatalf("missing resume frontier %q in %q", want, proxy.text())
+			}
+			if slot && slotAcked(t, s) != second {
+				t.Fatal("slot did not acknowledge resumed output")
+			}
+		})
+	}
 }
 
 func TestCLIWatchTLS(t *testing.T) {

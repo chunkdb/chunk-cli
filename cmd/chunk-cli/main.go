@@ -28,6 +28,7 @@ type globalOptions struct {
 	TLSServerName  string
 	Statement      statementOptions
 	SessionOptions map[string]chunkclient.Value
+	NoRetry        bool
 }
 
 func main() {
@@ -75,6 +76,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		if err := runWatch(ctx, opts, watch, console{in: stdin, out: stderr}, stdout); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
+	if strings.EqualFold(rest[0], "transaction") {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if err := runTransactionFile(ctx, opts, rest[1:], console{in: stdin, out: stderr}, stdout); err != nil {
 			return fail(err)
 		}
 		return 0
@@ -220,6 +229,7 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.StringVar(&opts.User, "user", "", "the user to log in as (preferred over the URI's user)")
 	fs.StringVar(&opts.PasswordFile, "password-file", "", "read the login password from the file's first line")
 	fs.DurationVar(&opts.Timeout, "timeout", 5*time.Second, "network timeout")
+	fs.BoolVar(&opts.NoRetry, "no-retry", false, "run a transaction file once")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
 	fs.Func("hello-option", "HELLO key=value (repeatable; unknown values are bytes)", func(text string) error {
@@ -272,6 +282,7 @@ func printUsage(w io.Writer) {
 Usage:
   chunk-cli [options] <CQL statement>
   chunk-cli [options] shell
+  chunk-cli [options] transaction <file>
   chunk-cli [options] watch <table> [watch options]
   chunk-cli [options] migrate <file>
   chunk-cli [options] migrations
@@ -283,6 +294,7 @@ Options:
   --password-file <file>    the login password, from the file's first line
                             (also CHUNKDB_PASSWORD; asked for on a terminal)
   --timeout <duration>      (default 5s)
+  --no-retry                run a transaction file once
   --tls-insecure
   --tls-server-name <name>
   --hello-option <key=value> repeatable HELLO session option
@@ -305,6 +317,7 @@ Watch options:
   --takeover                replace the slot's consumer (requires --slot)
   --ack-timeout-ms <ms>      mutation ACK deadline (requires --slot)
   --json                    one JSON object per event
+  --no-reconnect            stop a watch after losing its connection
 
 Examples:
   chunk-cli "CREATE TABLE world (id u16, name text(32) NULL) CHUNK 16 x 16"

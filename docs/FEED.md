@@ -108,7 +108,7 @@ Resync includes nullable `parent_epoch` and `fork_revision` for lineage checks.
 
 - **resync:** rebuild state using [Resume a consumer](https://github.com/chunkdb/chunkdb/blob/main/docs/FEED_RESUME.md).
 - **SLOT_LOST:** rebuild consumer state and replace the slot.
-- **Connection lost:** the CLI exits nonzero; reconnect explicitly.
+- **Connection lost:** the CLI reconnects from the last completely printed position, with up to five consecutive reconnect attempts; `--no-reconnect` stops on the first loss.
 - **Blocked output:** cancellation sends `UNWATCH`, but exit waits for the output write to return.
 
 A crash can repeat printed changes whose acknowledgements are not durable yet.

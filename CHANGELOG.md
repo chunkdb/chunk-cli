@@ -28,6 +28,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - `--ack-every` without `--slot` reports the missing requirement
 
 ### Added
+- Retry transaction files on known retryable errors and resume watches after connection loss, with bounded backoff and flags to disable retries or reconnection (#25).
 - Table examples start from an empty server catalog; DESCRIBE includes per-table feed and durable-slot limits. (#6).
 - `examples/world.sh` creates and fills a typed table, reads an area and watches an update; its integration test runs the script against a server
 - `migrate <file>` applies named schema steps once, prints applied/skipped results and stops on the first error; `migrations` lists their history, with JSON output supported by both commands

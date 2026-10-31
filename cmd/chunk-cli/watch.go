@@ -28,11 +28,13 @@ func (p watchPosition) MarshalJSON() ([]byte, error) {
 }
 
 type watchOptions struct {
-	table     string
-	statement string
-	json      bool
-	slot      string
-	ackEvery  uint64
+	table       string
+	statement   string
+	json        bool
+	slot        string
+	ackEvery    uint64
+	noReconnect bool
+	delivered   *watchPosition
 }
 
 func parseWatchPosition(text string) (watchPosition, error) {
@@ -72,6 +74,7 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	fs.Uint64Var(&ackTimeout, "ack-timeout-ms", 0, "mutation acknowledgement deadline (requires --slot)")
 	fs.Uint64Var(&opts.ackEvery, "ack-every", 1, "acknowledge every n printed changes (requires --slot)")
 	fs.BoolVar(&opts.json, "json", json, "one JSON object per event")
+	fs.BoolVar(&opts.noReconnect, "no-reconnect", false, "stop after losing the connection")
 	if err := fs.Parse(args[1:]); err != nil {
 		return watchOptions{}, err
 	}
@@ -195,15 +198,65 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	initialKey := watchSchemaKey{initial.Epoch, initial.Version}
 	schemas := map[watchSchemaKey][]chunkclient.Column{initialKey: initial.Columns}
 	metadata := map[watchSchemaKey]watchSchemaMetadata{initialKey: schemaMetadataOf(initial)}
+	var position watchPosition
+	watch.delivered = &position
+	reconnecting := false
+	for attempt := 0; ; attempt++ {
+		before := position
+		err = runWatchConnection(ctx, opts, watch, uri, login, stdout, schemas, lookup, metadata)
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		var lost *watchConnectionError
+		var server *chunkclient.ServerError
+		slotDetaching := reconnecting && watch.slot != "" && errors.As(err, &server) && server.Code == "SLOT_BUSY"
+		if watch.noReconnect || !slotDetaching && (!errors.As(err, &lost) || !transportFailure(lost.error)) {
+			return err
+		}
+		reconnecting = true
+		if position != before {
+			attempt = 0
+		}
+		if attempt >= maxRetries {
+			return fmt.Errorf("watch gave up after %d reconnect attempts: %w", maxRetries, err)
+		}
+		if position.Epoch != "" {
+			watch.statement = resumeWatchStatement(watch.statement, position)
+		}
+		if err := retryPause(ctx, attempt); err != nil {
+			return nil
+		}
+	}
+}
+
+type watchConnectionError struct{ error }
+
+func (e *watchConnectionError) Unwrap() error { return e.error }
+
+func resumeWatchStatement(statement string, position watchPosition) string {
+	words := strings.Fields(statement)
+	for i, word := range words {
+		if strings.EqualFold(word, "AFTER") && i+2 < len(words) {
+			if _, err := parseWatchPosition(words[i+1] + ":" + words[i+2]); err != nil {
+				continue
+			}
+			words = append(words[:i], words[i+3:]...)
+			break
+		}
+	}
+	return fmt.Sprintf("%s AFTER %s %d", strings.Join(words, " "), position.Epoch, position.Revision)
+}
+
+func runWatchConnection(ctx context.Context, opts globalOptions, watch watchOptions, uri chunkuri.Parsed, login chunkclient.Login, stdout io.Writer, schemas map[watchSchemaKey][]chunkclient.Column, lookup func() (*chunkclient.Schema, error), metadata map[watchSchemaKey]watchSchemaMetadata) error {
 	stream, err := connectWatchLogin(ctx, opts, uri, login)
 	if err != nil {
-		return err
+		return &watchConnectionError{err}
 	}
 	defer stream.Close()
 	var start string
 	err = watchCall(ctx, stream, func() error { start, err = stream.BeginWatch(watch.statement); return err })
 	if err != nil {
-		return err
+		return &watchConnectionError{err}
 	}
 	words := strings.Fields(start)
 	if len(words) != 3 || words[0] != "OK" {
@@ -225,6 +278,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	}
 	if err != nil {
 		return err
+	}
+	if watch.delivered != nil && watch.delivered.Epoch == "" {
+		*watch.delivered = position
 	}
 	return consumeWatch(ctx, watch, stream, stdout, schemas, func(watchSchemaKey) (*chunkclient.Schema, error) { return lookup() }, metadata)
 }
@@ -292,7 +348,7 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 		push, err := stream.ReadWatch()
 		if err != nil {
 			readFailed = true
-			return err
+			return &watchConnectionError{err}
 		}
 
 		if push.Kind == chunkclient.KindSimple && push.Text == "OK" && ctx.Err() != nil {
@@ -318,6 +374,10 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 			continue
 		}
 		kind := string(push.Items[0].Bulk)
+		if watch.delivered != nil && (kind == "change" || kind == "chunks" || kind == "progress" || kind == "resync") {
+			revision, _ := push.Items[2].Uint64()
+			*watch.delivered = watchPosition{Epoch: string(push.Items[1].Bulk), Revision: revision}
+		}
 		if watch.slot != "" && (kind == "change" || kind == "chunks" || kind == "progress") {
 			lastRevision, _ = push.Items[2].Uint64() // validated by printWatchEvent
 			pending++
@@ -327,7 +387,7 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 		}
 		sendMu.Unlock()
 		if err != nil {
-			return err
+			return &watchConnectionError{err}
 		}
 	}
 }
