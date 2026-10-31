@@ -6,6 +6,7 @@ Global options precede the command or quoted statement.
 ```text
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
+chunk-cli [options] transaction <file>
 chunk-cli [options] watch <table> [--slot name] [--ack-every n] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
@@ -21,6 +22,7 @@ chunk-cli help
 | `--user <name>` | Override the URI's login user |
 | `--password-file <file>` | Read the login password from the first line |
 | `--timeout <duration>` | Network timeout; default `5s` |
+| `--no-retry` | Run a transaction file once |
 | `--tls-insecure` | Accept an untrusted TLS certificate |
 | `--tls-server-name <name>` | Override the TLS certificate name |
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
@@ -96,7 +98,8 @@ Classification depends only on the error code, never message text or keys.
 | 4 | `backoff` | `BUSY`, `DISK_FULL`, `RATE_LIMITED` |
 | 5 | `unknown_outcome` | `OUTCOME_UNKNOWN`; determine whether the write applied before retrying |
 
-The CLI never retries automatically.
+[Transaction files](TRANSACTIONS.md#transaction-files) retry known retryable errors; one-shot and interactive statements are not retried.
+Watches reconnect unless `--no-reconnect` is supplied; see [Connection](CONNECTION.md#watch-reconnection).
 The interactive shell prints statement errors and continues; its exit status describes the session, rather than each statement.
 A refused NULL export leaves an existing output file unchanged.
 

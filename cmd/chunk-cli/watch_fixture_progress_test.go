@@ -203,7 +203,7 @@ func TestSlotWatchProgressCompletesBatch(t *testing.T) {
 					out.failType = "progress"
 					out.short = outcome == "short"
 				}
-				err := runWatch(t.Context(), globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 3, json: jsonOutput}, console{}, out)
+				err := runWatch(t.Context(), globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 3, json: jsonOutput, noReconnect: true}, console{}, out)
 				if outcome == "complete" {
 					if !errors.Is(err, io.EOF) {
 						t.Fatal(err)

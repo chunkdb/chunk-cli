@@ -113,7 +113,7 @@ func TestFoundationWatchACKWire(t *testing.T) {
 		return expectSlotLine(r, "ACK 11")
 	})
 	var out bytes.Buffer
-	err := runWatch(t.Context(), globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 1, json: true}, console{}, &out)
+	err := runWatch(t.Context(), globalOptions{URI: uri, Timeout: time.Second}, watchOptions{table: "world", statement: "WATCH world SLOT 'consumer'", slot: "consumer", ackEvery: 1, json: true, noReconnect: true}, console{}, &out)
 	if !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
