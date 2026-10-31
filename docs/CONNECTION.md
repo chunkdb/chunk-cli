@@ -47,6 +47,19 @@ The default network timeout is `5s`.
 Use `--timeout 10s` to change it.
 The CLI does not retry statements or reconnect a watch automatically.
 
+## Session options
+
+Use repeated `--hello-option key=value` flags before the command.
+For example, `--hello-option client_name=importer` names the connection.
+`statement_timeout_ms` accepts unsigned milliseconds; other flag values are sent as bytes.
+`default_tag` accepts at most 256 bytes.
+
+HELLO reports applied options in `options` and unapplied options, including unknown names, in `not_applied`.
+Currently, `client_name` is applied; `statement_timeout_ms` and `default_tag` report `implementation_pending`.
+Unapplied options do not change statement behavior.
+`features` lists supported protocol capabilities; it does not list enabled storage features.
+For storage features and their raw masks, use `SHOW STATUS` with `ADMIN` on `*`.
+
 ## If it fails
 
 - **Connection refused:** check the URI, host, port and server availability.
@@ -62,7 +75,8 @@ chunk-cli --uri "${CHUNKDB_URI/admin@/}" PING
 ```
 
 ```output
-error: connecting failed: AUTH_REQUIRED use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
+error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
 ```
-Failed commands exit 1 and preserve the server's error code and message.
+Failed commands preserve the server's error code and metadata.
+See [error exit codes](COMMANDS.md#errors) before deciding whether to retry.
 See [Commands](COMMANDS.md) for all options.

@@ -18,10 +18,11 @@ import (
 )
 
 type Config struct {
-	URI           chunkuri.Parsed
-	Timeout       time.Duration
-	TLSInsecure   bool
-	TLSServerName string
+	URI            chunkuri.Parsed
+	Timeout        time.Duration
+	TLSInsecure    bool
+	TLSServerName  string
+	SessionOptions map[string]Value
 }
 
 // ProtocolVersion is the chunkdb protocol this client speaks.
@@ -30,6 +31,12 @@ const ProtocolVersion = 3
 // ServerInfo is the HELLO reply: the protocol, the server's limits and the
 // login's server signature.
 type ServerInfo struct {
+	ConnectionID     uint64
+	Features         []string
+	Options          map[string]Value
+	NotApplied       map[string]string
+	IdleTimeoutMS    uint64
+	Limits           map[string]uint64
 	Protocol         uint64
 	ServerVersion    string
 	MaxLineBytes     uint64
@@ -64,7 +71,8 @@ type Client struct {
 	info    *ServerInfo
 	// broken is the transport or framing error that left the connection
 	// unusable.
-	broken error
+	broken         error
+	sessionOptions map[string]Value
 }
 
 func Dial(cfg Config) (*Client, error) {
@@ -73,6 +81,10 @@ func Dial(cfg Config) (*Client, error) {
 
 // DialContext opens a connection, including TLS, with cancellation.
 func DialContext(ctx context.Context, cfg Config) (*Client, error) {
+	options, optionErr := normalizeSessionOptions(cfg.SessionOptions)
+	if optionErr != nil {
+		return nil, optionErr
+	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
 	}
@@ -106,10 +118,11 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		conn:    conn,
-		reader:  bufio.NewReader(conn),
-		writer:  bufio.NewWriter(conn),
-		timeout: cfg.Timeout,
+		sessionOptions: options,
+		conn:           conn,
+		reader:         bufio.NewReader(conn),
+		writer:         bufio.NewWriter(conn),
+		timeout:        cfg.Timeout,
 	}, nil
 }
 
@@ -145,7 +158,7 @@ type Login struct {
 func (c *Client) Hello(login Login) (*ServerInfo, error) {
 	line := "HELLO " + strconv.Itoa(ProtocolVersion)
 	if login.User == "" {
-		reply, err := c.helloStep(Request{Statement: line}, false)
+		reply, err := c.helloStep(c.helloRequest(line, nil), false)
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +169,7 @@ func (c *Client) Hello(login Login) (*ServerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	reply, err := c.helloStep(Request{Statement: line + " USER " + login.User + " $1", Parameters: [][]byte{[]byte(scram.first)}}, true)
+	reply, err := c.helloStep(c.helloRequest(line+" USER "+login.User+" $1", [][]byte{[]byte(scram.first)}), true)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +270,9 @@ func parseServerInfo(reply Value) (*ServerInfo, error) {
 	if info.Protocol != ProtocolVersion {
 		return nil, fmt.Errorf("server replied with protocol %d, expected %d", info.Protocol, ProtocolVersion)
 	}
+	if err := parseHelloExtensions(reply, info); err != nil {
+		return nil, err
+	}
 	return info, nil
 }
 
@@ -314,17 +330,27 @@ func (c *Client) checkRequest(request Request) error {
 // decide whether parameter frames follow a line; CQL numbers parameters
 // without gaps and uses each once.
 func ParameterCount(statement string) int {
-	quoted := false
+	var quote byte
 	count := 0
 	for i := 0; i < len(statement); i++ {
-		switch statement[i] {
-		case '\'':
-			// A doubled quote inside a quoted value closes and reopens it,
-			// which leaves the same state.
-			quoted = !quoted
-		case '$':
-			if !quoted {
-				count++
+		if quote != 0 {
+			if statement[i] == quote {
+				if i+1 < len(statement) && statement[i+1] == quote {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		if statement[i] == '\'' || statement[i] == '"' {
+			quote = statement[i]
+			continue
+		}
+		if statement[i] == '$' && i+1 < len(statement) && statement[i+1] >= '0' && statement[i+1] <= '9' {
+			count++
+			for i+1 < len(statement) && statement[i+1] >= '0' && statement[i+1] <= '9' {
+				i++
 			}
 		}
 	}
@@ -360,8 +386,14 @@ func (c *Client) exchange(requests []Request) ([]Reply, error) {
 		return nil, fmt.Errorf("send statement: %w", err)
 	}
 	replies := make([]Reply, 0, len(requests))
-	for range requests {
+	for len(replies) < len(requests) {
 		value, err := readReply(c.reader)
+		if err == nil && value.Kind == KindPush {
+			if !UnknownPush(value) {
+				return nil, errors.New("unexpected known push outside WATCH")
+			}
+			continue
+		}
 		var serverErr *ServerError
 		switch {
 		case errors.As(err, &serverErr):

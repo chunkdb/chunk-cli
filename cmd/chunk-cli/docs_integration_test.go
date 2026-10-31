@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
 
 type docExample struct {
@@ -50,6 +53,7 @@ func normalizeDocOutput(output string) string {
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
+		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
 		{`(?m)^(\d+\) name = [a-z_][a-z0-9_]*, applied_ms = )\d+`, `${1}<time-ms>`},
 	} {
@@ -86,6 +90,70 @@ func TestDocOutputNormalization(t *testing.T) {
 	data := "kind = 42\nname = '" + epoch + "'\nname = 'time_ms 123'\nversion = 2\n"
 	if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
 		t.Fatalf("changed data values: %q", got)
+	}
+}
+
+func TestDocSlotTranscript(t *testing.T) {
+	// Use the production formatter, including the nested filters map. The
+	// docs fence must keep every field and value rather than flattening it.
+	null := chunkclient.Value{Kind: chunkclient.KindNull}
+	filters := foundationMapValue(
+		watchBulk("area"), watchArray(watchInt("0"), watchInt("0"), watchInt("0"), watchInt("0")),
+		watchBulk("column_ids"), null, watchBulk("columns"), null,
+		watchBulk("no_before"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("chunks"), chunkclient.Value{Kind: chunkclient.KindBool},
+	)
+	slot := foundationMapValue(
+		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
+		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("3"),
+		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
+	)
+	var out bytes.Buffer
+	if err := printReply(&out, watchArray(slot), statementOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	out.WriteString("OK\n")
+	source, err := os.ReadFile(filepath.Join("..", "..", "docs", "FEED.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples, err := parseDocExamples(string(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected string
+	for _, example := range examples {
+		if strings.Contains(example.input, "SHOW SLOTS ON world") {
+			expected = example.expected
+		}
+	}
+	if expected == "" || normalizeDocOutput(out.String()) != expected {
+		t.Fatalf("formatted SHOW SLOTS:\n%s\nexpected marked transcript:\n%s", normalizeDocOutput(out.String()), expected)
+	}
+	t.Logf("Synthetic production formatter transcript:\n%s", out.String())
+	for _, replacement := range [][2]string{
+		{"acked = 3", "acked = 4"}, {"retained_bytes = 0", "retained_bytes = 7"},
+		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
+		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
+		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
+		{"lost_reason = NULL", "lost_reason = schema_filter"},
+	} {
+		changed := strings.Replace(out.String(), replacement[0], replacement[1], 1)
+		if normalizeDocOutput(changed) == expected {
+			t.Fatalf("normalization hid changed metadata: %v", replacement)
+		}
+	}
+	for _, data := range []string{
+		"epoch = " + watchEpoch + "\n",
+		"  epoch = " + watchEpoch + "\n",
+		"value = 'epoch = " + watchEpoch + "'\n",
+		"1)\n  table = world\n  name = consumer\n  epoch = " + watchEpoch + "\n  value = 3\n",
+		"1)\n  table = world\n  name = consumer\n  epoch = " + watchEpoch + " extra\n  acked = 3\n  retained_bytes = 0\n  lost = false\n  filters:\n",
+	} {
+		if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
+			t.Fatalf("normalization changed epoch-like data: %q -> %q", data, got)
+		}
 	}
 }
 
@@ -236,19 +304,17 @@ func TestDocWatchCleanupAfterBackpressure(t *testing.T) {
 	})
 }
 
-func (w *docWatch) finish(t *testing.T) {
+func (w *docWatch) finish(t *testing.T, observe func(string) error) {
 	t.Helper()
 	if err := w.command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-w.done:
-		w.finished = true
-		if err != nil || w.stderr.Len() != 0 {
-			t.Fatalf("docs watch shutdown: %v; %s", err, w.stderr.String())
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("docs watch timed out waiting for UNWATCH shutdown")
+	err := drainWatchFixture(w.lines, w.done, time.Now().Add(15*time.Second), observe, func() { w.finished = true })
+	if !w.finished {
+		t.Fatalf("docs WATCH shutdown deadline before reaping child: %v", err)
+	}
+	if err != nil || w.stderr.Len() != 0 {
+		t.Fatalf("docs WATCH drain: %v; %s", err, w.stderr.String())
 	}
 }
 
@@ -285,9 +351,18 @@ func TestCLIDocExamples(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := startServerConfigured(t, false, true, 2, "--backup-dir", backups)
+			watchURI, watchWire := watchProxy(t, s)
+			parsedURI, err := url.Parse(watchURI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep passwords in the environment so examples can override them.
+			parsedURI.User = url.User(adminUser)
+			watchURI = parsedURI.String()
 			env := append(os.Environ(), "PATH="+cliDirectory+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"CHUNKDB_URI="+s.uriFor(adminUser, ""), "CHUNKDB_PASSWORD="+adminPassword)
+				"CHUNKDB_URI="+watchURI, "CHUNKDB_PASSWORD="+adminPassword)
 			var watch *docWatch
+			var trace *watchFixture
 			watchIndex := -1
 			outputs := make([]string, len(examples))
 			for i, example := range examples {
@@ -296,11 +371,12 @@ func TestCLIDocExamples(t *testing.T) {
 						t.Fatal("docs watch requires a following writer example")
 					}
 					watch = startDocWatch(t, example.input, work, env)
-					outputs[i] = watch.line(t, "WATCH start")
-					if !strings.HasPrefix(outputs[i], "start ") {
-						t.Fatalf("unexpected WATCH start: %s", outputs[i])
+					trace, err = newWatchFixture(strings.TrimSuffix(watch.line(t, "WATCH start"), "\n"), false)
+					if err != nil {
+						t.Fatal(err)
 					}
 					watchIndex = i
+					defer func(trace *watchFixture) { t.Logf("Raw Markdown WATCH stream:\n%s", strings.Join(trace.raw, "\n")) }(trace)
 					continue
 				}
 				if example.kind == "cql docs-check" {
@@ -334,22 +410,24 @@ func TestCLIDocExamples(t *testing.T) {
 					outputs[i] = stdout.String()
 				}
 				if watch != nil {
-					// This checked transcript has one changed block. Its complete
-					// row is the explicit signal before cancellation and slot inspection.
-					change := watch.line(t, "schema or change header")
-					if strings.HasPrefix(change, "schema ") {
-						outputs[watchIndex] += change
-						change = watch.line(t, "change header after schema")
+					// The illustrated complete mutation establishes the output frontier.
+					// Its captured wire ACK proves registration before cancellation.
+					// Valid periodic progress is retained raw and checked against this
+					// mutation's frontier, rather than normalized as arbitrary output.
+					revision, schemaVersion, err := fixtureDocMutation(examples[watchIndex].expected)
+					if err != nil {
+						t.Fatal(err)
 					}
-					row := watch.line(t, "complete changed block")
-					if !strings.HasPrefix(change, "change revision ") || !strings.HasPrefix(row, "  block ") {
-						t.Fatalf("unexpected change: %s%s", change, row)
+					_, _, err = trace.mutation(func(deadline time.Time) (string, error) {
+						line, err := readWatchFixtureLine(watch.lines, deadline)
+						return strings.TrimSuffix(line, "\n"), err
+					}, "change", revision, schemaVersion)
+					if err != nil {
+						t.Fatalf("%v; raw WATCH: %s", err, strings.Join(trace.raw, "\n"))
 					}
-					outputs[watchIndex] += change + row
-					watch.finish(t)
-					for line := range watch.lines {
-						outputs[watchIndex] += line + "\n"
-					}
+					trace.awaitACK(t, watchWire, watch.lines, revision, schemaVersion)
+					watch.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion) })
+					outputs[watchIndex] = strings.Join(trace.semantic, "\n") + "\n"
 					watch = nil
 				}
 			}

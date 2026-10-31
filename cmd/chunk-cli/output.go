@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
+	"reflect"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -26,7 +28,7 @@ func formatValue(v chunkclient.Value, typ *chunkclient.ColumnType) string {
 		return "NULL"
 	case chunkclient.KindBool:
 		return strconv.FormatBool(v.Bool)
-	case chunkclient.KindSimple, chunkclient.KindInteger, chunkclient.KindDouble:
+	case chunkclient.KindSimple, chunkclient.KindInteger, chunkclient.KindBigNumber, chunkclient.KindDouble:
 		return v.Text
 	case chunkclient.KindBulk:
 		if typ == nil {
@@ -171,8 +173,18 @@ func writeHuman(out *bytes.Buffer, v chunkclient.Value, indent string) {
 // printSchema writes DESCRIBE with the columns as CREATE TABLE writes them.
 func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "table = %s\nversion = %d\nchunk = %d x %d\nlarge = %d x %d\ncolumns:\n",
+	fmt.Fprintf(&out, "table = %s\nversion = %d\nchunk = %d x %d\nlarge = %d x %d\n",
 		schema.Table, schema.Version, schema.ChunkWidth, schema.ChunkHeight, schema.LargeWidth, schema.LargeHeight)
+	if schema.Epoch != "" {
+		fmt.Fprintf(&out, "epoch = %s\nrevision = ", schema.Epoch)
+		if schema.Revision == nil {
+			out.WriteString("NULL\n")
+		} else {
+			fmt.Fprintf(&out, "%d\n", *schema.Revision)
+		}
+		fmt.Fprintf(&out, "dims = %d\n", schema.Dims)
+	}
+	out.WriteString("columns:\n")
 	for _, column := range schema.Columns {
 		fmt.Fprintf(&out, "  %s %s", column.Name, column.Type)
 		if column.Null {
@@ -185,6 +197,12 @@ func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 			fmt.Fprintf(&out, " DEFAULT %s", formatValue(column.Default, &column.Type))
 		}
 		out.WriteByte('\n')
+	}
+	if len(schema.ChunkColumns) > 0 {
+		out.WriteString("chunk_columns:\n")
+		for _, column := range schema.ChunkColumns {
+			fmt.Fprintf(&out, "  %s %s\n", column.Name, column.Type)
+		}
 	}
 	out.WriteString("options:\n")
 	writeHuman(&out, chunkclient.Value{Kind: chunkclient.KindMap, Map: schema.Options}, "  ")
@@ -221,8 +239,13 @@ func printBlock(w io.Writer, schema *chunkclient.Schema, names []string, reply c
 	if err != nil {
 		return err
 	}
-	if reply.Kind != chunkclient.KindArray || len(reply.Items) != len(columns) {
+	if reply.Kind != chunkclient.KindArray || len(reply.Items) < len(columns) {
 		return fmt.Errorf("GET BLOCK: expected %d values, got a %s of %d (the table may have changed)", len(columns), reply.Kind, len(reply.Items))
+	}
+	for i, column := range columns {
+		if err := validateWatchValue(reply.Items[i], column); err != nil {
+			return fmt.Errorf("GET BLOCK: %w", err)
+		}
 	}
 	if opts.json {
 		values := make(orderedMap, len(columns))
@@ -259,7 +282,7 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 	}
 	entries := make([]entry, 0, len(reply.Items))
 	for _, item := range reply.Items {
-		if item.Kind != chunkclient.KindArray || len(item.Items) != 3 || item.Items[2].Kind != chunkclient.KindBulk {
+		if item.Kind != chunkclient.KindArray || len(item.Items) < 3 || item.Items[2].Kind != chunkclient.KindBulk {
 			return fmt.Errorf("GET AREA: expected [cx, cy, chunk form] entries")
 		}
 		cx, errX := item.Items[0].Int64()
@@ -315,7 +338,7 @@ func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, block
 	}
 }
 
-// JSON output: one document per statement. Integers are exact numbers,
+// JSON output: one document per statement. Integers are exact numbers or decimal strings,
 // doubles numbers or "inf", "-inf", "nan"; text is a string, bytes a hex
 // string, bits a string of 0 and 1 (the lowest bit first).
 
@@ -338,7 +361,7 @@ func (m orderedMap) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		value, err := json.Marshal(field.value)
+		value, err := json.Marshal(exactJSON(field.value))
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +374,7 @@ func (m orderedMap) MarshalJSON() ([]byte, error) {
 }
 
 func writeJSON(w io.Writer, value any) error {
-	data, err := json.Marshal(value)
+	data, err := json.Marshal(exactJSON(value))
 	if err != nil {
 		return err
 	}
@@ -370,8 +393,8 @@ func jsonValue(v chunkclient.Value, typ *chunkclient.ColumnType) any {
 		return v.Bool
 	case chunkclient.KindSimple:
 		return v.Text
-	case chunkclient.KindInteger:
-		return json.Number(v.Text)
+	case chunkclient.KindInteger, chunkclient.KindBigNumber:
+		return integerJSON(v.Text)
 	case chunkclient.KindDouble:
 		if value, err := v.Float64(); err != nil || math.IsInf(value, 0) || math.IsNaN(value) {
 			return v.Text
@@ -404,6 +427,40 @@ func jsonValue(v chunkclient.Value, typ *chunkclient.ColumnType) any {
 		return fields
 	}
 	return nil
+}
+
+// Integer JSON values outside the inclusive JavaScript exact range are decimal strings.
+func integerJSON(text string) any {
+	number, ok := new(big.Int).SetString(text, 10)
+	if !ok {
+		return text
+	}
+	cutoff := big.NewInt(9007199254740991)
+	if new(big.Int).Abs(new(big.Int).Set(number)).Cmp(cutoff) > 0 {
+		return number.String()
+	}
+	return json.Number(number.String())
+}
+
+func exactJSON(value any) any {
+	if value == nil {
+		return nil
+	}
+	if items, ok := value.([]any); ok {
+		result := make([]any, len(items))
+		for i, item := range items {
+			result[i] = exactJSON(item)
+		}
+		return result
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return integerJSON(strconv.FormatInt(v.Int(), 10))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return integerJSON(strconv.FormatUint(v.Uint(), 10))
+	}
+	return value
 }
 
 func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool) orderedMap {

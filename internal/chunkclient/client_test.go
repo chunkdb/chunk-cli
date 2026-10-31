@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -266,7 +267,7 @@ func TestHello(t *testing.T) {
 	}
 	want := ServerInfo{Protocol: 3, ServerVersion: "2.0.0", MaxLineBytes: 65536, MaxParameters: 65535,
 		MaxAreaChunks: 256, MaxResponseBytes: 67108864, MaxScanLimit: 1024}
-	if *info != want || sc.Info() != info {
+	if !reflect.DeepEqual(*info, want) || sc.Info() != info {
 		t.Fatalf("got %+v", info)
 	}
 	if got := sc.sentText(); got != "HELLO 3\r\n" {

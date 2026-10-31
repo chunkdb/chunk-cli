@@ -10,7 +10,7 @@ Use the connection variables from the [README](../README.md) and unused `world` 
 ```sh docs-check-shell
 chunk-cli --uri "$CHUNKDB_URI" "CREATE TABLE world (kind u8) CHUNK 2 x 2"
 chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 1 IN world kind = 1"
-chunk-cli --uri "$CHUNKDB_URI" "CREATE SLOT 'consumer' ON world"
+chunk-cli --uri "$CHUNKDB_URI" "CREATE SLOT 'consumer' ON world AREA 0 0 TO 0 0"
 ```
 
 ```output
@@ -31,6 +31,8 @@ schema <epoch>:3 version 1
 change revision 3 time_ms <time-ms> user admin
   block 1 1: {kind = 1} -> {kind = 6}
 ```
+
+The stream may include periodic `progress <epoch>:<revision>` lines before or after the illustrated change, including while idle.
 
 3. In the other terminal, write the change shown above.
 
@@ -54,7 +56,20 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
 ```
 
 ```output
-1) table = world, name = consumer, epoch = <epoch>, acked = 3, retained_bytes = 0, lost = false
+1)
+  table = world
+  name = consumer
+  epoch = <epoch>
+  acked = 3
+  retained_bytes = 0
+  lost = false
+  lost_reason = NULL
+  filters:
+    area = [0, 0, 0, 0]
+    column_ids = NULL
+    columns = NULL
+    no_before = false
+    chunks = false
 OK
 ```
 
@@ -63,13 +78,31 @@ OK
 - `--area` uses inclusive chunk coordinates.
 - Without `--slot` or `--after`, watching begins after completed writes.
 - `--after <epoch:revision>` resumes from a retained position.
-- `--slot` resumes from its saved acknowledgement and acknowledges only completely printed changes.
-- `--ack-every` requires a slot; its default is 1, and schema events do not count.
+- `--slot` resumes from its saved acknowledgement and acknowledges only completely printed eligible events.
+- `--ack-every` requires a slot; its default is 1, counting change, chunks and progress events.
+- `--columns a,b` projects named columns; `--no-before` omits before rows.
+- `--chunks` streams committed chunk versions and binary forms, including a nullable form for deletion.
+- `--takeover` requires a slot and replaces its active consumer.
+- `--ack-timeout-ms <ms>` requires a slot and a positive mutation acknowledgement deadline.
 - `--json` prints one JSON object per line, including before/after rows and event metadata.
 
 Slot names match `[a-z_][a-z0-9_]*` and contain 1–63 bytes.
 Creating and dropping slots requires `ADMIN`.
 Watching requires `READ`.
+
+CREATE SLOT stores AREA, COLUMNS, NO BEFORE and CHUNKS filters.
+Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
+Changing filters requires a different slot.
+`SHOW SLOTS` includes typed filters, stable column IDs and nullable loss reasons.
+A renamed column displays its current name; a dropped column retains its ID with a null name and loses the filtered slot.
+
+JSON events include nullable `tag` and `txn`; changes also include `chunk_changes`.
+Schema events carry dimensions, block columns and chunk columns.
+Progress advances the completed frontier without a mutation.
+Progress is ACK-eligible, but never starts or extends the oldest unacknowledged mutation's deadline.
+Schema, resync, reserved catalog events and unknown events are not ACK-eligible.
+Unknown push kinds are fully decoded and ignored without consuming an ordinary reply.
+Resync includes nullable `parent_epoch` and `fork_revision` for lineage checks.
 
 ## If it fails
 

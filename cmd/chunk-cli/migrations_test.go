@@ -125,7 +125,7 @@ func TestMigrateFakeServer(t *testing.T) {
 	}{
 		{"applied_skipped", []string{"+applied\r\n", "+skipped\r\n", "+applied\r\n"}, false, 0, "a applied\nb skipped\nc applied\n", ""},
 		{"json", []string{"+skipped\r\n", "+applied\r\n", "+skipped\r\n"}, true, 0, "{\"name\":\"a\",\"status\":\"skipped\"}\n{\"name\":\"b\",\"status\":\"applied\"}\n{\"name\":\"c\",\"status\":\"skipped\"}\n", ""},
-		{"conflict_stops", []string{"+applied\r\n", "-ERR CONFLICT b differs\r\n"}, false, 1, "a applied\n", "migration \"b\": CONFLICT b differs"},
+		{"conflict_stops", []string{"+applied\r\n", "-ERR CONFLICT b differs\r\n"}, false, 3, "a applied\n", "migration \"b\": CONFLICT b differs"},
 		{"wrong_status_stops", []string{"+applied\r\n", "+OK\r\n"}, false, 1, "a applied\n", "migration \"b\": expected applied or skipped"},
 		{"wrong_type_stops", []string{"$7\r\napplied\r\n"}, false, 1, "", "migration \"a\": expected applied or skipped"},
 	} {

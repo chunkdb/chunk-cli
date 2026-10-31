@@ -6,6 +6,9 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 
 ## Unreleased
 
+### Changed
+- Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
+
 ### Documentation
 - Clarify CLI commands and user guides with checked input and output examples (#6).
 - Correct the world example description and link feed recovery to the server procedure (#6).

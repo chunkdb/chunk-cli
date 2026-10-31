@@ -419,7 +419,7 @@ func TestWatchCancelReportsFinalWriteError(t *testing.T) {
 			blocked := out.blocked
 			result := make(chan error, 1)
 			go func() {
-				result <- consumeWatch(ctx, watchOptions{slot: "consumer", ackEvery: 2}, stream, out, map[uint64][]chunkclient.Column{1: {{Name: "v", Type: chunkclient.ColumnType{Kind: chunkclient.ColumnUnsigned, Size: 8}}}}, nil)
+				result <- consumeWatch(ctx, watchOptions{slot: "consumer", ackEvery: 2}, stream, out, map[watchSchemaKey][]chunkclient.Column{{version: 1}: {{Name: "v", Type: chunkclient.ColumnType{Kind: chunkclient.ColumnUnsigned, Size: 8}}}}, nil)
 			}()
 			select {
 			case <-blocked:

@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +24,19 @@ func TestWatchProcess(t *testing.T) {
 	if os.Getenv("CHUNKCLI_WATCH_PROCESS") != "1" {
 		return
 	}
+	// The owned child installs only its fixture CA; certificate and hostname
+	// validation remain enabled without changing production TLS options.
+	if caFile := os.Getenv("CHUNKCLI_WATCH_CA"); caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			t.Fatal("invalid owned WATCH CA")
+		}
+		x509.SetFallbackRoots(roots)
+	}
 	for i, arg := range os.Args {
 		if arg == "--" {
 			os.Exit(run(os.Args[i+1:], os.Stdin, os.Stdout, os.Stderr))
@@ -39,11 +54,22 @@ type watchProcess struct {
 }
 
 func startWatchProcess(t *testing.T, uri string, args ...string) *watchProcess {
+	return startWatchProcessTrusted(t, uri, "", args...)
+}
+
+func startWatchProcessTrusted(t *testing.T, uri, caFile string, args ...string) *watchProcess {
 	t.Helper()
 	p := &watchProcess{lines: make(chan string, 64), done: make(chan error, 1)}
-	all := append([]string{"-test.run=^TestWatchProcess$", "--", "--uri", uri, "--tls-insecure", "watch", "world"}, args...)
+	global := []string{"-test.run=^TestWatchProcess$", "--", "--uri", uri}
+	if caFile == "" {
+		global = append(global, "--tls-insecure")
+	}
+	all := append(append(global, "watch", "world"), args...)
 	p.command = exec.Command(os.Args[0], all...)
 	p.command.Env = append(os.Environ(), "CHUNKCLI_WATCH_PROCESS=1")
+	if caFile != "" {
+		p.command.Env = append(p.command.Env, "CHUNKCLI_WATCH_CA="+caFile, "GODEBUG="+os.Getenv("GODEBUG")+",x509usefallbackroots=1")
+	}
 	p.command.Stderr = &p.stderr
 	out, err := p.command.StdoutPipe()
 	if err != nil {
@@ -62,14 +88,17 @@ func startWatchProcess(t *testing.T, uri string, args ...string) *watchProcess {
 		p.done <- p.command.Wait()
 	}()
 	t.Cleanup(func() {
+		if p.finished {
+			return
+		}
+		_ = p.command.Process.Signal(os.Interrupt)
+		_ = drainWatchFixture(p.lines, p.done, time.Now().Add(5*time.Second), nil, func() { p.finished = true })
 		if !p.finished {
-			_ = p.command.Process.Signal(os.Interrupt)
-			select {
-			case <-p.done:
-			case <-time.After(5 * time.Second):
-				_ = p.command.Process.Kill()
-				<-p.done
-			}
+			_ = p.command.Process.Kill()
+			_ = drainWatchFixture(p.lines, p.done, time.Now().Add(5*time.Second), nil, func() { p.finished = true })
+		}
+		if !p.finished {
+			t.Error("WATCH cleanup timed out reaping owned child")
 		}
 	})
 	return p
@@ -89,19 +118,21 @@ func (p *watchProcess) line(t *testing.T) string {
 		return ""
 	}
 }
-func (p *watchProcess) interrupt(t *testing.T) {
+func (p *watchProcess) interrupt(t *testing.T, observers ...func(string) error) {
 	t.Helper()
 	if err := p.command.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-p.done:
-		p.finished = true
-		if err != nil || p.stderr.Len() != 0 {
-			t.Fatalf("SIGINT exit: %v %s", err, p.stderr.String())
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("watch did not stop on SIGINT")
+	observe := func(line string) error { t.Logf("WATCH drain: %s", line); return nil }
+	if len(observers) > 0 {
+		observe = observers[0]
+	}
+	err := drainWatchFixture(p.lines, p.done, time.Now().Add(8*time.Second), observe, func() { p.finished = true })
+	if !p.finished {
+		t.Fatalf("WATCH shutdown deadline before reaping child: %v", err)
+	}
+	if err != nil || p.stderr.Len() != 0 {
+		t.Fatalf("SIGINT drain: %v %s", err, p.stderr.String())
 	}
 }
 
@@ -110,20 +141,66 @@ func (p *watchProcess) interrupt(t *testing.T) {
 type recordingProxy struct {
 	mu               sync.Mutex
 	input            bytes.Buffer
+	changed          chan struct{}
 	closeConnections func()
 }
 
 func (p *recordingProxy) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.input.Write(data)
+	n, err := p.input.Write(data)
+	if p.changed != nil {
+		close(p.changed)
+	}
+	p.changed = make(chan struct{})
+	return n, err
 }
 func (p *recordingProxy) text() string { p.mu.Lock(); defer p.mu.Unlock(); return p.input.String() }
+func (p *recordingProxy) acknowledged(revision uint64) (bool, <-chan struct{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.changed == nil {
+		p.changed = make(chan struct{})
+	}
+	acks, err := fixtureWireACKs(p.input.String())
+	if err != nil {
+		return false, p.changed, err
+	}
+	for _, ack := range acks {
+		if ack > revision {
+			return false, p.changed, fmt.Errorf("ACK %d exceeds expected %d", ack, revision)
+		}
+		if ack == revision {
+			return true, p.changed, nil
+		}
+	}
+	return false, p.changed, nil
+}
+
 func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Both TLS hops verify the owned fixture certificate and endpoint identity.
+	// Record only application bytes, after the inbound TLS handshake.
+	var remoteTLS *tls.Config
+	if s.scheme == "chunks" {
+		cert, err := tls.LoadX509KeyPair(s.tlsCert, s.tlsKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pem, err := os.ReadFile(s.tlsCert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			t.Fatal("invalid owned TLS certificate")
+		}
+		listener = tls.NewListener(listener, &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}})
+		remoteTLS = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
 	recorder := &recordingProxy{}
 	var mu sync.Mutex
@@ -137,7 +214,12 @@ func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 			if err != nil {
 				return
 			}
-			remote, err := net.Dial("tcp", s.address)
+			var remote net.Conn
+			if remoteTLS != nil {
+				remote, err = tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", s.address, remoteTLS)
+			} else {
+				remote, err = net.DialTimeout("tcp", s.address, 5*time.Second)
+			}
 			if err != nil {
 				socket.Close()
 				return
@@ -145,6 +227,23 @@ func watchProxy(t *testing.T, s *testServer) (string, *recordingProxy) {
 			mu.Lock()
 			sockets = append(sockets, socket, remote)
 			mu.Unlock()
+			if tlsSocket, ok := socket.(*tls.Conn); ok {
+				if err := tlsSocket.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+				if err := tlsSocket.Handshake(); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+				if err := tlsSocket.SetDeadline(time.Time{}); err != nil {
+					socket.Close()
+					remote.Close()
+					return
+				}
+			}
 			workers.Add(2)
 			go func() { defer workers.Done(); _, _ = io.Copy(remote, io.TeeReader(socket, recorder)); remote.Close() }()
 			go func() { defer workers.Done(); _, _ = io.Copy(socket, remote); socket.Close() }()
@@ -188,54 +287,58 @@ func TestCLIWatchIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := startWatchProcess(t, uri, "--area", "0,0,0,0")
-	start := p.line(t)
-	if !strings.HasPrefix(start, "start ") {
-		t.Fatal(start)
-	}
-	position := strings.TrimPrefix(start, "start ")
+	trace := fixtureStart(t, p, false)
+	position := strings.TrimPrefix(trace.raw[0], "start ")
 	s.ok(t, "SET BLOCK 4 0 IN world id = 99")
-	s.ok(t, "SET BLOCK 0 0 IN world id = 18446744073709551615, name = 'door', flags = b'10110', blob = x'00ff'")
-	header, block := p.line(t), p.line(t)
-	t.Logf("Observed output:\n%s\n%s\n%s", start, header, block)
+	firstRevision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 18446744073709551615, name = 'door', flags = b'10110', blob = x'00ff'"))
+	header, block := trace.waitMutation(t, p, "change", firstRevision, 1)
 	if !strings.Contains(header, "user admin") || !strings.Contains(block, "block 0 0: (absent) -> {id = 18446744073709551615, name = 'door', flags = b'10110', blob = x'00ff'}") {
 		t.Fatalf("%q %q", header, block)
 	}
-	s.ok(t, "SET BLOCK 0 0 IN world name = 'new'")
-	_ = p.line(t)
-	if line := p.line(t); !strings.Contains(line, "name = 'door'") || !strings.Contains(line, "name = 'new'") {
+	secondRevision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world name = 'new'"))
+	_, line := trace.waitMutation(t, p, "change", secondRevision, 1)
+	if !strings.Contains(line, "name = 'door'") || !strings.Contains(line, "name = 'new'") {
 		t.Fatal(line)
 	}
-	p.interrupt(t)
+	trace.stop(t, p, secondRevision, 1)
 	if strings.Count(proxy.text(), "UNWATCH\r\n") != 1 {
 		t.Fatal("missing UNWATCH")
 	}
 	resumed := startWatchProcess(t, s.uri, "--area", "0,0,0,0", "--after", position, "--json")
-	var startJSON map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(resumed.line(t)), &startJSON); err != nil || string(startJSON["type"]) != `"start"` {
-		t.Fatalf("start JSON %+v %v", startJSON, err)
+	replay := fixtureStart(t, resumed, true)
+	// AFTER starts delivery at the requested retained frontier, even when
+	// the producer's current completed frontier is newer.
+	afterPosition, err := parseWatchPosition(position)
+	if err != nil {
+		t.Fatal(err)
 	}
-	first := resumed.line(t)
-	if !strings.Contains(first, `"type":"change"`) || !strings.Contains(first, `"id":18446744073709551615`) || !strings.Contains(first, `"name":"door"`) || strings.Contains(first, `"id":99`) {
+	if replay.epoch != afterPosition.Epoch {
+		t.Fatalf("replay epoch changed: %v", replay.raw)
+	}
+	replay.frontier = afterPosition.Revision
+	first, _ := replay.waitMutation(t, resumed, "change", firstRevision, 1)
+	if !strings.Contains(first, `"id":"18446744073709551615"`) || !strings.Contains(first, `"name":"door"`) || strings.Contains(first, `"id":99`) {
 		t.Fatal(first)
 	}
-	if line := resumed.line(t); !json.Valid([]byte(line)) || !strings.Contains(line, `"name":"new"`) {
-		t.Fatal(line)
+	next, _ := replay.waitMutation(t, resumed, "change", secondRevision, 1)
+	if !json.Valid([]byte(next)) || !strings.Contains(next, `"name":"new"`) {
+		t.Fatal(next)
 	}
 	s.ok(t, "ALTER TABLE world ADD COLUMN light u4 DEFAULT 15")
-	if line := resumed.line(t); !strings.Contains(line, `"type":"schema"`) {
-		t.Fatal(line)
+	schemaRevision := fixtureTableFrontier(t, s)
+	replay.waitSchema(t, resumed, schemaRevision, 2)
+	thirdRevision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world light = 7"))
+	next, _ = replay.waitMutation(t, resumed, "change", thirdRevision, 2)
+	if !strings.Contains(next, `"light":15`) || !strings.Contains(next, `"light":7`) {
+		t.Fatal(next)
 	}
-	s.ok(t, "SET BLOCK 0 0 IN world light = 7")
-	if line := resumed.line(t); !strings.Contains(line, `"light":15`) || !strings.Contains(line, `"light":7`) {
-		t.Fatal(line)
-	}
-	resumed.interrupt(t)
+	replay.stop(t, resumed, thirdRevision, 2)
 	stale := startWatchProcess(t, s.uri, "--after", watchEpoch+":0")
-	_ = stale.line(t)
-	if line := stale.line(t); !strings.HasPrefix(line, "resync ") || !strings.Contains(line, "--after ") {
+	staleTrace := fixtureStart(t, stale, false)
+	if line := staleTrace.waitResync(t, stale, replay.epoch, thirdRevision); !strings.HasPrefix(line, "resync ") || !strings.Contains(line, "--after ") {
 		t.Fatal(line)
 	}
-	stale.interrupt(t)
+	staleTrace.stop(t, stale, thirdRevision, 2)
 	code, _, errout := s.cli(t, "WATCH world\nquit\n", "shell")
 	if code != 0 || !strings.Contains(errout, "chunk-cli watch <table>") {
 		t.Fatalf("shell %d %q", code, errout)
@@ -246,17 +349,9 @@ func TestCLIWatchTableDrop(t *testing.T) {
 	s := startServer(t, false)
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
 	p := startWatchProcess(t, s.uri)
-	_ = p.line(t)
+	trace := fixtureStart(t, p, false)
 	s.ok(t, "DROP TABLE world")
-	select {
-	case err := <-p.done:
-		p.finished = true
-		if err == nil || !strings.Contains(p.stderr.String(), "NO_TABLE") {
-			t.Fatalf("connection end: %v %q", err, p.stderr.String())
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal(fmt.Errorf("watch did not end after DROP TABLE"))
-	}
+	trace.expectFailure(t, p, trace.frontier, "NO_TABLE")
 }
 
 func TestCLIWatchConnectionLoss(t *testing.T) {
@@ -264,32 +359,22 @@ func TestCLIWatchConnectionLoss(t *testing.T) {
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
 	uri, proxy := watchProxy(t, s)
 	p := startWatchProcess(t, uri)
-	_ = p.line(t)
+	trace := fixtureStart(t, p, false)
 	proxy.closeConnections()
-	select {
-	case err := <-p.done:
-		p.finished = true
-		if err == nil || !strings.Contains(p.stderr.String(), "connection closed by the server") {
-			t.Fatalf("connection loss: %v %q", err, p.stderr.String())
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("watch did not end after connection loss")
-	}
+	trace.expectFailure(t, p, trace.frontier, "connection closed by the server")
 }
 
 func TestCLIWatchTLS(t *testing.T) {
 	s := startServer(t, true)
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
 	p := startWatchProcess(t, s.uri)
-	if line := p.line(t); !strings.HasPrefix(line, "start ") {
-		t.Fatal(line)
+	trace := fixtureStart(t, p, false)
+	revision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
+	_, row := trace.waitMutation(t, p, "change", revision, 1)
+	if row != "  block 0 0: (absent) -> {id = 7}" {
+		t.Fatal(row)
 	}
-	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
-	_ = p.line(t)
-	if line := p.line(t); !strings.Contains(line, "id = 7") {
-		t.Fatal(line)
-	}
-	p.interrupt(t)
+	trace.stop(t, p, revision, 1)
 }
 
 func TestCLIWatchUnavailableHistoricalSchema(t *testing.T) {
@@ -305,21 +390,30 @@ func TestCLIWatchUnavailableHistoricalSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	words := strings.Fields(start)
-	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
+	revision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
 	s.ok(t, "ALTER TABLE world ADD COLUMN name text(16) NULL")
 	p := startWatchProcess(t, s.uri, "--after", words[1]+":"+words[2])
-	_ = p.line(t)
-	select {
-	case err := <-p.done:
-		p.finished = true
-		if err == nil || !strings.Contains(p.stderr.String(), "need schema version 1, DESCRIBE returned 2") {
-			t.Fatalf("historical schema: %v %q", err, p.stderr.String())
+	trace := fixtureStart(t, p, false)
+	trace.frontier = fixtureVersion(t, words[2])
+	var validationError error
+	err = drainWatchFixture(p.lines, p.done, time.Now().Add(8*time.Second), func(line string) error {
+		trace.raw = append(trace.raw, line)
+		if !strings.HasPrefix(line, "progress ") {
+			validationError = fmt.Errorf("decoded with wrong historical schema: %s", line)
+			return validationError
 		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("watch did not reject unavailable historical schema")
+		_, err := trace.ancillary(line, revision-1, revision-1, 1)
+		if err != nil {
+			validationError = err
+		}
+		return err
+	}, func() { p.finished = true })
+	t.Logf("Raw historical WATCH stream: %s", strings.Join(trace.raw, "\n"))
+	if !p.finished {
+		t.Fatalf("historical WATCH deadline before reaping child: %v", err)
 	}
-	for line := range p.lines {
-		t.Fatalf("decoded with the wrong schema: %q", line)
+	if validationError != nil || err == nil || !strings.Contains(p.stderr.String(), "need schema version 1, DESCRIBE returned 2") {
+		t.Fatalf("historical schema: %v; validation %v; %q", err, validationError, p.stderr.String())
 	}
 }
 
@@ -327,13 +421,11 @@ func TestCLIWatchSingleWorker(t *testing.T) {
 	s := startServerConfigured(t, false, true, 1)
 	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
 	p := startWatchProcess(t, s.uri)
-	if line := p.line(t); !strings.HasPrefix(line, "start ") {
-		t.Fatal(line)
+	trace := fixtureStart(t, p, false)
+	revision := fixtureVersion(t, s.ok(t, "SET BLOCK 0 0 IN world id = 7"))
+	_, row := trace.waitMutation(t, p, "change", revision, 1)
+	if row != "  block 0 0: (absent) -> {id = 7}" {
+		t.Fatal(row)
 	}
-	s.ok(t, "SET BLOCK 0 0 IN world id = 7")
-	_ = p.line(t)
-	if line := p.line(t); !strings.Contains(line, "id = 7") {
-		t.Fatal(line)
-	}
-	p.interrupt(t)
+	trace.stop(t, p, revision, 1)
 }

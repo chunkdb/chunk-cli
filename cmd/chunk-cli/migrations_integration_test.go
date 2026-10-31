@@ -72,7 +72,7 @@ func TestCLIMigrationsConcurrentAndConflict(t *testing.T) {
 				}
 			}
 			conflict := migrationFile(t, "-- migrate: create_world\nCREATE TABLE world (id u16) CHUNK 2 x 2\n-- migrate: later\nCREATE TABLE later (id u8) CHUNK 2 x 2")
-			s.fails(t, "migration \"create_world\": CONFLICT", "migrate", conflict)
+			s.fails(t, "migration \"create_world\": MIGRATION_MISMATCH", "migrate", conflict)
 			s.fails(t, "NO_TABLE", "DESCRIBE later")
 			if err := json.Unmarshal([]byte(s.ok(t, "--json", "migrations")), &records); err != nil || len(records) != 3 {
 				t.Fatalf("conflict recorded: %#v %v", records, err)
