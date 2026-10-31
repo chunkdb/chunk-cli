@@ -45,7 +45,8 @@ For a certificate with a different name, set `--tls-server-name <name>`.
 
 The default network timeout is `5s`.
 Use `--timeout 10s` to change it.
-The CLI does not retry statements or reconnect a watch automatically.
+One-shot statements and interactive shell statements are not retried.
+[Transaction files](TRANSACTIONS.md#transaction-files) retry known retryable errors unless `--no-retry` is set.
 
 ## Session options
 
@@ -80,3 +81,22 @@ error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <n
 Failed commands preserve the server's error code and metadata.
 See [error exit codes](COMMANDS.md#errors) before deciding whether to retry.
 See [Commands](COMMANDS.md) for all options.
+
+## Watch reconnection
+
+`watch` reconnects after a transport failure using the same login, TLS settings, filters and slot.
+It resumes `AFTER` the last completely printed change, chunk event, progress frontier or resync position.
+Until an event is printed, the initial watch start position is used.
+An incomplete frame or failed output write never advances the position.
+Each successful attachment prints another `start` event.
+
+Five consecutive reconnect attempts use delays of 25, 50, 100, 200 and 400 milliseconds.
+Printing a new frontier resets this limit.
+`watch <table> --no-reconnect` exits on the first lost connection.
+After a transport failure, `SLOT_BUSY` also uses the bounded reconnect attempts while the old consumer detaches, without taking over another consumer.
+Other server refusals, malformed frames and output errors stop the watch without reconnecting.
+Ctrl-C interrupts reconnection waits and closes an active watch with its final ACK and UNWATCH.
+
+An ordinary watch can resume only while the server retains its position.
+A `resync` event still requires rebuilding application state as described in [Feed](FEED.md).
+Use a durable slot when the position must survive a server restart.
