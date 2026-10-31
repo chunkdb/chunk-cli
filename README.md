@@ -1,5 +1,7 @@
 # chunk-cli
 
+[![CI](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/chunkdb/chunk-cli/actions/workflows/ci.yml)
+
 The command-line client for [chunkdb](https://github.com/chunkdb/chunkdb), which stores typed blocks in chunks.
 A block is one cell with named values.
 A chunk groups blocks under one version, which changes when its stored data changes.
