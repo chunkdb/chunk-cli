@@ -54,7 +54,7 @@ func TestFoundationServerContract(t *testing.T) {
 			if out := s.ok(t, "--json", "GET AREA 4 4 TO 4 4 FROM world WITH SCHEMA"); out != "{\"schema_version\":1,\"entries\":[]}\n" {
 				t.Fatal(out)
 			}
-			code, out, failure := s.cli(t, "", "--json", "SET BLOCK 0 0 IN world id = 7 IF VERSION 1")
+			code, out, failure := s.cli(t, "", "--json", "SET BLOCK 0 0 IN world id = 7 IF VERSION 0")
 			if code != 2 || out != "" || !strings.Contains(failure, `"class":"reread"`) || !strings.Contains(failure, `"code":"VERSION_MISMATCH"`) {
 				t.Fatal(code, out, failure)
 			}

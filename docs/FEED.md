@@ -15,7 +15,7 @@ chunk-cli --uri "$CHUNKDB_URI" "CREATE SLOT 'consumer' ON world AREA 0 0 TO 0 0"
 
 ```output
 OK
-2
+1
 OK
 ```
 
@@ -26,9 +26,9 @@ chunk-cli --uri "$CHUNKDB_URI" watch world --slot consumer --ack-every 10 --area
 ```
 
 ```output
-start <epoch>:2
-schema <epoch>:3 version 1
-change revision 3 time_ms <time-ms> user admin
+start <epoch>:1
+schema <epoch>:2 version 1
+change revision 2 time_ms <time-ms> user admin
   block 1 1: {kind = 1} -> {kind = 6}
 ```
 
@@ -41,7 +41,7 @@ chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 1 IN world kind = 6"
 ```
 
 ```output
-3
+2
 ```
 
 After the complete change prints, press Ctrl-C.
@@ -60,7 +60,7 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   table = world
   name = consumer
   epoch = <epoch>
-  acked = 3
+  acked = 2
   retained_bytes = 0
   lost = false
   lost_reason = NULL

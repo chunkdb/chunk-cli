@@ -117,9 +117,9 @@ chunk-cli --uri "$CHUNKDB_URI" "GET CHUNK 8 8 FROM world"
 
 ```output
 OK
-2
+1
 {"kind":2,"name":"door"}
-version = 2
+version = 1
 schema_version = 1
 present = 1 of 4 blocks
 block 1 1
@@ -136,7 +136,7 @@ chunk-cli --uri "$CHUNKDB_URI" --json "GET BLOCK 16 16 FROM world WITH VERSION W
 ```
 
 ```output
-{"version":2,"schema_version":1,"values":{"kind":2,"name":"door"}}
+{"version":1,"schema_version":1,"values":{"kind":2,"name":"door"}}
 {"version":null,"schema_version":1,"values":null}
 ```
 
@@ -152,9 +152,9 @@ chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 3 1 FROM world"
 ```
 
 ```output
-4
+2
 wrote 37 bytes to chunk.bin
-6
+3
 kind = 3
 name = 'door'
 ```

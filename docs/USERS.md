@@ -16,7 +16,7 @@ chunk-cli --uri "$CHUNKDB_URI" "GRANT READ ON world TO bot"
 
 ```output
 OK
-2
+1
 OK
 OK
 ```

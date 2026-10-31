@@ -105,7 +105,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	)
 	slot := foundationMapValue(
 		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
-		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("3"),
+		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("2"),
 		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
 	)
@@ -133,7 +133,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	}
 	t.Logf("Synthetic production formatter transcript:\n%s", out.String())
 	for _, replacement := range [][2]string{
-		{"acked = 3", "acked = 4"}, {"retained_bytes = 0", "retained_bytes = 7"},
+		{"acked = 2", "acked = 3"}, {"retained_bytes = 0", "retained_bytes = 7"},
 		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
 		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
 		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
