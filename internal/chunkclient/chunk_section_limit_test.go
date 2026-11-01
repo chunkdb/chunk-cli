@@ -10,9 +10,8 @@ func TestSectionedChunkFormLimit(t *testing.T) {
 	}
 	schema.Options = []MapEntry{{Key: Value{Kind: KindBulk, Bulk: []byte("var_max_chunk_bytes")}, Value: Value{Kind: KindInteger, Text: "32"}}}
 	bound, err = SectionedChunkFormLimit(schema)
-	// Header, six directory entries, presence, two fixed bytes, one block
-	// descriptor, two metadata descriptors with one fixed scalar, and quota.
-	if err != nil || bound != 36+72+1+2+4+24+4+32+1+32 {
+	// The mutable quota cannot bound a shrinking replacement of old data.
+	if err != nil || bound != 36+72+1+2+4+24+4+32+1+maxSectionedVariableBytes {
 		t.Fatal(bound, err)
 	}
 	schema.ChunkColumns[0].Type = ColumnType{Kind: ColumnUnknown, Name: "future"}

@@ -13,7 +13,7 @@ func SectionedChunkFormLimit(schema *Schema) (uint64, error) {
 	for domain, columns := range [][]Column{schema.Columns, schema.ChunkColumns} {
 		for _, column := range columns {
 			if column.Type.Kind == ColumnUnknown {
-				return 0, fmt.Errorf("SET CHUNK: cannot write unknown column type %s", column.Type)
+				return 0, fmt.Errorf("SET CHUNK: cannot write unknown column %s type %s", column.Name, column.Type)
 			}
 			if _, err := ParseColumnType(column.Type.String()); err != nil {
 				return 0, err
@@ -38,17 +38,15 @@ func SectionedChunkFormLimit(schema *Schema) (uint64, error) {
 	if len(schema.ChunkColumns) != 0 {
 		metadata += 4 + 16*uint64(len(schema.ChunkColumns))
 	}
-	budget := uint64(maxSectionedVariableBytes)
+	// A stored chunk may already exceed a lowered quota and remain writable
+	// when the replacement does not grow; only the server knows that state.
 	for _, option := range schema.Options {
 		if option.Key.Kind == KindBulk && string(option.Key.Bulk) == "var_max_chunk_bytes" {
 			value, err := option.Value.Uint64()
 			if err != nil || value > maxSectionedVariableBytes {
 				return 0, fmt.Errorf("SET CHUNK: invalid variable byte limit")
 			}
-			if value != 0 {
-				budget = value
-			}
 		}
 	}
-	return 36 + 6*12 + presence + fixed + 4 + 24*descriptors + metadata + budget, nil
+	return 36 + 6*12 + presence + fixed + 4 + 24*descriptors + metadata + maxSectionedVariableBytes, nil
 }

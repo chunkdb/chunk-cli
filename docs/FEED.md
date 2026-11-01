@@ -76,12 +76,14 @@ OK
 ## Options
 
 - `--area` uses inclusive chunk coordinates.
+- Three-axis tables use `--area cx0,cy0,cz0,cx1,cy1,cz1`; the third axis remains explicit when zero.
 - Without `--slot` or `--after`, watching begins after completed writes.
 - `--after <epoch:revision>` resumes from a retained position.
 - `--slot` resumes from its saved acknowledgement and acknowledges only completely printed eligible events.
 - `--ack-every` requires a slot; its default is 1, counting change, chunks and progress events.
 - `--columns a,b` projects named columns; `--no-before` omits before rows.
 - `--chunks` streams committed chunk versions and binary forms, including a nullable form for deletion.
+- Chunk-column changes appear in chunk change metadata; binary chunk forms retain the complete chunk-column row.
 - `--takeover` requires a slot and replaces its active consumer.
 - `--ack-timeout-ms <ms>` requires a slot and a positive mutation acknowledgement deadline.
 - `--json` prints one JSON object per line, including before/after rows and event metadata.

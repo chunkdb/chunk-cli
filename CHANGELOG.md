@@ -7,10 +7,10 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- Decode checked chunk forms with three-axis coordinates, chunk columns, producing timestamps and retained scan deletions, while bounding decoded output and binary imports (chunkdb/chunkdb#133).
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
-- Match checked revision transcripts to reads that do not reserve producing revisions (chunkdb/chunkdb#133).
 - Clarify CLI commands and user guides with checked input and output examples (#6).
 - Correct the world example description and link feed recovery to the server procedure (#6).
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).

@@ -27,7 +27,7 @@ chunk-cli help
 | `--tls-server-name <name>` | Override the TLS certificate name |
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
-| `--blocks` | Include present blocks in chunk and area output |
+| `--blocks` | Include present blocks in chunk, area and scan data output |
 | `--in <file>` | Supply binary parameter `$1` |
 | `--out <file>` | Write reply bytes to a file |
 | `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
@@ -53,7 +53,7 @@ Its revision is `NULL` when a read-only server cannot establish the writer's fro
 - Blocks print `column = value` lines; an absent block prints `NULL`.
 - Never-written chunks print `(null)`, or JSON `null`.
 - Written empty chunks retain their versioned form while their stored or cached state remains.
-- Chunk replies show version, schema version and presence count; `--blocks` adds rows.
+- Chunk replies show version, schema version, commit time, chunk columns and presence count; `--blocks` adds rows.
 - Area replies group blocks by chunk.
 - Writes print the affected chunk's new version.
 
@@ -66,7 +66,21 @@ JSON integers within inclusive ±9007199254740991 are numbers; larger magnitudes
 This applies to values, coordinates, versions, revisions, timestamps, transaction IDs and numeric error metadata.
 Non-finite floats print as strings.
 Unknown column types retain their type names and print raw bytes as hex for that column.
-Binary chunk decoding requires known types for selected columns.
+Unknown chunk sections are listed by section ID; `--out` preserves their complete bytes.
+Chunk summaries validate the complete form without expanding block values.
+`--blocks` accepts at most 524288 present block-column values per chunk; select fewer columns or use `--out` for a larger chunk.
+World coordinates outside signed 64-bit range print as `[chunk,offset]` pairs, including in JSON.
+
+Tables have two or three coordinate axes; a three-axis table requires the third coordinate even when it is zero.
+Chunk and area output retains that third coordinate, with x varying fastest within a chunk.
+Transaction-private chunk forms print `NULL` for version and commit time and include `private = true`.
+Block-column projections retain all chunk columns and include `projected = true` when the form is projected.
+
+`SCAN CHUNKS ... WITH DATA` prints each coordinate, retained version and decoded chunk.
+JSON entries contain `{cx,cy,cz?,version,deleted,chunk}`; a tombstone has `deleted: true` and `chunk: null`.
+`SINCE` includes retained deletions and skips versions at or below the supplied revision.
+The page retains its table epoch, nullable completed frontier and retained deletion floor.
+If the supplied revision precedes that floor, start a fresh snapshot before resuming changes.
 
 `GET BLOCK ... WITH VERSION` adds a nullable chunk version beside the values.
 The version is `NULL` for never-written chunks, collected empty chunks and transaction-private modified chunks.
@@ -163,9 +177,14 @@ name = 'door'
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.
 Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.
+The size bound uses the combined hard variable-byte ceiling; the server enforces its current quota while allowing non-growing replacements of older data above a lowered quota.
 Supported `text(max)` and `bytes(max)` columns are variable-length known types.
 An unknown type is refused before sending the write, with its column name and type in the error.
 After a schema change, old chunk files may fail with `SCHEMA_MISMATCH`.
+Full chunk imports replace block data and chunk columns.
+`SET CHUNK ... COLUMNS ... $1` preserves chunk columns and replaces only the selected block columns.
+`SET CHUNK ... META name=$1` updates chunk columns using scalar parameters rather than a chunk-form file.
+`IF ABSENT` admits only an absent chunk identity; it cannot be combined with `IF VERSION`.
 For statement options, see [CQL reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md).
 For connection state, see [Transactions](TRANSACTIONS.md).
 
