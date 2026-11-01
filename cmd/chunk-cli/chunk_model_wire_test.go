@@ -31,7 +31,7 @@ func TestChunkModelRawReplacementAfterQuotaReduction(t *testing.T) {
 			return err
 		}
 		describe := strings.ReplaceAll(modelDescribeWire(), watchWireBulk("text(8)"), watchWireBulk("text(1024)"))
-		describe = strings.Replace(describe, watchWireMap("var_max_chunk_bytes", ":32\r\n"), watchWireMap("var_max_chunk_bytes", ":1\r\n"), 1)
+		describe = strings.Replace(describe, watchWireMap("var_max_chunk_bytes", ":32\r\n"), watchWireMap("var_max_chunk_bytes", ":13\r\n"), 1)
 		if _, err := io.WriteString(conn, describe); err != nil {
 			return err
 		}
