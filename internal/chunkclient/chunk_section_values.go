@@ -158,7 +158,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, opt
 		presentCount += bits.OnesCount8(value)
 	}
 	if opts.values && len(selected) != 0 && presentCount > maxDecodedChunkCells/len(selected) {
-		return bad("decoded chunk exceeds 524288 present column values; use --out for binary data")
+		return nil, &DecodeLimitError{Detail: "chunk form: decoded chunk exceeds 524288 present column values; use --out for binary data"}
 	}
 	depth := 1
 	if schema.Dims == 3 {

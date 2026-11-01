@@ -55,6 +55,7 @@ Its revision is `NULL` when a read-only server cannot establish the writer's fro
 - Written empty chunks retain their versioned form while their stored or cached state remains.
 - Chunk replies show version, schema version, commit time, chunk columns and presence count; `--blocks` adds rows.
 - Area replies group blocks by chunk.
+- GET AREA with LIMIT or AFTER prints `more` and `after` with its chunk summaries; JSON preserves the `chunks`, `more`, `after` page map.
 - Writes print the affected chunk's new version.
 
 Values print as CQL literals: numbers, booleans, `NULL`, quoted text, `x'hex'` bytes and `b'bits'`.
@@ -68,6 +69,8 @@ Non-finite floats print as strings.
 Unknown column types retain their type names and print raw bytes as hex for that column.
 Unknown chunk sections are listed by section ID; `--out` preserves their complete bytes.
 Chunk summaries validate the complete form without expanding block values.
+Area output admits at most 64 MiB of decoded array storage across its chunks before printing anything.
+Use a smaller LIMIT or fewer COLUMNS when that bound is exceeded; summaries avoid block arrays, and GET CHUNK with `--out` preserves binary data.
 `--blocks` accepts at most 524288 present block-column values per chunk; select fewer columns or use `--out` for a larger chunk.
 World coordinates outside signed 64-bit range print as `[chunk,offset]` pairs, including in JSON.
 
@@ -212,3 +215,25 @@ For connection state, see [Transactions](TRANSACTIONS.md).
 `SHOW STATUS` reports enabled directory/table features, raw unsigned `compat`, `ro_compat` and `incompat` masks, and `activation_pending`.
 `ENABLE FEATURE <name>` explicitly enables a registered feature for the directory and its affected tables.
 Both operations require `ADMIN` on `*`; feature activation can change which server versions can open the data.
+
+## Area pages
+
+LIMIT or AFTER selects a GET AREA page and requires the server's `area_paging` capability.
+A page bounds visited cells, including empty cells, so an empty chunk list can still have a continuation.
+Continue the same selector strictly AFTER the returned coordinate while `more` is true.
+The final page has `more = false` and `after = NULL`.
+Use exactly two axes for a two-dimensional table and three for a three-dimensional table, including a third zero axis.
+
+```sh
+chunk-cli --uri "$CHUNKDB_URI" "GET AREA 0 0 TO 10000 0 FROM world LIMIT 256"
+```
+
+The server can stop a page early to honor its configured response-byte limit.
+Successful area replies are bounded by the negotiated encoded-byte and chunk-count limits while they are read, including framing, schema and cursor fields.
+An oversized, truncated or malformed area reply closes the connection without printing a partial result.
+Local decoded-array limits and schema mismatches preserve the connection for a narrower request or an explicit schema refresh.
+Use the returned cursor rather than calculating it from the requested LIMIT or the last populated chunk.
+Repeat the statement with AFTER followed by the displayed coordinates.
+WITH SCHEMA adds a leading schema line; JSON returns `{schema_version, page}` with the complete page map.
+Independent requests can observe intervening writes; pages in an open transaction use its snapshot and pending writes.
+The CLI runs one page per statement and does not accumulate or retry earlier pages.

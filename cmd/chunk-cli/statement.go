@@ -49,6 +49,7 @@ type statementInfo struct {
 	cx, cy, cz int64
 	dims       int
 	scanSince  *uint64
+	areaPage   *areaPageRequest
 }
 
 // tokenize splits a statement into words, skipping quoted values and the
@@ -200,12 +201,19 @@ func classify(statement string) statementInfo {
 		}
 	}
 	info.table = tokens[from+1]
+	var areaSelector *areaPageRequest
+	if info.kind == statementGetArea {
+		areaSelector = parseAreaSelector(tokens[2:from])
+	}
 	for i := from + 2; i < len(tokens); {
 		switch keyword(i) {
 		case "COLUMNS":
 			start := i + 1
 			i = start
 			for i < len(tokens) {
+				if info.kind == statementGetArea && i > start && tokens[i-1] != "," && (keyword(i) == "LIMIT" || keyword(i) == "AFTER") {
+					break
+				}
 				if i > start && tokens[i-1] != "," && keyword(i) == "WITH" && (keyword(i+1) == "VERSION" || keyword(i+1) == "SCHEMA") {
 					break
 				}
@@ -228,6 +236,32 @@ func classify(statement string) statementInfo {
 				return statementInfo{}
 			}
 			i += 2
+		case "LIMIT":
+			if info.kind != statementGetArea || areaSelector == nil || areaSelector.limit != 0 || i+1 >= len(tokens) {
+				return statementInfo{}
+			}
+			limit, err := strconv.ParseUint(tokens[i+1], 10, 64)
+			if err != nil || limit == 0 {
+				return statementInfo{}
+			}
+			areaSelector.limit = limit
+			info.areaPage = areaSelector
+			i += 2
+		case "AFTER":
+			if info.kind != statementGetArea || areaSelector == nil || areaSelector.after != nil || i+areaSelector.dims >= len(tokens) {
+				return statementInfo{}
+			}
+			point := &[3]int64{}
+			for axis := range areaSelector.dims {
+				value, err := strconv.ParseInt(tokens[i+axis+1], 10, 64)
+				if err != nil {
+					return statementInfo{}
+				}
+				point[axis] = value
+			}
+			areaSelector.after = point
+			info.areaPage = areaSelector
+			i += areaSelector.dims + 1
 		default:
 			return statementInfo{}
 		}
@@ -341,8 +375,29 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		parameters = [][]byte{data}
 	}
 
+	info := classify(statement)
+	defer func() {
+		var malformed *areaReplyError
+		if errors.As(err, &malformed) {
+			client.RejectReply(err)
+			if txn != nil {
+				txn.open = false
+			}
+		}
+	}()
+	if info.areaPage != nil {
+		server := client.Info()
+		if server == nil || !server.Supports("area_paging") {
+			return errors.New("GET AREA: server does not support area_paging")
+		}
+		info.areaPage.maxChunks = server.MaxAreaChunks
+	}
+	readLimits, err := areaReadLimits(client.Info(), statement, info)
+	if err != nil {
+		return err
+	}
 	if opts.out != "" {
-		reply, err := client.Do(statement, parameters...)
+		reply, err := limitedStatement(client, statement, readLimits, parameters)
 		if err != nil {
 			return err
 		}
@@ -359,9 +414,8 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		return err
 	}
 
-	info := classify(statement)
 	if info.kind == statementOther || info.kind == statementDescribe {
-		reply, err := client.Do(statement, parameters...)
+		reply, err := limitedStatement(client, statement, readLimits, parameters)
 		if err != nil {
 			return err
 		}
@@ -399,7 +453,7 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	// transaction, which runs DESCRIBE).
 	replies, err := client.Pipeline([]chunkclient.Request{
 		{Statement: "DESCRIBE " + info.table},
-		{Statement: statement, Parameters: parameters},
+		{Statement: statement, Parameters: parameters, ReplyLimits: readLimits},
 	})
 	if err != nil {
 		return err
@@ -412,6 +466,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	}
 	schema, err := chunkclient.ParseDescribe(replies[0].Value)
 	if err != nil {
+		if info.kind == statementGetArea {
+			return malformedAreaReply(err)
+		}
 		return err
 	}
 	reply := replies[1].Value
@@ -443,6 +500,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		}
 		return printChunk(stdout, chunk, info.cx, info.cy, opts)
 	default:
+		if info.areaPage != nil {
+			return printAreaPage(stdout, schema, info, reply, opts)
+		}
 		return printArea(stdout, schema, info.columns, reply, opts)
 	}
 }

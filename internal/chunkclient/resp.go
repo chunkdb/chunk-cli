@@ -171,10 +171,20 @@ func readReply(r *bufio.Reader) (Value, error) {
 }
 
 func readValue(r *bufio.Reader, depth int) (Value, error) {
+	return readValueLimited(r, depth, nil, replyShapeNone)
+}
+
+func readValueLimited(r *bufio.Reader, depth int, budget *replyBudget, shape replyShape) (Value, error) {
 	if depth > maxNesting {
 		return Value{}, errors.New("reply nests too deeply")
 	}
-	line, err := readLine(r)
+	var line string
+	var err error
+	if budget == nil {
+		line, err = readLine(r)
+	} else {
+		line, err = budget.line(r)
+	}
 	if err != nil {
 		return Value{}, err
 	}
@@ -224,6 +234,11 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 		if err != nil || length < 0 || length > maxBulkBytes {
 			return Value{}, fmt.Errorf("invalid bulk length %q", body)
 		}
+		if budget != nil {
+			if err := budget.consume(uint64(length) + 2); err != nil {
+				return Value{}, err
+			}
+		}
 		data := make([]byte, length+2)
 		if _, err := io.ReadFull(r, data); err != nil {
 			return Value{}, fmt.Errorf("read bulk string: %w", err)
@@ -240,9 +255,21 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
+		if budget != nil {
+			if err := budget.aggregate(uint64(count), false, shape); err != nil {
+				return Value{}, err
+			}
+		}
 		items := make([]Value, 0, min(count, maxPrealloc))
-		for range count {
-			item, err := readValue(r, depth+1)
+		for i := range count {
+			child := replyShapeNone
+			if shape == replyShapeSchema && i == 1 && budget != nil {
+				child = replyShapeRows
+				if budget.limits.Page {
+					child = replyShapePage
+				}
+			}
+			item, err := readValueLimited(r, depth+1, budget, child)
 			if err != nil {
 				return Value{}, err
 			}
@@ -258,13 +285,22 @@ func readValue(r *bufio.Reader, depth int) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
+		if budget != nil {
+			if err := budget.aggregate(uint64(count), true, shape); err != nil {
+				return Value{}, err
+			}
+		}
 		entries := make([]MapEntry, 0, min(count, maxPrealloc))
 		for range count {
-			key, err := readValue(r, depth+1)
+			key, err := readValueLimited(r, depth+1, budget, replyShapeNone)
 			if err != nil {
 				return Value{}, err
 			}
-			value, err := readValue(r, depth+1)
+			child := replyShapeNone
+			if shape == replyShapePage && (key.Kind == KindBulk && string(key.Bulk) == "chunks" || key.Kind == KindSimple && key.Text == "chunks") {
+				child = replyShapeRows
+			}
+			value, err := readValueLimited(r, depth+1, budget, child)
 			if err != nil {
 				return Value{}, err
 			}
