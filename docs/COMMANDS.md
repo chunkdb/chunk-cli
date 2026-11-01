@@ -173,6 +173,25 @@ kind = 3
 name = 'door'
 ```
 
+Create a three-axis table with a separate chunk-column row:
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "CREATE TABLE space (kind u8) CHUNK 2 x 2 x 2 CHUNK COLUMNS (owner text(8) NULL)"
+printf 'base' > owner.bin
+chunk-cli --uri "$CHUNKDB_URI" --in owner.bin 'SET CHUNK 0 0 0 IN space META owner=$1'
+chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 0 1 IN space kind = 7"
+chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 1 0 1 FROM space"
+```
+
+```output
+OK
+1
+2
+kind = 7
+```
+
+Use `--blocks "GET CHUNK 0 0 0 FROM space"` to include the present block and chunk columns, or `"SCAN CHUNKS FROM space SINCE 0 WITH DATA"` for retained versions and tombstones.
+
 ## Notes
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.
