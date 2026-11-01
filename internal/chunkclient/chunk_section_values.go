@@ -5,14 +5,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/bits"
 	"unicode/utf8"
 )
 
 const maxSectionedVariableBytes = 64 * 1024 * 1024
+const maxDecodedChunkCells = 1 << 19
 
 // DecodeSectionedChunkForm reads the checked form independently of legacy dispatch.
 func DecodeSectionedChunkForm(schema *Schema, columns []string, data []byte) (*Chunk, error) {
-	return decodeSectionedChunkForm(schema, columns, data, false)
+	return decodeSectionedChunkForm(schema, columns, data, false, true)
 }
 
 // ValidateSectionedChunkMutation refuses unknown data before binary import.
@@ -31,11 +33,11 @@ func ValidateSectionedChunkMutation(schema *Schema, columns []string, data []byt
 	if _, err := parseSectionedForm(data, math.MaxUint32, true); err != nil {
 		return err
 	}
-	_, err := decodeSectionedChunkForm(schema, columns, data, len(columns) != 0)
+	_, err := decodeSectionedChunkForm(schema, columns, data, len(columns) != 0, false)
 	return err
 }
 
-func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, preserveMetadata bool) (*Chunk, error) {
+func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, preserveMetadata, materialize bool) (*Chunk, error) {
 	bad := func(what string) (*Chunk, error) { return nil, fmt.Errorf("chunk form: %s", what) }
 	if schema == nil || schema.BlockCount() == 0 || len(schema.Columns) > 1024 || len(schema.ChunkColumns) > 1024 {
 		return bad("invalid geometry or column count")
@@ -131,6 +133,14 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 	if len(variable) > maxSectionedVariableBytes {
 		return bad("variable data exceeds its hard byte limit")
 	}
+	presence := form.section(sectionPresence)
+	presentCount := 0
+	for _, value := range presence {
+		presentCount += bits.OnesCount8(value)
+	}
+	if materialize && len(selected) != 0 && presentCount > maxDecodedChunkCells/len(selected) {
+		return bad("decoded chunk exceeds 524288 present column values; use --out for binary data")
+	}
 	depth := 1
 	if schema.Dims == 3 {
 		depth = schema.ChunkDepth
@@ -138,35 +148,42 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 	chunk := &Chunk{Version: form.header.version, SchemaVersion: form.header.schema, CommitTimeMS: form.header.commitTime,
 		Projected: form.header.flags&chunkFormProjected != 0, Private: form.header.flags&chunkFormPrivate != 0,
 		Width: schema.ChunkWidth, Height: schema.ChunkHeight, Depth: depth, Columns: selected,
-		Present: make([]bool, count), Values: make([][]Value, len(selected))}
-	presence := form.section(sectionPresence)
-	for i := range count {
-		chunk.Present[i] = bit(presence, i)
 	}
-	for index, column := range selected {
-		values := make([]Value, count)
-		span, fixed := byID[column.ID]
+	if materialize {
+		chunk.Present, chunk.Values = make([]bool, count), make([][]Value, len(selected))
+		presentBlocks := make([]int, 0, presentCount)
+		if presentCount != 0 {
+			chunk.valueIndexes = make([]uint32, count)
+		}
 		for i := range count {
-			values[i] = Value{Kind: KindNull}
-			if !chunk.Present[i] {
-				continue
-			}
-			if !fixed {
-				if !column.Null {
-					values[i] = Value{Kind: KindBulk, Bulk: []byte{}}
-				}
-				continue
-			}
-			if column.Null && !bit(span.validity, i) {
-				continue
-			}
-			if column.Type.Kind == ColumnUnknown {
-				values[i] = Value{Kind: KindBulk, Bulk: extractBits(span.values, i*span.width, span.width)}
-			} else {
-				values[i] = fixedValue(column.Type, span.values, i*span.width)
+			chunk.Present[i] = bit(presence, i)
+			if chunk.Present[i] {
+				chunk.valueIndexes[i] = uint32(len(presentBlocks) + 1)
+				presentBlocks = append(presentBlocks, i)
 			}
 		}
-		chunk.Values[index] = values
+		for index, column := range selected {
+			values := make([]Value, presentCount)
+			span, fixed := byID[column.ID]
+			for ordinal, i := range presentBlocks {
+				values[ordinal] = Value{Kind: KindNull}
+				if !fixed {
+					if !column.Null {
+						values[ordinal] = Value{Kind: KindBulk, Bulk: []byte{}}
+					}
+					continue
+				}
+				if column.Null && !bit(span.validity, i) {
+					continue
+				}
+				if column.Type.Kind == ColumnUnknown {
+					values[ordinal] = Value{Kind: KindBulk, Bulk: extractBits(span.values, i*span.width, span.width)}
+				} else {
+					values[ordinal] = fixedValue(column.Type, span.values, i*span.width)
+				}
+			}
+			chunk.Values[index] = values
+		}
 	}
 	var lastID, lastBlock uint32
 	first := true
@@ -180,7 +197,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 			return bad("truncated variable value")
 		}
 		index, found := variables[id]
-		if !found || uint64(block) >= uint64(count) || !chunk.Present[int(block)] || (!first && (id < lastID || (id == lastID && block <= lastBlock))) {
+		if !found || uint64(block) >= uint64(count) || !bit(presence, int(block)) || (!first && (id < lastID || (id == lastID && block <= lastBlock))) {
 			return bad("unordered, unknown or absent variable entry")
 		}
 		column := selected[index]
@@ -189,7 +206,9 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		if (length == 0 && !column.Null) || (column.Type.Kind != ColumnUnknown && length > uint64(column.Type.Size)) || (column.Type.Kind == ColumnText && !utf8.Valid(value)) {
 			return bad("invalid variable value")
 		}
-		chunk.Values[index][int(block)] = Value{Kind: KindBulk, Bulk: bytes.Clone(value)}
+		if materialize {
+			chunk.Values[index][int(chunk.valueIndexes[int(block)])-1] = Value{Kind: KindBulk, Bulk: bytes.Clone(value)}
+		}
 		lastID, lastBlock, first = id, block, false
 	}
 	metaSchema := make(map[uint32]int, len(schema.ChunkColumns))
@@ -223,7 +242,10 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		if err != nil {
 			return nil, err
 		}
-		chunk.MetadataValues[index] = value
+		if materialize {
+			value.Bulk = bytes.Clone(value.Bulk)
+			chunk.MetadataValues[index] = value
+		}
 		if !column.Type.FixedWidth() && !entry.null && (column.Null || len(entry.value) != 0) {
 			variableBytes += 12 + uint64(len(entry.value))
 		}
@@ -252,7 +274,7 @@ func decodeSectionedMetadata(column Column, raw []byte, null bool) (Value, error
 		return Value{Kind: KindNull}, nil
 	}
 	if column.Type.Kind == ColumnUnknown {
-		return Value{Kind: KindBulk, Bulk: bytes.Clone(raw)}, nil
+		return Value{Kind: KindBulk, Bulk: raw}, nil
 	}
 	if column.Type.FixedWidth() {
 		if !validArrayPadding(raw, uint64(column.Type.Bits())) {
@@ -263,5 +285,5 @@ func decodeSectionedMetadata(column Column, raw []byte, null bool) (Value, error
 	if len(raw) > column.Type.Size || (column.Type.Kind == ColumnText && !utf8.Valid(raw)) {
 		return bad()
 	}
-	return Value{Kind: KindBulk, Bulk: bytes.Clone(raw)}, nil
+	return Value{Kind: KindBulk, Bulk: raw}, nil
 }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -49,11 +51,14 @@ func TestSectionedChunkLiteralAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chunk.Version != 9 || chunk.SchemaVersion != 7 || chunk.CommitTimeMS != 11 || chunk.Depth != 1 || chunk.Present[0] || !chunk.Present[1] || chunk.Values[0][1].Text != "7" || chunk.Values[1][1].Kind != KindBulk || len(chunk.Values[1][1].Bulk) != 0 {
+	if chunk.Version != 9 || chunk.SchemaVersion != 7 || chunk.CommitTimeMS != 11 || chunk.Depth != 1 || chunk.Present[0] || !chunk.Present[1] || chunk.ValueAt(0, 1).Text != "7" || chunk.ValueAt(1, 1).Kind != KindBulk || len(chunk.ValueAt(1, 1).Bulk) != 0 {
 		t.Fatal(chunk)
 	}
 	if !chunk.MetadataValues[0].Bool || chunk.MetadataValues[1].Kind != KindNull {
 		t.Fatal(chunk.MetadataValues)
+	}
+	if len(chunk.Values[0]) != 1 || len(chunk.Values[1]) != 1 || chunk.ValueAt(0, 0).Kind != KindNull {
+		t.Fatal("absent blocks allocated dense value cells")
 	}
 	if err := ValidateSectionedChunkMutation(schema, nil, data); err != nil {
 		t.Fatal(err)
@@ -79,7 +84,7 @@ func TestSectionedUnknownReadsRefuseMutations(t *testing.T) {
 	schema.Columns[0].Type = ColumnType{Kind: ColumnUnknown, Name: "future(8)"}
 	schema.ChunkColumns[0].Type = ColumnType{Kind: ColumnUnknown, Name: "future(1)"}
 	chunk, err := DecodeSectionedChunkForm(schema, nil, data)
-	if err != nil || !bytes.Equal(chunk.Values[0][1].Bulk, []byte{7}) || !bytes.Equal(chunk.MetadataValues[0].Bulk, []byte{1}) {
+	if err != nil || !bytes.Equal(chunk.ValueAt(0, 1).Bulk, []byte{7}) || !bytes.Equal(chunk.MetadataValues[0].Bulk, []byte{1}) {
 		t.Fatal(chunk, err)
 	}
 	if err := ValidateSectionedChunkMutation(schema, nil, data); err == nil {
@@ -101,6 +106,66 @@ func TestSectionedReadIgnoresLoweredQuota(t *testing.T) {
 	schema.Options = []MapEntry{{Key: Value{Kind: KindBulk, Bulk: []byte("var_max_chunk_bytes")}, Value: Value{Kind: KindInteger, Text: "1"}}}
 	if _, err := DecodeSectionedChunkForm(schema, nil, data); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSectionedSparseValuesStayBounded(t *testing.T) {
+	schema, header := sectionedFixture(t)
+	schema.ChunkWidth, schema.ChunkHeight, schema.ChunkDepth = 1024, 1024, 1
+	schema.ChunkColumns = nil
+	schema.Columns = make([]Column, 1024)
+	for i := range schema.Columns {
+		schema.Columns[i] = Column{ID: uint32(i + 1), Name: fmt.Sprintf("v%d", i), Type: ColumnType{Kind: ColumnText, Size: 8}, Null: true}
+	}
+	presence := make([]byte, 1048576/8)
+	for _, present := range []bool{false, true} {
+		var variable []byte
+		if present {
+			presence[0] = 1
+			presence[len(presence)-1] = 128
+			variable = binary.LittleEndian.AppendUint32(variable, 1024)
+			variable = binary.LittleEndian.AppendUint32(variable, 0)
+			variable = binary.LittleEndian.AppendUint32(variable, 1)
+			variable = append(variable, 'a')
+			variable = binary.LittleEndian.AppendUint32(variable, 1024)
+			variable = binary.LittleEndian.AppendUint32(variable, 1048575)
+			variable = binary.LittleEndian.AppendUint32(variable, 1)
+			variable = append(variable, 'z')
+		}
+		data := sectionedTestForm(header, []uint16{1, 4, 6}, [][]byte{presence, variable, {0, 0, 0, 0}})
+		chunk, err := DecodeSectionedChunkForm(schema, nil, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if present {
+			want = 2
+		}
+		for i := range schema.Columns {
+			if len(chunk.Values[i]) != want {
+				t.Fatal("unbounded sparse column", i)
+			}
+			if present && i == 1023 {
+				if value := chunk.ValueAt(i, 0); value.Kind != KindBulk || string(value.Bulk) != "a" {
+					t.Fatal("lost first-block value", value)
+				}
+				if value := chunk.ValueAt(i, 1048575); value.Kind != KindBulk || string(value.Bulk) != "z" {
+					t.Fatal("lost last-block value", value)
+				}
+			} else if chunk.ValueAt(i, 0).Kind != KindNull || chunk.ValueAt(i, 1048575).Kind != KindNull {
+				t.Fatal("unexpected sparse value", i)
+			}
+		}
+	}
+	// A million dense cells are large enough to exercise admission while a
+	// missing guard remains bounded during the regression mutation check.
+	schema.ChunkHeight = 1
+	data := sectionedTestForm(header, []uint16{1, 6}, [][]byte{bytes.Repeat([]byte{255}, 128), {0, 0, 0, 0}})
+	if _, err := DecodeSectionedChunkForm(schema, nil, data); err == nil || !strings.Contains(err.Error(), "present column values") {
+		t.Fatal(err)
+	}
+	if err := ValidateSectionedChunkMutation(schema, nil, data); err != nil {
+		t.Fatal("raw validation expanded decoded cells", err)
 	}
 }
 

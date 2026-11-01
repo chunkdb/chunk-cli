@@ -333,7 +333,7 @@ func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, block
 		x, y := blockXY(chunk, cx, cy, i)
 		fmt.Fprintf(out, "%sblock %d %d\n", indent, x, y)
 		for c, column := range chunk.Columns {
-			fmt.Fprintf(out, "%s  %s = %s\n", indent, column.Name, formatValue(chunk.Values[c][i], &column.Type))
+			fmt.Fprintf(out, "%s  %s = %s\n", indent, column.Name, formatValue(chunk.ValueAt(c, i), &column.Type))
 		}
 	}
 }
@@ -481,7 +481,7 @@ func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool) orderedMap {
 		x, y := blockXY(chunk, cx, cy, i)
 		values := orderedMap{}
 		for c, column := range chunk.Columns {
-			values = append(values, jsonField{column.Name, jsonValue(chunk.Values[c][i], &column.Type)})
+			values = append(values, jsonField{column.Name, jsonValue(chunk.ValueAt(c, i), &column.Type)})
 		}
 		list = append(list, orderedMap{{"x", x}, {"y", y}, {"values", values}})
 	}

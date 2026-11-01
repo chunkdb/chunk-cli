@@ -28,9 +28,20 @@ type Chunk struct {
 	// Columns are the columns the form holds: the COLUMNS of the read in
 	// their order, else every column in schema order.
 	Columns []Column
-	// Values holds per column (as Columns) one value per block; an absent
-	// block's value is null.
-	Values [][]Value
+	// Values stores each column's retained cells; use ValueAt to address blocks.
+	Values       [][]Value
+	valueIndexes []uint32
+}
+
+// ValueAt returns one block-column value, including NULL for absent blocks.
+func (c *Chunk) ValueAt(column, block int) Value {
+	if !c.Present[block] {
+		return Value{Kind: KindNull}
+	}
+	if c.valueIndexes != nil {
+		return c.Values[column][int(c.valueIndexes[block])-1]
+	}
+	return c.Values[column][block]
 }
 
 // PresentCount is the number of present blocks.
