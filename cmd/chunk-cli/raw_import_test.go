@@ -200,7 +200,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "chunk.bin")
 			data := []byte{0, 1, 13, 10, 255}
 			if mode == "oversize" {
-				data = bytes.Repeat([]byte{7}, 100)
+				data = bytes.Repeat([]byte{7}, 64*1024*1024+200)
 			}
 			if err := os.WriteFile(file, data, 0600); err != nil {
 				t.Fatal(err)
@@ -310,17 +310,14 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 	}
 }
 func knownAdmissionForm() []byte {
-	data := make([]byte, 17)
-	binary.LittleEndian.PutUint64(data, 9)
-	binary.LittleEndian.PutUint64(data[8:], 1)
-	data[16] = 1
+	var data []byte
 	for i, value := range [][]byte{[]byte("a\x00b"), {0, 255, 13, 10}} {
 		header := make([]byte, 12)
 		binary.LittleEndian.PutUint32(header, uint32(i+1))
 		binary.LittleEndian.PutUint32(header[8:], uint32(len(value)))
 		data = append(append(data, header...), value...)
 	}
-	return data
+	return checkedWireFixture(1, 9, []uint16{1, 4, 6}, [][]byte{{1}, data, {0, 0, 0, 0}})
 }
 
 func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
@@ -426,4 +423,22 @@ func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
 			waitSlotServer(t, done)
 		})
 	}
+}
+
+// checkedWireFixture writes independent directory records for wire fixtures.
+func checkedWireFixture(schema, version uint64, kinds []uint16, bodies [][]byte) []byte {
+	data := make([]byte, 36+12*len(kinds))
+	copy(data, "CKCF")
+	data[4] = 1
+	binary.LittleEndian.PutUint64(data[8:], version)
+	binary.LittleEndian.PutUint64(data[16:], schema)
+	binary.LittleEndian.PutUint16(data[32:], uint16(len(kinds)))
+	for i, kind := range kinds {
+		at := 36 + 12*i
+		binary.LittleEndian.PutUint16(data[at:], kind)
+		binary.LittleEndian.PutUint32(data[at+4:], uint32(len(data)))
+		binary.LittleEndian.PutUint32(data[at+8:], uint32(len(bodies[i])))
+		data = append(data, bodies[i]...)
+	}
+	return data
 }

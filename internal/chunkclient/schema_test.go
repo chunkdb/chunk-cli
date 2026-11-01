@@ -121,8 +121,9 @@ const formWColumns = "\x02\x00\x00\x00\x00\x00\x00\x00" +
 	"\x01\x00\x00\x00\x00\x00\x00\x00\x02\xf0\x00\x04\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00hi"
 
 func values(chunk *Chunk, column int) string {
-	out := make([]string, len(chunk.Values[column]))
-	for i, v := range chunk.Values[column] {
+	out := make([]string, len(chunk.Present))
+	for i := range chunk.Present {
+		v := chunk.ValueAt(column, i)
 		switch v.Kind {
 		case KindNull:
 			out[i] = "NULL"
@@ -143,7 +144,10 @@ func values(chunk *Chunk, column int) string {
 
 func TestDecodeChunkFormFromServer(t *testing.T) {
 	schema := mustSchema(t, describeW)
-	chunk, err := DecodeChunkForm(schema, nil, []byte(formW))
+	if _, err := DecodeChunkForm(schema, nil, []byte(formW)); err == nil {
+		t.Fatal("accepted an earlier binary form")
+	}
+	chunk, err := DecodeChunkForm(schema, nil, checkedPackedForm(t, schema, nil, 2, []byte(formW)[16:]))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -156,7 +160,7 @@ func TestDecodeChunkFormFromServer(t *testing.T) {
 		}
 	}
 
-	subset, err := DecodeChunkForm(schema, []string{"name", "light"}, []byte(formWColumns))
+	subset, err := DecodeChunkForm(schema, []string{"name", "light"}, checkedPackedForm(t, schema, []string{"name", "light"}, 2, []byte(formWColumns)[16:]))
 	if err != nil {
 		t.Fatalf("decode COLUMNS: %v", err)
 	}
@@ -230,7 +234,7 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 	b.entry(5, 3, "z")
 	b.entry(6, 2, "\r\n\x00")
 
-	chunk, err := DecodeChunkForm(schema, nil, b.Bytes())
+	chunk, err := DecodeChunkForm(schema, nil, b.checked(t, schema, nil))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -252,20 +256,20 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 
 	// Too short, an entry past the end, an entry of an absent block, an
 	// unknown column id.
-	full := b.Bytes()
+	full := b.checked(t, schema, nil)
 	for name, form := range map[string][]byte{
 		"short":         full[:20],
 		"cut entry":     full[:len(full)-1],
 		"partial entry": append(append([]byte{}, full...), 1, 2, 3),
 		"absent block": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full[:55]) // versions, presence and payload
+			e.Write(b.Bytes()[:55]) // versions, presence and payload
 			e.entry(5, 1, "x")
 			return e.Bytes()
 		}(),
 		"unknown id": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full)
+			e.Write(b.Bytes())
 			e.entry(1, 0, "x")
 			return e.Bytes()
 		}(),
@@ -291,7 +295,7 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 	b.entry(3, 0, "x")
 	b.entry(4, 0, "zz")
 	b.entry(4, 1, "y")
-	chunk, err := DecodeChunkForm(schema, nil, b.Bytes())
+	chunk, err := DecodeChunkForm(schema, nil, b.checked(t, schema, nil))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -306,13 +310,13 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 	d.header(9, 4)
 	d.WriteByte(0b0011)
 	d.entry(4, 1, "y")
-	chunk, err = DecodeChunkForm(schema, []string{"d"}, d.Bytes())
+	chunk, err = DecodeChunkForm(schema, []string{"d"}, d.checked(t, schema, []string{"d"}))
 	if err != nil || values(chunk, 0) != "'' 'y' NULL NULL" {
 		t.Fatalf("got %+v, %v", chunk, err)
 	}
 	// A form of another schema version is refused.
 	older := testSchema(t, 3, schema.Columns...)
-	if _, err := DecodeChunkForm(older, nil, b.Bytes()); err == nil || !strings.Contains(err.Error(), "schema version 4") {
+	if _, err := DecodeChunkForm(older, nil, b.checked(t, schema, nil)); err == nil || !strings.Contains(err.Error(), "schema version mismatch") {
 		t.Fatalf("schema version mismatch: got %v", err)
 	}
 	if _, err := DecodeChunkForm(schema, []string{"d"}, []byte{1, 2, 3}); err == nil {
@@ -337,7 +341,7 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 			e.Write([]byte{0x21, 0x00})
 		}
 		e.entry(form.id, 0, "x")
-		if _, err := DecodeChunkForm(form.schema, form.columns, e.Bytes()); err == nil {
+		if _, err := DecodeChunkForm(form.schema, form.columns, e.checked(t, form.schema, form.columns)); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}

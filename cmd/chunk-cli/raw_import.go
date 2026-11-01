@@ -125,9 +125,6 @@ func readChunkImport(client *chunkclient.Client, table, file string, columns ...
 		return nil, err
 	}
 	limit, err := chunkclient.ChunkFormLimit(schema)
-	if schema.Dims == 3 {
-		limit, err = chunkclient.SectionedChunkFormLimit(schema)
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -149,10 +146,8 @@ func readChunkImport(client *chunkclient.Client, table, file string, columns ...
 	if uint64(len(data)) > limit {
 		return nil, fmt.Errorf("SET CHUNK: form exceeds schema size bound %d bytes", limit)
 	}
-	if schema.Dims == 3 {
-		if err := chunkclient.ValidateSectionedChunkMutation(schema, columns, data); err != nil {
-			return nil, err
-		}
+	if err := chunkclient.ValidateSectionedChunkMutation(schema, columns, data); err != nil {
+		return nil, err
 	}
 	return data, nil
 }

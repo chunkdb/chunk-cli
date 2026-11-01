@@ -18,7 +18,7 @@ type sectionedDecodeOptions struct {
 	output           bool
 }
 
-// DecodeSectionedChunkForm reads the checked form independently of legacy dispatch.
+// DecodeSectionedChunkForm reads the checked form for every active dimension.
 func DecodeSectionedChunkForm(schema *Schema, columns []string, data []byte) (*Chunk, error) {
 	return decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{values: true, output: true})
 }
@@ -42,10 +42,17 @@ func ValidateSectionedChunkMutation(schema *Schema, columns []string, data []byt
 			}
 		}
 	}
-	if _, err := parseSectionedForm(data, math.MaxUint32, true); err != nil {
+	form, err := parseSectionedForm(data, math.MaxUint32, true)
+	if err != nil {
 		return err
 	}
-	_, err := decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{preserveMetadata: len(columns) != 0})
+	if form.header.schema != schema.Version {
+		return &ServerError{Code: "SCHEMA_MISMATCH", Keys: map[string]string{
+			"actual": fmt.Sprint(form.header.schema), "current": fmt.Sprint(schema.Version),
+			"reason": "schema_mismatch", "table": schema.Table,
+		}}
+	}
+	_, err = decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{preserveMetadata: len(columns) != 0})
 	return err
 }
 

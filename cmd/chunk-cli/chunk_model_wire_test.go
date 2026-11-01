@@ -154,3 +154,46 @@ func TestChunkModelInvalidRawFormNeverSendsMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestChunkModelRawSchemaMismatchNeverSendsMutation(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "chunk.bin")
+	if err := os.WriteFile(file, outputModelForm(t), 0600); err != nil {
+		t.Fatal(err)
+	}
+	uri, done := rawAdmissionServer(t, func(conn net.Conn, r *bufio.Reader) error {
+		if err := expectSlotLine(r, "DESCRIBE world"); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(conn, strings.Replace(modelDescribeWire(), watchWireBulk("version")+":7\r\n", watchWireBulk("version")+":8\r\n", 1)); err != nil {
+			return err
+		}
+		if err := expectSlotLine(r, "PING"); err != nil {
+			return err
+		}
+		_, err := io.WriteString(conn, "+PONG\r\n")
+		return err
+	})
+	client, err := connect(globalOptions{URI: uri, Timeout: 2 * time.Second}, console{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	var out bytes.Buffer
+	err = execute(client, nil, `SET CHUNK 0 0 0 IN world $1 IF ABSENT`, statementOptions{in: file}, &out, console{})
+	if err == nil || out.Len() != 0 || client.Broken() != nil {
+		t.Fatal(err, out.String())
+	}
+	var failure bytes.Buffer
+	if code := printError(&failure, err, true); code != 2 ||
+		!strings.Contains(failure.String(), `"code":"SCHEMA_MISMATCH"`) ||
+		!strings.Contains(failure.String(), `"actual":7`) || !strings.Contains(failure.String(), `"current":8`) ||
+		!strings.Contains(failure.String(), `"table":"world"`) {
+		t.Fatal("lost structured local schema mismatch", code, failure.String())
+	}
+	if _, err := client.Do("PING"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

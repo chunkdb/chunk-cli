@@ -351,13 +351,10 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 }
 
 func decodeOutputChunk(schema *chunkclient.Schema, names []string, data []byte, blocks bool) (*chunkclient.Chunk, error) {
-	if schema.Dims == 3 {
-		if blocks {
-			return chunkclient.DecodeSectionedChunkForm(schema, names, data)
-		}
-		return chunkclient.DecodeSectionedChunkSummary(schema, names, data)
+	if blocks {
+		return chunkclient.DecodeChunkForm(schema, names, data)
 	}
-	return chunkclient.DecodeChunkForm(schema, names, data)
+	return chunkclient.DecodeSectionedChunkSummary(schema, names, data)
 }
 
 func blockAxes(chunk *chunkclient.Chunk, cx, cy int64, i int, z []int64) ([]any, []string) {
