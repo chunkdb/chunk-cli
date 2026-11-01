@@ -52,8 +52,9 @@ type ServerInfo struct {
 // Request is one statement and its parameter frames ($1 … $n). A nil
 // parameter is sent as NULL.
 type Request struct {
-	Statement  string
-	Parameters [][]byte
+	Statement   string
+	Parameters  [][]byte
+	ReplyLimits *ReplyLimits
 }
 
 // Reply is the outcome of one pipelined request: a value, or the server's
@@ -61,6 +62,8 @@ type Request struct {
 type Reply struct {
 	Value Value
 	Err   *ServerError
+	// Deadline is the original exchange deadline, retained for typed decoding.
+	Deadline time.Time
 }
 
 type Client struct {
@@ -136,6 +139,17 @@ func (c *Client) Close() error {
 // Broken returns the error that left the connection unusable, or nil.
 func (c *Client) Broken() error {
 	return c.broken
+}
+
+// RejectReply closes a framed response whose typed contents violate the protocol.
+func (c *Client) RejectReply(err error) {
+	if err == nil {
+		return
+	}
+	if c.broken == nil {
+		c.broken = err
+	}
+	_ = c.Close()
 }
 
 // Info returns the HELLO reply, or nil before Hello.
@@ -306,6 +320,9 @@ func (c *Client) Pipeline(requests []Request) ([]Reply, error) {
 // one line, and the parameter frames must be exactly the `$` parameters the
 // statement names, or the server would read the frames as statements.
 func (c *Client) checkRequest(request Request) error {
+	if request.ReplyLimits != nil && (request.ReplyLimits.MaxBytes == 0 || request.ReplyLimits.MaxAreaChunks == 0) {
+		return errors.New("GET AREA: negotiated reply limits must be positive")
+	}
 	statement := request.Statement
 	if strings.ContainsAny(statement, "\r\n") {
 		return errors.New("a statement must be a single line (it contains CR or LF)")
@@ -374,7 +391,8 @@ func (c *Client) roundTrip(requests []Request) ([]Reply, error) {
 }
 
 func (c *Client) exchange(requests []Request) ([]Reply, error) {
-	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+	deadline := time.Now().Add(c.timeout)
+	if err := c.conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("set deadline: %w", err)
 	}
 	for _, request := range requests {
@@ -387,7 +405,7 @@ func (c *Client) exchange(requests []Request) ([]Reply, error) {
 	}
 	replies := make([]Reply, 0, len(requests))
 	for len(replies) < len(requests) {
-		value, err := readReply(c.reader)
+		value, err := readReplyLimited(c.reader, requests[len(replies)].ReplyLimits)
 		if err == nil && value.Kind == KindPush {
 			if !UnknownPush(value) {
 				return nil, errors.New("unexpected known push outside WATCH")
@@ -399,9 +417,12 @@ func (c *Client) exchange(requests []Request) ([]Reply, error) {
 		case errors.As(err, &serverErr):
 			replies = append(replies, Reply{Err: serverErr})
 		case err != nil:
+			if requests[len(replies)].ReplyLimits != nil {
+				_ = c.conn.Close()
+			}
 			return nil, err
 		default:
-			replies = append(replies, Reply{Value: value})
+			replies = append(replies, Reply{Value: value, Deadline: deadline})
 		}
 	}
 	return replies, nil

@@ -29,7 +29,7 @@ func admissionDescribe(epoch string, version int, cols string, count int, dims i
 	}
 	return watchWireMap(pairs...)
 }
-func rawAdmissionServer(t *testing.T, flow func(net.Conn, *bufio.Reader) error) (string, <-chan error) {
+func rawAdmissionServer(t *testing.T, flow func(net.Conn, *bufio.Reader) error, hello ...string) (string, <-chan error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	t.Cleanup(cancel)
@@ -51,7 +51,11 @@ func rawAdmissionServer(t *testing.T, flow func(net.Conn, *bufio.Reader) error) 
 		conn.SetDeadline(deadline)
 		r := bufio.NewReader(conn)
 		if err = expectSlotLine(r, "HELLO 3"); err == nil {
-			_, err = io.WriteString(conn, admissionHello())
+			reply := admissionHello()
+			if len(hello) != 0 {
+				reply = hello[0]
+			}
+			_, err = io.WriteString(conn, reply)
 		}
 		if err == nil {
 			err = flow(conn, r)
