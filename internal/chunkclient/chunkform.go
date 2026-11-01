@@ -29,8 +29,9 @@ type Chunk struct {
 	// their order, else every column in schema order.
 	Columns []Column
 	// Values stores each column's retained cells; use ValueAt to address blocks.
-	Values       [][]Value
-	valueIndexes []uint32
+	Values          [][]Value
+	valueIndexes    []uint32
+	populatedBlocks int
 }
 
 // ValueAt returns one block-column value, including NULL for absent blocks.
@@ -46,6 +47,9 @@ func (c *Chunk) ValueAt(column, block int) Value {
 
 // PresentCount is the number of present blocks.
 func (c *Chunk) PresentCount() int {
+	if c.Present == nil {
+		return c.populatedBlocks
+	}
 	count := 0
 	for _, present := range c.Present {
 		if present {

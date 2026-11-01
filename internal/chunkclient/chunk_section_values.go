@@ -12,9 +12,21 @@ import (
 const maxSectionedVariableBytes = 64 * 1024 * 1024
 const maxDecodedChunkCells = 1 << 19
 
+type sectionedDecodeOptions struct {
+	preserveMetadata bool
+	values           bool
+	output           bool
+}
+
 // DecodeSectionedChunkForm reads the checked form independently of legacy dispatch.
 func DecodeSectionedChunkForm(schema *Schema, columns []string, data []byte) (*Chunk, error) {
-	return decodeSectionedChunkForm(schema, columns, data, false, true)
+	return decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{values: true, output: true})
+}
+
+// DecodeSectionedChunkSummary validates the complete form without expanding block cells.
+// It retains producing metadata and chunk columns, but no per-block value arrays.
+func DecodeSectionedChunkSummary(schema *Schema, columns []string, data []byte) (*Chunk, error) {
+	return decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{output: true})
 }
 
 // ValidateSectionedChunkMutation refuses unknown data before binary import.
@@ -33,11 +45,11 @@ func ValidateSectionedChunkMutation(schema *Schema, columns []string, data []byt
 	if _, err := parseSectionedForm(data, math.MaxUint32, true); err != nil {
 		return err
 	}
-	_, err := decodeSectionedChunkForm(schema, columns, data, len(columns) != 0, false)
+	_, err := decodeSectionedChunkForm(schema, columns, data, sectionedDecodeOptions{preserveMetadata: len(columns) != 0})
 	return err
 }
 
-func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, preserveMetadata, materialize bool) (*Chunk, error) {
+func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, opts sectionedDecodeOptions) (*Chunk, error) {
 	bad := func(what string) (*Chunk, error) { return nil, fmt.Errorf("chunk form: %s", what) }
 	if schema == nil || schema.BlockCount() == 0 || len(schema.Columns) > 1024 || len(schema.ChunkColumns) > 1024 {
 		return bad("invalid geometry or column count")
@@ -125,7 +137,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 	if err != nil {
 		return nil, err
 	}
-	omittedMetadata := preserveMetadata && form.section(sectionChunkColumns) == nil
+	omittedMetadata := opts.preserveMetadata && form.section(sectionChunkColumns) == nil
 	if !omittedMetadata && len(metadata) != len(schema.ChunkColumns) {
 		return bad("chunk metadata differs from schema")
 	}
@@ -138,7 +150,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 	for _, value := range presence {
 		presentCount += bits.OnesCount8(value)
 	}
-	if materialize && len(selected) != 0 && presentCount > maxDecodedChunkCells/len(selected) {
+	if opts.values && len(selected) != 0 && presentCount > maxDecodedChunkCells/len(selected) {
 		return bad("decoded chunk exceeds 524288 present column values; use --out for binary data")
 	}
 	depth := 1
@@ -147,9 +159,9 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 	}
 	chunk := &Chunk{Version: form.header.version, SchemaVersion: form.header.schema, CommitTimeMS: form.header.commitTime,
 		Projected: form.header.flags&chunkFormProjected != 0, Private: form.header.flags&chunkFormPrivate != 0,
-		Width: schema.ChunkWidth, Height: schema.ChunkHeight, Depth: depth, Columns: selected,
+		Width: schema.ChunkWidth, Height: schema.ChunkHeight, Depth: depth, Columns: selected, populatedBlocks: presentCount,
 	}
-	if materialize {
+	if opts.values {
 		chunk.Present, chunk.Values = make([]bool, count), make([][]Value, len(selected))
 		presentBlocks := make([]int, 0, presentCount)
 		if presentCount != 0 {
@@ -206,7 +218,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		if (length == 0 && !column.Null) || (column.Type.Kind != ColumnUnknown && length > uint64(column.Type.Size)) || (column.Type.Kind == ColumnText && !utf8.Valid(value)) {
 			return bad("invalid variable value")
 		}
-		if materialize {
+		if opts.values {
 			chunk.Values[index][int(chunk.valueIndexes[int(block)])-1] = Value{Kind: KindBulk, Bulk: bytes.Clone(value)}
 		}
 		lastID, lastBlock, first = id, block, false
@@ -227,7 +239,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		}
 		metaSchema[column.ID], metaNames[column.Name] = index, true
 	}
-	if !omittedMetadata {
+	if !omittedMetadata && opts.output {
 		chunk.MetadataColumns = schema.ChunkColumns
 		chunk.MetadataValues = make([]Value, len(metadata))
 	}
@@ -242,7 +254,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		if err != nil {
 			return nil, err
 		}
-		if materialize {
+		if opts.output {
 			value.Bulk = bytes.Clone(value.Bulk)
 			chunk.MetadataValues[index] = value
 		}
@@ -254,6 +266,9 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, pre
 		return bad("block and chunk values exceed the combined variable-byte limit")
 	}
 	for _, section := range form.sections {
+		if !opts.output {
+			break
+		}
 		if section.kind >= sectionPresence && section.kind <= sectionBlockSpans {
 			continue
 		}

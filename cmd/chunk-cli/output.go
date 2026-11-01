@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -173,8 +174,15 @@ func writeHuman(out *bytes.Buffer, v chunkclient.Value, indent string) {
 // printSchema writes DESCRIBE with the columns as CREATE TABLE writes them.
 func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "table = %s\nversion = %d\nchunk = %d x %d\nlarge = %d x %d\n",
-		schema.Table, schema.Version, schema.ChunkWidth, schema.ChunkHeight, schema.LargeWidth, schema.LargeHeight)
+	fmt.Fprintf(&out, "table = %s\nversion = %d\nchunk = %d x %d", schema.Table, schema.Version, schema.ChunkWidth, schema.ChunkHeight)
+	if schema.Dims == 3 {
+		fmt.Fprintf(&out, " x %d", schema.ChunkDepth)
+	}
+	fmt.Fprintf(&out, "\nlarge = %d x %d", schema.LargeWidth, schema.LargeHeight)
+	if schema.Dims == 3 {
+		fmt.Fprintf(&out, " x %d", schema.LargeDepth)
+	}
+	out.WriteByte('\n')
 	if schema.Epoch != "" {
 		fmt.Fprintf(&out, "epoch = %s\nrevision = ", schema.Epoch)
 		if schema.Revision == nil {
@@ -183,6 +191,8 @@ func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 			fmt.Fprintf(&out, "%d\n", *schema.Revision)
 		}
 		fmt.Fprintf(&out, "dims = %d\n", schema.Dims)
+	} else if schema.Dims == 3 {
+		out.WriteString("dims = 3\n")
 	}
 	out.WriteString("columns:\n")
 	for _, column := range schema.Columns {
@@ -201,7 +211,17 @@ func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 	if len(schema.ChunkColumns) > 0 {
 		out.WriteString("chunk_columns:\n")
 		for _, column := range schema.ChunkColumns {
-			fmt.Fprintf(&out, "  %s %s\n", column.Name, column.Type)
+			fmt.Fprintf(&out, "  %s %s", column.Name, column.Type)
+			if column.Null {
+				out.WriteString(" NULL")
+			}
+			if column.Required {
+				out.WriteString(" REQUIRED")
+			}
+			if column.Default.Kind != chunkclient.KindNull {
+				fmt.Fprintf(&out, " DEFAULT %s", formatValue(column.Default, &column.Type))
+			}
+			out.WriteByte('\n')
 		}
 	}
 	out.WriteString("options:\n")
@@ -262,12 +282,12 @@ func printBlock(w io.Writer, schema *chunkclient.Schema, names []string, reply c
 	return err
 }
 
-func printChunk(w io.Writer, chunk *chunkclient.Chunk, cx, cy int64, opts statementOptions) error {
+func printChunk(w io.Writer, chunk *chunkclient.Chunk, cx, cy int64, opts statementOptions, z ...int64) error {
 	if opts.json {
-		return writeJSON(w, chunkJSON(chunk, cx, cy, opts.blocks))
+		return writeJSON(w, chunkJSON(chunk, cx, cy, opts.blocks, z...))
 	}
 	var out bytes.Buffer
-	writeChunk(&out, chunk, cx, cy, opts.blocks, "")
+	writeChunk(&out, chunk, cx, cy, opts.blocks, "", z...)
 	_, err := w.Write(out.Bytes())
 	return err
 }
@@ -277,29 +297,40 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 		return fmt.Errorf("GET AREA: expected an array, got a %s", reply.Kind)
 	}
 	type entry struct {
-		cx, cy int64
-		chunk  *chunkclient.Chunk
+		coordinates []int64
+		chunk       *chunkclient.Chunk
+	}
+	dims := schema.Dims
+	if dims == 0 {
+		dims = 2
 	}
 	entries := make([]entry, 0, len(reply.Items))
 	for _, item := range reply.Items {
-		if item.Kind != chunkclient.KindArray || len(item.Items) < 3 || item.Items[2].Kind != chunkclient.KindBulk {
-			return fmt.Errorf("GET AREA: expected [cx, cy, chunk form] entries")
+		if item.Kind != chunkclient.KindArray || len(item.Items) < dims+1 || item.Items[dims].Kind != chunkclient.KindBulk {
+			return fmt.Errorf("GET AREA: invalid %d-axis chunk entry", dims)
 		}
-		cx, errX := item.Items[0].Int64()
-		cy, errY := item.Items[1].Int64()
-		if errX != nil || errY != nil {
-			return fmt.Errorf("GET AREA: invalid chunk coordinates")
+		coordinates := make([]int64, dims)
+		for axis := range coordinates {
+			var err error
+			coordinates[axis], err = item.Items[axis].Int64()
+			if err != nil {
+				return fmt.Errorf("GET AREA: invalid chunk coordinate")
+			}
 		}
-		chunk, err := chunkclient.DecodeChunkForm(schema, names, item.Items[2].Bulk)
+		chunk, err := decodeOutputChunk(schema, names, item.Items[dims].Bulk, opts.blocks)
 		if err != nil {
-			return fmt.Errorf("GET AREA: chunk %d %d: %w", cx, cy, err)
+			return fmt.Errorf("GET AREA: chunk %v: %w", coordinates, err)
 		}
-		entries = append(entries, entry{cx, cy, chunk})
+		entries = append(entries, entry{coordinates, chunk})
 	}
 	if opts.json {
 		list := make([]any, len(entries))
 		for i, e := range entries {
-			list[i] = append(orderedMap{{"cx", e.cx}, {"cy", e.cy}}, chunkJSON(e.chunk, e.cx, e.cy, opts.blocks)...)
+			fields := orderedMap{}
+			for axis, value := range e.coordinates {
+				fields = append(fields, jsonField{[]string{"cx", "cy", "cz"}[axis], value})
+			}
+			list[i] = append(fields, chunkJSON(e.chunk, e.coordinates[0], e.coordinates[1], opts.blocks, e.coordinates[2:]...)...)
 		}
 		return writeJSON(w, list)
 	}
@@ -308,21 +339,95 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 		out.WriteString("(empty)\n")
 	}
 	for _, e := range entries {
-		fmt.Fprintf(&out, "chunk %d %d\n", e.cx, e.cy)
-		writeChunk(&out, e.chunk, e.cx, e.cy, opts.blocks, "  ")
+		out.WriteString("chunk")
+		for _, coordinate := range e.coordinates {
+			fmt.Fprintf(&out, " %d", coordinate)
+		}
+		out.WriteByte('\n')
+		writeChunk(&out, e.chunk, e.coordinates[0], e.coordinates[1], opts.blocks, "  ", e.coordinates[2:]...)
 	}
 	_, err := w.Write(out.Bytes())
 	return err
 }
 
-// blockXY is the world coordinates of block index i of chunk cx, cy.
-func blockXY(chunk *chunkclient.Chunk, cx, cy int64, i int) (int64, int64) {
-	return cx*int64(chunk.Width) + int64(i%chunk.Width), cy*int64(chunk.Height) + int64(i/chunk.Width)
+func decodeOutputChunk(schema *chunkclient.Schema, names []string, data []byte, blocks bool) (*chunkclient.Chunk, error) {
+	if schema.Dims == 3 {
+		if blocks {
+			return chunkclient.DecodeSectionedChunkForm(schema, names, data)
+		}
+		return chunkclient.DecodeSectionedChunkSummary(schema, names, data)
+	}
+	return chunkclient.DecodeChunkForm(schema, names, data)
 }
 
-func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, blocks bool, indent string) {
-	fmt.Fprintf(out, "%sversion = %d\n%sschema_version = %d\n%spresent = %d of %d blocks\n",
-		indent, chunk.Version, indent, chunk.SchemaVersion, indent, chunk.PresentCount(), len(chunk.Present))
+func blockAxes(chunk *chunkclient.Chunk, cx, cy int64, i int, z []int64) ([]any, []string) {
+	coordinates := []int64{cx, cy}
+	widths := []int{chunk.Width, chunk.Height}
+	local := []int{i % chunk.Width, i / chunk.Width % chunk.Height}
+	if len(z) != 0 {
+		coordinates = append(coordinates, z[0])
+		widths = append(widths, chunk.Depth)
+		local = append(local, i/(chunk.Width*chunk.Height))
+	}
+	values, text := make([]any, len(coordinates)), make([]string, len(coordinates))
+	for axis, coordinate := range coordinates {
+		absolute := new(big.Int).Mul(big.NewInt(coordinate), big.NewInt(int64(widths[axis])))
+		absolute.Add(absolute, big.NewInt(int64(local[axis])))
+		if absolute.IsInt64() {
+			values[axis], text[axis] = absolute.Int64(), absolute.String()
+		} else {
+			values[axis], text[axis] = []any{coordinate, local[axis]}, fmt.Sprintf("[%d,%d]", coordinate, local[axis])
+		}
+	}
+	return values, text
+}
+
+func chunkBlockCount(chunk *chunkclient.Chunk) int {
+	depth := chunk.Depth
+	if depth == 0 {
+		depth = 1
+	}
+	return chunk.Width * chunk.Height * depth
+}
+
+func unknownChunkSections(chunk *chunkclient.Chunk) []int {
+	kinds := make([]int, 0, len(chunk.UnknownSections))
+	for kind := range chunk.UnknownSections {
+		kinds = append(kinds, int(kind))
+	}
+	sort.Ints(kinds)
+	return kinds
+}
+
+func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, blocks bool, indent string, z ...int64) {
+	version := strconv.FormatUint(chunk.Version, 10)
+	if chunk.Private {
+		version = "NULL"
+	}
+	fmt.Fprintf(out, "%sversion = %s\n%sschema_version = %d\n", indent, version, indent, chunk.SchemaVersion)
+	if chunk.Depth != 0 {
+		timestamp := strconv.FormatUint(chunk.CommitTimeMS, 10)
+		if chunk.Private {
+			timestamp = "NULL"
+		}
+		fmt.Fprintf(out, "%scommit_time_ms = %s\n", indent, timestamp)
+	}
+	fmt.Fprintf(out, "%spresent = %d of %d blocks\n", indent, chunk.PresentCount(), chunkBlockCount(chunk))
+	if chunk.Projected {
+		fmt.Fprintf(out, "%sprojected = true\n", indent)
+	}
+	if chunk.Private {
+		fmt.Fprintf(out, "%sprivate = true\n", indent)
+	}
+	if len(chunk.MetadataColumns) != 0 {
+		fmt.Fprintf(out, "%schunk_columns:\n", indent)
+		for i, column := range chunk.MetadataColumns {
+			fmt.Fprintf(out, "%s  %s = %s\n", indent, column.Name, formatValue(chunk.MetadataValues[i], &column.Type))
+		}
+	}
+	if len(chunk.UnknownSections) != 0 {
+		fmt.Fprintf(out, "%sunknown_sections = %v\n", indent, unknownChunkSections(chunk))
+	}
 	if !blocks {
 		return
 	}
@@ -330,8 +435,8 @@ func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, block
 		if !present {
 			continue
 		}
-		x, y := blockXY(chunk, cx, cy, i)
-		fmt.Fprintf(out, "%sblock %d %d\n", indent, x, y)
+		_, coordinates := blockAxes(chunk, cx, cy, i, z)
+		fmt.Fprintf(out, "%sblock %s\n", indent, strings.Join(coordinates, " "))
 		for c, column := range chunk.Columns {
 			fmt.Fprintf(out, "%s  %s = %s\n", indent, column.Name, formatValue(chunk.ValueAt(c, i), &column.Type))
 		}
@@ -463,12 +568,36 @@ func exactJSON(value any) any {
 	return value
 }
 
-func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool) orderedMap {
+func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool, z ...int64) orderedMap {
+	var version any = chunk.Version
+	if chunk.Private {
+		version = nil
+	}
 	fields := orderedMap{
-		{"version", chunk.Version},
+		{"version", version},
 		{"schema_version", chunk.SchemaVersion},
 		{"present", chunk.PresentCount()},
-		{"block_count", len(chunk.Present)},
+		{"block_count", chunkBlockCount(chunk)},
+	}
+	if chunk.Depth != 0 {
+		var timestamp any = chunk.CommitTimeMS
+		if chunk.Private {
+			timestamp = nil
+		}
+		metadata := orderedMap{}
+		for i, column := range chunk.MetadataColumns {
+			metadata = append(metadata, jsonField{column.Name, jsonValue(chunk.MetadataValues[i], &column.Type)})
+		}
+		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"chunk_columns", metadata})
+	}
+	if chunk.Projected {
+		fields = append(fields, jsonField{"projected", true})
+	}
+	if chunk.Private {
+		fields = append(fields, jsonField{"private", true})
+	}
+	if len(chunk.UnknownSections) != 0 {
+		fields = append(fields, jsonField{"unknown_sections", unknownChunkSections(chunk)})
 	}
 	if !blocks {
 		return fields
@@ -478,12 +607,16 @@ func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool) orderedMap {
 		if !present {
 			continue
 		}
-		x, y := blockXY(chunk, cx, cy, i)
+		coordinates, _ := blockAxes(chunk, cx, cy, i, z)
 		values := orderedMap{}
 		for c, column := range chunk.Columns {
 			values = append(values, jsonField{column.Name, jsonValue(chunk.ValueAt(c, i), &column.Type)})
 		}
-		list = append(list, orderedMap{{"x", x}, {"y", y}, {"values", values}})
+		row := orderedMap{}
+		for axis, value := range coordinates {
+			row = append(row, jsonField{[]string{"x", "y", "z"}[axis], value})
+		}
+		list = append(list, append(row, jsonField{"values", values}))
 	}
 	return append(fields, jsonField{"blocks", list})
 }

@@ -82,6 +82,32 @@ func TestRawChunkTableRecognition(t *testing.T) {
 	}
 }
 
+func TestChunkModelRawImportShape(t *testing.T) {
+	for _, statement := range []string{
+		`SET CHUNK -1 2 0 IN world $1 IF ABSENT`,
+		`SET CHUNK -1 2 -3 IN "my table" COLUMNS "with", "a""b" $01 IF VERSION 9`,
+		`SET CHUNK 0 0 IN world COLUMNS a $1 IF ABSENT`,
+	} {
+		shape, ok := rawChunkShapeOf(statement)
+		if !ok || shape.table == "" {
+			t.Fatal("unbounded chunk mutation", statement)
+		}
+		if strings.Contains(statement, `"my table"`) && (shape.dims != 3 || strings.Join(shape.columns, ",") != "with,a\"b") {
+			t.Fatal(shape)
+		}
+	}
+	for _, statement := range []string{
+		`SET CHUNK 0 0 0 0 IN world $1`,
+		`SET CHUNK 0 0 0 IN world META owner=$1`,
+		`SET CHUNK 0 0 IN world COLUMNS $1`,
+		`SET CHUNK 0 0 IN world $1 IF ABSENT IF VERSION 1`,
+	} {
+		if shape, ok := rawChunkShapeOf(statement); ok {
+			t.Fatal("non-form import admitted", statement, shape)
+		}
+	}
+}
+
 func TestRawImportInvalidParametersKeepGenericValidation(t *testing.T) {
 	for _, parameter := range []string{"$2", "$1x", "$1$3", "$", "'$1'", "$1 IF VERSION -1", "$1 IF VERSION 18446744073709551616", "$1 IF VERSION 0.0", "$1 IF VERSION '0'", "$1 IF VERSION x'00'"} {
 		t.Run(parameter, func(t *testing.T) {

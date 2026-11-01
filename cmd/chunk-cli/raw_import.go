@@ -14,34 +14,76 @@ import (
 // Only the advertised binary SET CHUNK path has chunk-form admission.
 // Preserve the original table token, including doubled identifier quotes.
 func rawChunkTable(statement string) (string, bool) {
+	shape, ok := rawChunkShapeOf(statement)
+	return shape.table, ok
+}
+
+type rawChunkShape struct {
+	table   string
+	columns []string
+	dims    int
+}
+
+func rawChunkShapeOf(statement string) (rawChunkShape, bool) {
 	words := rawChunkTokens(statement)
-	if len(words) != 7 && len(words) != 10 || !strings.EqualFold(words[0], "SET") || !strings.EqualFold(words[1], "CHUNK") || !strings.EqualFold(words[4], "IN") {
-		return "", false
+	bad := func() (rawChunkShape, bool) { return rawChunkShape{}, false }
+	if len(words) < 7 || !strings.EqualFold(words[0], "SET") || !strings.EqualFold(words[1], "CHUNK") {
+		return bad()
 	}
-	for _, coordinate := range words[2:4] {
-		if _, err := strconv.ParseInt(coordinate, 10, 64); err != nil {
-			return "", false
+	i := 2
+	for i < len(words) {
+		if _, err := strconv.ParseInt(words[i], 10, 64); err != nil {
+			break
+		}
+		i++
+	}
+	shape := rawChunkShape{dims: i - 2}
+	if shape.dims != 2 && shape.dims != 3 || i+2 >= len(words) || !strings.EqualFold(words[i], "IN") {
+		return bad()
+	}
+	shape.table = words[i+1]
+	i += 2
+	if strings.EqualFold(words[i], "COLUMNS") {
+		i++
+		for i < len(words) && !strings.HasPrefix(words[i], "$") {
+			name := words[i]
+			if strings.HasPrefix(name, "\"") {
+				name = strings.ReplaceAll(name[1:len(name)-1], "\"\"", "\"")
+			}
+			shape.columns = append(shape.columns, name)
+			i++
+		}
+		if len(shape.columns) == 0 {
+			return bad()
 		}
 	}
-	if !strings.HasPrefix(words[6], "$") {
-		return "", false
+	if i >= len(words) || !strings.HasPrefix(words[i], "$") {
+		return bad()
 	}
-	index, err := strconv.ParseUint(words[6][1:], 10, 64)
+	index, err := strconv.ParseUint(words[i][1:], 10, 64)
 	if err != nil || index != 1 {
-		return "", false
+		return bad()
 	}
-	if len(words) == 10 {
-		if !strings.EqualFold(words[7], "IF") || !strings.EqualFold(words[8], "VERSION") {
-			return "", false
+	i++
+	if i == len(words) {
+		return shape, true
+	}
+	if i+2 == len(words) && strings.EqualFold(words[i], "IF") && strings.EqualFold(words[i+1], "ABSENT") {
+		return shape, true
+	}
+	if i+3 == len(words) {
+		if !strings.EqualFold(words[i], "IF") || !strings.EqualFold(words[i+1], "VERSION") {
+			return bad()
 		}
 		// Core integer parsing canonicalizes negative zero before its
 		// unsigned check. Preserve the suffix bytes sent to the server.
-		version, err := strconv.ParseUint(strings.TrimPrefix(words[9], "-"), 10, 64)
-		if err != nil || strings.HasPrefix(words[9], "-") && version != 0 {
-			return "", false
+		version, err := strconv.ParseUint(strings.TrimPrefix(words[i+2], "-"), 10, 64)
+		if err != nil || strings.HasPrefix(words[i+2], "-") && version != 0 {
+			return bad()
 		}
+		return shape, true
 	}
-	return words[5], true
+	return bad()
 }
 
 // CQL separates words, integer coordinates and $digit parameters without
@@ -77,12 +119,15 @@ func rawChunkTokens(statement string) []string {
 	return result
 }
 
-func readChunkImport(client *chunkclient.Client, table, file string) ([]byte, error) {
+func readChunkImport(client *chunkclient.Client, table, file string, columns ...string) ([]byte, error) {
 	schema, err := client.Describe(table)
 	if err != nil {
 		return nil, err
 	}
 	limit, err := chunkclient.ChunkFormLimit(schema)
+	if schema.Dims == 3 {
+		limit, err = chunkclient.SectionedChunkFormLimit(schema)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +148,11 @@ func readChunkImport(client *chunkclient.Client, table, file string) ([]byte, er
 	}
 	if uint64(len(data)) > limit {
 		return nil, fmt.Errorf("SET CHUNK: form exceeds schema size bound %d bytes", limit)
+	}
+	if schema.Dims == 3 {
+		if err := chunkclient.ValidateSectionedChunkMutation(schema, columns, data); err != nil {
+			return nil, err
+		}
 	}
 	return data, nil
 }

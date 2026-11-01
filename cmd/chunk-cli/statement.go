@@ -44,8 +44,9 @@ type statementInfo struct {
 	// columns are the names after COLUMNS.
 	columns                 []string
 	withVersion, withSchema bool
-	// cx, cy are the chunk of GET CHUNK.
-	cx, cy int64
+	// Coordinates retain explicit request arity, including a third zero axis.
+	cx, cy, cz int64
+	dims       int
 }
 
 // tokenize splits a statement into words, skipping quoted values and the
@@ -114,12 +115,6 @@ func classify(statement string) statementInfo {
 		info.kind = statementGetBlock
 	case "CHUNK":
 		info.kind = statementGetChunk
-		var errX, errY error
-		info.cx, errX = strconv.ParseInt(keyword(2), 10, 64)
-		info.cy, errY = strconv.ParseInt(keyword(3), 10, 64)
-		if errX != nil || errY != nil {
-			return statementInfo{}
-		}
 	case "AREA":
 		info.kind = statementGetArea
 	default:
@@ -135,6 +130,20 @@ func classify(statement string) statementInfo {
 	if from < 0 || from+1 >= len(tokens) {
 		return statementInfo{}
 	}
+	if info.kind == statementGetBlock || info.kind == statementGetChunk {
+		info.dims = from - 2
+		if info.dims != 2 && info.dims != 3 {
+			return statementInfo{}
+		}
+		axes := []*int64{&info.cx, &info.cy, &info.cz}
+		for axis := range info.dims {
+			value, err := strconv.ParseInt(tokens[axis+2], 10, 64)
+			if err != nil {
+				return statementInfo{}
+			}
+			*axes[axis] = value
+		}
+	}
 	info.table = tokens[from+1]
 	for i := from + 2; i < len(tokens); {
 		switch keyword(i) {
@@ -147,7 +156,12 @@ func classify(statement string) statementInfo {
 			if i == start || info.columns != nil {
 				return statementInfo{}
 			}
-			info.columns = tokens[start:i]
+			for _, name := range tokens[start:i] {
+				if strings.HasPrefix(name, "\"") {
+					name = strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(name, "\""), "\""), "\"\"", "\"")
+				}
+				info.columns = append(info.columns, name)
+			}
 		case "WITH":
 			if keyword(i+1) == "VERSION" && info.kind == statementGetBlock && !info.withVersion {
 				info.withVersion = true
@@ -236,8 +250,8 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	} else if opts.in != "" {
 		var data []byte
 		var err error
-		if table, ok := rawChunkTable(statement); ok {
-			data, err = readChunkImport(client, table, opts.in)
+		if shape, ok := rawChunkShapeOf(statement); ok {
+			data, err = readChunkImport(client, shape.table, opts.in, shape.columns...)
 		} else {
 			data, err = os.ReadFile(opts.in)
 		}
@@ -338,9 +352,12 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		if reply.Kind != chunkclient.KindBulk {
 			return fmt.Errorf("GET CHUNK: expected a chunk form, got a %s", reply.Kind)
 		}
-		chunk, err := chunkclient.DecodeChunkForm(schema, info.columns, reply.Bulk)
+		chunk, err := decodeOutputChunk(schema, info.columns, reply.Bulk, opts.blocks)
 		if err != nil {
 			return err
+		}
+		if info.dims == 3 {
+			return printChunk(stdout, chunk, info.cx, info.cy, opts, info.cz)
 		}
 		return printChunk(stdout, chunk, info.cx, info.cy, opts)
 	default:

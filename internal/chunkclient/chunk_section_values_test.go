@@ -167,6 +167,10 @@ func TestSectionedSparseValuesStayBounded(t *testing.T) {
 	if err := ValidateSectionedChunkMutation(schema, nil, data); err != nil {
 		t.Fatal("raw validation expanded decoded cells", err)
 	}
+	summary, err := DecodeSectionedChunkSummary(schema, nil, data)
+	if err != nil || summary.PresentCount() != 1024 || len(summary.Present) != 0 || len(summary.Values) != 0 {
+		t.Fatal("summary expanded block cells or lost population", summary, err)
+	}
 }
 
 func TestSectionedChunkRejectsMalformedData(t *testing.T) {
