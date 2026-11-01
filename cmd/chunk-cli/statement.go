@@ -54,7 +54,7 @@ type statementInfo struct {
 // tokenize splits a statement into words, skipping quoted values and the
 // punctuation `,`, `(`, `)`, `=`; it is only used to recognise the reads
 // whose replies are decoded with the table's schema.
-func tokenize(statement string) []string {
+func tokenize(statement string, keepCommas ...bool) []string {
 	var tokens []string
 	var current strings.Builder
 	flush := func() {
@@ -87,6 +87,9 @@ func tokenize(statement string) []string {
 			}
 			tokens = append(tokens, statement[start:i+1])
 		case quoted:
+		case c == ',' && len(keepCommas) != 0:
+			flush()
+			tokens = append(tokens, ",")
 		case c == ' ' || c == '\t' || c == ',' || c == '(' || c == ')' || c == '=':
 			flush()
 		default:
@@ -98,7 +101,7 @@ func tokenize(statement string) []string {
 }
 
 func classify(statement string) statementInfo {
-	tokens := tokenize(statement)
+	tokens := tokenize(statement, true)
 	keyword := func(i int) string {
 		if i < len(tokens) {
 			return strings.ToUpper(tokens[i])
@@ -145,11 +148,10 @@ func classify(statement string) statementInfo {
 					if keyword(i) != "COLUMNS" || i+1 >= len(tokens) {
 						return statementInfo{}
 					}
-					for _, name := range tokens[i+1:] {
-						if strings.HasPrefix(name, "\"") {
-							name = strings.ReplaceAll(name[1:len(name)-1], "\"\"", "\"")
-						}
-						info.columns = append(info.columns, name)
+					var ok bool
+					info.columns, ok = readColumnNames(tokens[i+1:])
+					if !ok {
+						return statementInfo{}
 					}
 				}
 				return info
@@ -203,17 +205,19 @@ func classify(statement string) statementInfo {
 		case "COLUMNS":
 			start := i + 1
 			i = start
-			for i < len(tokens) && keyword(i) != "WITH" {
+			for i < len(tokens) {
+				if i > start && tokens[i-1] != "," && keyword(i) == "WITH" && (keyword(i+1) == "VERSION" || keyword(i+1) == "SCHEMA") {
+					break
+				}
 				i++
 			}
 			if i == start || info.columns != nil {
 				return statementInfo{}
 			}
-			for _, name := range tokens[start:i] {
-				if strings.HasPrefix(name, "\"") {
-					name = strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(name, "\""), "\""), "\"\"", "\"")
-				}
-				info.columns = append(info.columns, name)
+			var ok bool
+			info.columns, ok = readColumnNames(tokens[start:i])
+			if !ok {
+				return statementInfo{}
 			}
 		case "WITH":
 			if keyword(i+1) == "VERSION" && info.kind == statementGetBlock && !info.withVersion {
@@ -229,6 +233,29 @@ func classify(statement string) statementInfo {
 		}
 	}
 	return info
+}
+
+func readColumnNames(tokens []string) ([]string, bool) {
+	if len(tokens) == 0 || len(tokens)%2 == 0 {
+		return nil, false
+	}
+	names := make([]string, 0, (len(tokens)+1)/2)
+	for i, name := range tokens {
+		if i%2 != 0 {
+			if name != "," {
+				return nil, false
+			}
+			continue
+		}
+		if name == "," {
+			return nil, false
+		}
+		if strings.HasPrefix(name, "\"") {
+			name = strings.ReplaceAll(name[1:len(name)-1], "\"\"", "\"")
+		}
+		names = append(names, name)
+	}
+	return names, true
 }
 
 // parseLineOptions takes the options at the start of a shell line

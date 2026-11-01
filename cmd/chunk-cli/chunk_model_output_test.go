@@ -32,9 +32,11 @@ func TestChunkModelExplicitThirdAxisOutput(t *testing.T) {
 		}
 	}
 	for statement, want := range map[string]statementInfo{
-		`GET CHUNK -1 2 0 FROM world COLUMNS "with", "a""b"`: {kind: statementGetChunk, table: "world", columns: []string{"with", `a"b`}, cx: -1, cy: 2, dims: 3},
-		`GET BLOCK 0 0 -1 FROM world WITH VERSION`:           {kind: statementGetBlock, table: "world", cz: -1, dims: 3, withVersion: true},
-		`GET CHUNK 0 0 0 0 FROM world`:                       {},
+		`GET CHUNK -1 2 0 FROM world COLUMNS "with", "a""b"`:          {kind: statementGetChunk, table: "world", columns: []string{"with", `a"b`}, cx: -1, cy: 2, dims: 3},
+		`GET BLOCK 0 0 -1 FROM world WITH VERSION`:                    {kind: statementGetBlock, table: "world", cz: -1, dims: 3, withVersion: true},
+		`GET CHUNK 0 0 0 FROM world COLUMNS with,version`:             {kind: statementGetChunk, table: "world", dims: 3, columns: []string{"with", "version"}},
+		`GET BLOCK 0 0 0 FROM world COLUMNS with,version WITH SCHEMA`: {kind: statementGetBlock, table: "world", dims: 3, columns: []string{"with", "version"}, withSchema: true},
+		`GET CHUNK 0 0 0 0 FROM world`:                                {},
 	} {
 		if got := classify(statement); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: got %+v want %+v", statement, got, want)
