@@ -13,9 +13,16 @@ type Chunk struct {
 	// Version is the chunk version the form carries.
 	Version uint64
 	// SchemaVersion is the schema version the form's columns follow.
-	SchemaVersion uint64
-	Width         int
-	Height        int
+	SchemaVersion   uint64
+	Width           int
+	Height          int
+	Depth           int
+	CommitTimeMS    uint64
+	Projected       bool
+	Private         bool
+	MetadataColumns []Column
+	MetadataValues  []Value
+	UnknownSections map[uint16][]byte
 	// Present has one entry per block, row by row.
 	Present []bool
 	// Columns are the columns the form holds: the COLUMNS of the read in
