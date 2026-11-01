@@ -15,7 +15,7 @@ chunk-cli --uri "$CHUNKDB_URI" "CREATE SLOT 'consumer' ON world AREA 0 0 TO 0 0"
 
 ```output
 OK
-2
+1
 OK
 ```
 
@@ -26,9 +26,9 @@ chunk-cli --uri "$CHUNKDB_URI" watch world --slot consumer --ack-every 10 --area
 ```
 
 ```output
-start <epoch>:2
-schema <epoch>:3 version 1
-change revision 3 time_ms <time-ms> user admin
+start <epoch>:1
+schema <epoch>:2 version 1
+change revision 2 time_ms <time-ms> user admin
   block 1 1: {kind = 1} -> {kind = 6}
 ```
 
@@ -41,7 +41,7 @@ chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 1 IN world kind = 6"
 ```
 
 ```output
-3
+2
 ```
 
 After the complete change prints, press Ctrl-C.
@@ -60,7 +60,7 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   table = world
   name = consumer
   epoch = <epoch>
-  acked = 3
+  acked = 2
   retained_bytes = 0
   lost = false
   lost_reason = NULL
@@ -76,12 +76,14 @@ OK
 ## Options
 
 - `--area` uses inclusive chunk coordinates.
+- Three-axis tables use `--area cx0,cy0,cz0,cx1,cy1,cz1`; the third axis remains explicit when zero.
 - Without `--slot` or `--after`, watching begins after completed writes.
 - `--after <epoch:revision>` resumes from a retained position.
 - `--slot` resumes from its saved acknowledgement and acknowledges only completely printed eligible events.
 - `--ack-every` requires a slot; its default is 1, counting change, chunks and progress events.
 - `--columns a,b` projects named columns; `--no-before` omits before rows.
 - `--chunks` streams committed chunk versions and binary forms, including a nullable form for deletion.
+- Chunk-column changes appear in chunk change metadata; binary chunk forms retain the complete chunk-column row.
 - `--takeover` requires a slot and replaces its active consumer.
 - `--ack-timeout-ms <ms>` requires a slot and a positive mutation acknowledgement deadline.
 - `--json` prints one JSON object per line, including before/after rows and event metadata.

@@ -93,9 +93,9 @@ func TestRunLocalCommands(t *testing.T) {
 
 func TestClassify(t *testing.T) {
 	cases := map[string]statementInfo{
-		"GET BLOCK 10 4 FROM world":                        {kind: statementGetBlock, table: "world"},
-		"get block -1 4 from world columns id, name":       {kind: statementGetBlock, table: "world", columns: []string{"id", "name"}},
-		"GET CHUNK -2 3 FROM world COLUMNS a":              {kind: statementGetChunk, table: "world", columns: []string{"a"}, cx: -2, cy: 3},
+		"GET BLOCK 10 4 FROM world":                        {kind: statementGetBlock, table: "world", cx: 10, cy: 4, dims: 2},
+		"get block -1 4 from world columns id, name":       {kind: statementGetBlock, table: "world", columns: []string{"id", "name"}, cx: -1, cy: 4, dims: 2},
+		"GET CHUNK -2 3 FROM world COLUMNS a":              {kind: statementGetChunk, table: "world", columns: []string{"a"}, cx: -2, cy: 3, dims: 2},
 		"GET AREA 0 0 TO 1 1 FROM w":                       {kind: statementGetArea, table: "w"},
 		"GET AREA AROUND 0 0 RADIUS 2 FROM w COLUMNS a,b":  {kind: statementGetArea, table: "w", columns: []string{"a", "b"}},
 		"DESCRIBE world":                                   {kind: statementDescribe, table: "world"},
