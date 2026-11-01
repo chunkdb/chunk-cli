@@ -50,16 +50,19 @@ func parseDocExamples(source string) ([]docExample, error) {
 // Replace only explicitly volatile metadata. Data values, revisions, chunk
 // versions, counts, and every other byte remain part of the comparison.
 func normalizeDocOutput(output string) string {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
 		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
+		{`(?m)^([ \t]*version = (?:\d+|NULL)\n[ \t]*schema_version = \d+\n[ \t]*commit_time_ms = )\d+(\n[ \t]*present = \d+ of \d+ blocks\n)`, `${1}<time-ms>${2}`},
+		{`(?m)^((?:chunks:\n(?:  \d+\) \[-?\d+, -?\d+(?:, -?\d+){1,2}\]\n)+|chunks = \[\]\n)more = (?:true|false)\nepoch = )[0-9a-f]{32}(\nposition = (?:\d+|NULL)\nretained_deletion_floor = \d+\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(\d+\) name = [a-z_][a-z0-9_]*, applied_ms = )\d+`, `${1}<time-ms>`},
 	} {
 		output = regexp.MustCompile(rule.pattern).ReplaceAllString(output, rule.replacement)
 	}
-	return strings.TrimRight(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	return strings.TrimRight(output, "\n")
 }
 
 func TestDocExampleMarkers(t *testing.T) {
@@ -91,6 +94,25 @@ func TestDocOutputNormalization(t *testing.T) {
 	if got := normalizeDocOutput(data); got != strings.TrimSuffix(data, "\n") {
 		t.Fatalf("changed data values: %q", got)
 	}
+	chunk := "version = 7\nschema_version = 3\ncommit_time_ms = 123\npresent = 1 of 8 blocks\nblock 1 1 1\n  commit_time_ms = 456\n"
+	if got := normalizeDocOutput(chunk); got != strings.TrimSuffix(strings.Replace(chunk, "commit_time_ms = 123", "commit_time_ms = <time-ms>", 1), "\n") {
+		t.Fatalf("chunk time normalization: %q", got)
+	}
+	if got := normalizeDocOutput(strings.ReplaceAll(chunk, "\n", "\r\n")); got != normalizeDocOutput(chunk) {
+		t.Fatalf("chunk CRLF normalization: %q", got)
+	}
+	scan := "chunks:\n  1) [-1, 0, -3, 37]\nmore = false\nepoch = " + epoch + "\nposition = 41\nretained_deletion_floor = 13\n"
+	if got := normalizeDocOutput(scan); got != strings.TrimSuffix(strings.Replace(scan, epoch, "<epoch>", 1), "\n") {
+		t.Fatalf("scan normalization: %q", got)
+	}
+	if got := normalizeDocOutput(strings.ReplaceAll(scan, "\n", "\r\n")); got != normalizeDocOutput(scan) {
+		t.Fatalf("scan CRLF normalization: %q", got)
+	}
+	for _, unchanged := range []string{"commit_time_ms = 123\n", "epoch = " + epoch + "\n", strings.Replace(chunk, "present = 1 of 8 blocks", "present = '1 of 8 blocks'", 1)} {
+		if got := normalizeDocOutput(unchanged); got != strings.TrimSuffix(unchanged, "\n") {
+			t.Fatalf("changed user data: %q", got)
+		}
+	}
 }
 
 func TestDocSlotTranscript(t *testing.T) {
@@ -105,7 +127,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	)
 	slot := foundationMapValue(
 		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
-		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("3"),
+		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("2"),
 		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
 	)
@@ -133,7 +155,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	}
 	t.Logf("Synthetic production formatter transcript:\n%s", out.String())
 	for _, replacement := range [][2]string{
-		{"acked = 3", "acked = 4"}, {"retained_bytes = 0", "retained_bytes = 7"},
+		{"acked = 2", "acked = 3"}, {"retained_bytes = 0", "retained_bytes = 7"},
 		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
 		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
 		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},

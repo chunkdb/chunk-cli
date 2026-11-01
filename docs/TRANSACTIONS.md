@@ -32,7 +32,7 @@ GET BLOCK 1 1 FROM world
 OK
 (applies at COMMIT)
 (applies at COMMIT)
-2
+1
 kind = 5
 ```
 
@@ -77,7 +77,7 @@ chunk-cli --uri "$CHUNKDB_URI" transaction changes.cql
 OK
 (applies at COMMIT)
 (applies at COMMIT)
-3
+2
 ```
 
 `chunk-cli --uri "$CHUNKDB_URI" --in changes.cql transaction` reads the same file.

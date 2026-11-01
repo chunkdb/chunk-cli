@@ -27,7 +27,7 @@ chunk-cli help
 | `--tls-server-name <name>` | Override the TLS certificate name |
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
-| `--blocks` | Include present blocks in chunk and area output |
+| `--blocks` | Include present blocks in chunk, area and scan data output |
 | `--in <file>` | Supply binary parameter `$1` |
 | `--out <file>` | Write reply bytes to a file |
 | `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
@@ -53,7 +53,7 @@ Its revision is `NULL` when a read-only server cannot establish the writer's fro
 - Blocks print `column = value` lines; an absent block prints `NULL`.
 - Never-written chunks print `(null)`, or JSON `null`.
 - Written empty chunks retain their versioned form while their stored or cached state remains.
-- Chunk replies show version, schema version and presence count; `--blocks` adds rows.
+- Chunk replies show version, schema version, commit time, chunk columns and presence count; `--blocks` adds rows.
 - Area replies group blocks by chunk.
 - Writes print the affected chunk's new version.
 
@@ -66,7 +66,21 @@ JSON integers within inclusive ±9007199254740991 are numbers; larger magnitudes
 This applies to values, coordinates, versions, revisions, timestamps, transaction IDs and numeric error metadata.
 Non-finite floats print as strings.
 Unknown column types retain their type names and print raw bytes as hex for that column.
-Binary chunk decoding requires known types for selected columns.
+Unknown chunk sections are listed by section ID; `--out` preserves their complete bytes.
+Chunk summaries validate the complete form without expanding block values.
+`--blocks` accepts at most 524288 present block-column values per chunk; select fewer columns or use `--out` for a larger chunk.
+World coordinates outside signed 64-bit range print as `[chunk,offset]` pairs, including in JSON.
+
+Tables have two or three coordinate axes; a three-axis table requires the third coordinate even when it is zero.
+Chunk and area output retains that third coordinate, with x varying fastest within a chunk.
+Transaction-private chunk forms print `NULL` for version and commit time and include `private = true`.
+Block-column projections retain all chunk columns and include `projected = true` when the form is projected.
+
+`SCAN CHUNKS ... WITH DATA` prints each coordinate, retained version and decoded chunk.
+JSON entries contain `{cx,cy,cz?,version,deleted,chunk}`; a tombstone has `deleted: true` and `chunk: null`.
+`SINCE` includes retained deletions and skips versions at or below the supplied revision.
+The page retains its table epoch, nullable completed frontier and retained deletion floor.
+If the supplied revision precedes that floor, start a fresh snapshot before resuming changes.
 
 `GET BLOCK ... WITH VERSION` adds a nullable chunk version beside the values.
 The version is `NULL` for never-written chunks, collected empty chunks and transaction-private modified chunks.
@@ -117,10 +131,11 @@ chunk-cli --uri "$CHUNKDB_URI" "GET CHUNK 8 8 FROM world"
 
 ```output
 OK
-2
+1
 {"kind":2,"name":"door"}
-version = 2
+version = 1
 schema_version = 1
+commit_time_ms = <time-ms>
 present = 1 of 4 blocks
 block 1 1
   kind = 2
@@ -136,7 +151,7 @@ chunk-cli --uri "$CHUNKDB_URI" --json "GET BLOCK 16 16 FROM world WITH VERSION W
 ```
 
 ```output
-{"version":2,"schema_version":1,"values":{"kind":2,"name":"door"}}
+{"version":1,"schema_version":1,"values":{"kind":2,"name":"door"}}
 {"version":null,"schema_version":1,"values":null}
 ```
 
@@ -152,20 +167,45 @@ chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 3 1 FROM world"
 ```
 
 ```output
-4
-wrote 37 bytes to chunk.bin
-6
+2
+wrote 133 bytes to chunk.bin
+3
 kind = 3
 name = 'door'
 ```
 
+Create a three-axis table with a separate chunk-column row:
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "CREATE TABLE space (kind u8) CHUNK 2 x 2 x 2 CHUNK COLUMNS (owner text(8) NULL)"
+printf 'base' > owner.bin
+chunk-cli --uri "$CHUNKDB_URI" --in owner.bin 'SET CHUNK 0 0 0 IN space META owner=$1'
+chunk-cli --uri "$CHUNKDB_URI" "SET BLOCK 1 0 1 IN space kind = 7"
+chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 1 0 1 FROM space"
+```
+
+```output
+OK
+1
+2
+kind = 7
+```
+
+Use `--blocks "GET CHUNK 0 0 0 FROM space"` to include the present block and chunk columns, or `"SCAN CHUNKS FROM space SINCE 0 WITH DATA"` for retained versions and tombstones.
+
 ## Notes
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.
+Typed output and binary imports require checked CKCF forms in both table dimensions.
 Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.
+The size bound uses the combined hard variable-byte ceiling; the server enforces its current quota while allowing non-growing replacements of older data above a lowered quota.
 Supported `text(max)` and `bytes(max)` columns are variable-length known types.
 An unknown type is refused before sending the write, with its column name and type in the error.
 After a schema change, old chunk files may fail with `SCHEMA_MISMATCH`.
+Full chunk imports replace block data and chunk columns.
+`SET CHUNK ... COLUMNS ... $1` preserves chunk columns and replaces only the selected block columns.
+`SET CHUNK ... META name=$1` updates chunk columns using scalar parameters rather than a chunk-form file.
+`IF ABSENT` admits only an absent chunk identity; it cannot be combined with `IF VERSION`.
 For statement options, see [CQL reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md).
 For connection state, see [Transactions](TRANSACTIONS.md).
 

@@ -29,8 +29,15 @@ func TestFoundationServerContract(t *testing.T) {
 			}
 			defer client.Close()
 			info, err := client.Hello(chunkclient.Login{User: adminUser, Password: adminPassword})
-			if err != nil || !info.Supports("protocol_foundation") || !info.Supports("read_metadata") || info.ConnectionID == 0 || string(info.Options["client_name"].Bulk) != "foundation-cli" || info.NotApplied["statement_timeout_ms"] != "implementation_pending" || info.NotApplied["future_option"] != "unknown_option" || len(info.Limits) != 7 {
+			if err != nil || !info.Supports("protocol_foundation") || !info.Supports("read_metadata") || info.ConnectionID == 0 || string(info.Options["client_name"].Bulk) != "foundation-cli" || info.NotApplied["future_option"] != "unknown_option" || len(info.Limits) != 7 {
 				t.Fatalf("HELLO: %+v %v", info, err)
+			}
+			if info.Supports("statement_timeout") {
+				if timeout, err := info.Options["statement_timeout_ms"].Uint64(); err != nil || timeout != 1000 {
+					t.Fatal(info.Options, err)
+				}
+			} else if info.NotApplied["statement_timeout_ms"] != "implementation_pending" {
+				t.Fatal(info.NotApplied)
 			}
 			status, err := client.Do("SHOW STATUS")
 			if err != nil {
@@ -54,7 +61,7 @@ func TestFoundationServerContract(t *testing.T) {
 			if out := s.ok(t, "--json", "GET AREA 4 4 TO 4 4 FROM world WITH SCHEMA"); out != "{\"schema_version\":1,\"entries\":[]}\n" {
 				t.Fatal(out)
 			}
-			code, out, failure := s.cli(t, "", "--json", "SET BLOCK 0 0 IN world id = 7 IF VERSION 1")
+			code, out, failure := s.cli(t, "", "--json", "SET BLOCK 0 0 IN world id = 7 IF VERSION 0")
 			if code != 2 || out != "" || !strings.Contains(failure, `"class":"reread"`) || !strings.Contains(failure, `"code":"VERSION_MISMATCH"`) {
 				t.Fatal(code, out, failure)
 			}

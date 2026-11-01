@@ -144,8 +144,10 @@ type Schema struct {
 	Columns       []Column
 	ChunkWidth    int
 	ChunkHeight   int
+	ChunkDepth    int
 	LargeWidth    int
 	LargeHeight   int
+	LargeDepth    int
 	Options       []MapEntry
 	columnIndexes map[string]int
 }
@@ -161,7 +163,21 @@ func (s *Schema) Column(name string) (Column, bool) {
 
 // BlockCount is the number of blocks of a chunk.
 func (s *Schema) BlockCount() int {
-	return s.ChunkWidth * s.ChunkHeight
+	if s == nil || (s.Dims != 0 && s.Dims != 2 && s.Dims != 3) {
+		return 0
+	}
+	depth := 1
+	if s.Dims == 3 {
+		depth = s.ChunkDepth
+	}
+	count := 1
+	for _, axis := range []int{s.ChunkWidth, s.ChunkHeight, depth} {
+		if axis < 1 || axis > 4096 || count > 1048576/axis {
+			return 0
+		}
+		count *= axis
+	}
+	return count
 }
 
 // Describe sends `DESCRIBE <table>` and parses the reply.
@@ -237,16 +253,23 @@ func ParseDescribe(reply Value) (*Schema, error) {
 		return nil, fmt.Errorf("DESCRIBE: version: %w", err)
 	}
 	for _, size := range []struct {
-		key  string
-		w, h *int
-	}{{"chunk", &schema.ChunkWidth, &schema.ChunkHeight}, {"large", &schema.LargeWidth, &schema.LargeHeight}} {
+		key     string
+		w, h, d *int
+		limit   uint64
+	}{{"chunk", &schema.ChunkWidth, &schema.ChunkHeight, &schema.ChunkDepth, 4096},
+		{"large", &schema.LargeWidth, &schema.LargeHeight, &schema.LargeDepth, 1000000}} {
 		pair, err := field(size.key, KindArray)
 		if err != nil {
 			return nil, err
 		}
-		if *size.w, *size.h, err = sizePair(pair); err != nil {
+		axes, err := sizeAxes(pair, schema.Dims, size.limit)
+		if err != nil {
 			return nil, fmt.Errorf("DESCRIBE: %s: %w", size.key, err)
 		}
+		*size.w, *size.h, *size.d = axes[0], axes[1], axes[2]
+	}
+	if schema.BlockCount() == 0 {
+		return nil, errors.New("DESCRIBE: chunk geometry exceeds the block limit")
 	}
 	options, err := field("options", KindMap)
 	if err != nil {
@@ -257,8 +280,8 @@ func ParseDescribe(reply Value) (*Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(columns.Items) == 0 {
-		return nil, errors.New("DESCRIBE: the table has no columns")
+	if len(columns.Items) == 0 || len(columns.Items) > 1024 {
+		return nil, errors.New("DESCRIBE: invalid block column count")
 	}
 	ids := map[uint32]bool{}
 	for i, item := range columns.Items {
@@ -279,19 +302,19 @@ func ParseDescribe(reply Value) (*Schema, error) {
 	return schema, nil
 }
 
-func sizePair(pair Value) (int, int, error) {
-	if len(pair.Items) < 2 {
-		return 0, 0, errors.New("expected [w, h]")
+func sizeAxes(pair Value, dims int, limit uint64) ([3]int, error) {
+	out := [3]int{1, 1, 1}
+	if len(pair.Items) != dims {
+		return out, fmt.Errorf("expected %d geometry axes", dims)
 	}
-	var out [2]int
-	for i, item := range pair.Items[:2] {
+	for i, item := range pair.Items {
 		value, err := item.Uint64()
-		if err != nil || value == 0 || value > 1<<31 {
-			return 0, 0, fmt.Errorf("invalid size %q", item.Text)
+		if err != nil || value == 0 || value > limit {
+			return out, fmt.Errorf("invalid size %q", item.Text)
 		}
 		out[i] = int(value)
 	}
-	return out[0], out[1], nil
+	return out, nil
 }
 
 // ParseColumn parses one DESCRIBE or WATCH schema column.
@@ -341,7 +364,7 @@ func ParseColumn(item Value) (Column, error) {
 }
 
 func ParseColumns(values Value) ([]Column, error) {
-	if values.Kind != KindArray {
+	if values.Kind != KindArray || len(values.Items) > 1024 {
 		return nil, errors.New("expected column array")
 	}
 	columns := make([]Column, 0, len(values.Items))
