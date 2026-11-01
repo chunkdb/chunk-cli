@@ -251,7 +251,7 @@ func TestRawImportRefusesBeforeMutation(t *testing.T) {
 				want = "schema size bound"
 			}
 			if mode == "dimension" {
-				want = "dimensions 3"
+				want = "expected 3 geometry axes"
 			}
 			if mode == "password" {
 				want = "--in cannot be used with PASSWORD"

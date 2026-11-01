@@ -29,8 +29,15 @@ func TestFoundationServerContract(t *testing.T) {
 			}
 			defer client.Close()
 			info, err := client.Hello(chunkclient.Login{User: adminUser, Password: adminPassword})
-			if err != nil || !info.Supports("protocol_foundation") || !info.Supports("read_metadata") || info.ConnectionID == 0 || string(info.Options["client_name"].Bulk) != "foundation-cli" || info.NotApplied["statement_timeout_ms"] != "implementation_pending" || info.NotApplied["future_option"] != "unknown_option" || len(info.Limits) != 7 {
+			if err != nil || !info.Supports("protocol_foundation") || !info.Supports("read_metadata") || info.ConnectionID == 0 || string(info.Options["client_name"].Bulk) != "foundation-cli" || info.NotApplied["future_option"] != "unknown_option" || len(info.Limits) != 7 {
 				t.Fatalf("HELLO: %+v %v", info, err)
+			}
+			if info.Supports("statement_timeout") {
+				if timeout, err := info.Options["statement_timeout_ms"].Uint64(); err != nil || timeout != 1000 {
+					t.Fatal(info.Options, err)
+				}
+			} else if info.NotApplied["statement_timeout_ms"] != "implementation_pending" {
+				t.Fatal(info.NotApplied)
 			}
 			status, err := client.Do("SHOW STATUS")
 			if err != nil {
