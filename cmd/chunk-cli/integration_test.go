@@ -317,15 +317,15 @@ func TestCLIChunksAndAreas(t *testing.T) {
 	s := startServer(t, false)
 	s.ok(t, createWorld)
 	s.ok(t, "SET BLOCK 1 0 IN world id = 5, name = 'hi', blob = x'00ff0d0a'")
-	s.ok(t, "SET BLOCK 0 1 IN world id = 6, f = 0.5")
-	s.ok(t, "SET BLOCK 4 4 IN world id = 7")
+	firstVersion := strings.TrimSpace(s.ok(t, "SET BLOCK 0 1 IN world id = 6, f = 0.5"))
+	secondVersion := strings.TrimSpace(s.ok(t, "SET BLOCK 4 4 IN world id = 7"))
 
 	out := s.ok(t, "GET CHUNK 0 0 FROM world")
-	if !strings.HasPrefix(out, "version = ") || !strings.HasSuffix(out, "\nschema_version = 1\npresent = 2 of 4 blocks\n") {
+	if withoutChunkTimes(t, out) != "version = "+firstVersion+"\nschema_version = 1\npresent = 2 of 4 blocks\n" {
 		t.Fatalf("GET CHUNK: %q", out)
 	}
 	out = s.ok(t, "--blocks", "GET CHUNK 0 0 FROM world COLUMNS name, id, blob")
-	want := "present = 2 of 4 blocks\nblock 1 0\n  name = 'hi'\n  id = 5\n  blob = x'00ff0d0a'\n" +
+	want := "present = 2 of 4 blocks\nprojected = true\nblock 1 0\n  name = 'hi'\n  id = 5\n  blob = x'00ff0d0a'\n" +
 		"block 0 1\n  name = NULL\n  id = 6\n  blob = x''\n"
 	if !strings.HasSuffix(out, want) {
 		t.Fatalf("GET CHUNK --blocks: got %q, want suffix %q", out, want)
@@ -350,7 +350,7 @@ func TestCLIChunksAndAreas(t *testing.T) {
 
 	out = s.ok(t, "--blocks", "GET AREA 0 0 TO 2 2 FROM world COLUMNS id")
 	want = "chunk 0 0\n  version = "
-	if !strings.HasPrefix(out, want) || !strings.Contains(out, "  present = 2 of 4 blocks\n  block 1 0\n    id = 5\n  block 0 1\n    id = 6\n") ||
+	if !strings.HasPrefix(out, want) || !strings.Contains(out, "  present = 2 of 4 blocks\n  projected = true\n  block 1 0\n    id = 5\n  block 0 1\n    id = 6\n") ||
 		!strings.Contains(out, "chunk 2 2\n") || !strings.HasSuffix(out, "  block 4 4\n    id = 7\n") {
 		t.Fatalf("GET AREA: %q", out)
 	}
@@ -358,15 +358,35 @@ func TestCLIChunksAndAreas(t *testing.T) {
 		t.Fatalf("empty area: %q", out)
 	}
 	out = s.ok(t, "--json", "GET AREA AROUND 2 2 RADIUS 0 FROM world")
-	if !strings.HasPrefix(out, `[{"cx":2,"cy":2,"version":`) || !strings.HasSuffix(out, `"present":1,"block_count":4}]`+"\n") {
+	var area []struct {
+		CX, CY       int64
+		Version      uint64
+		Present      int
+		BlockCount   int    `json:"block_count"`
+		CommitTimeMS uint64 `json:"commit_time_ms"`
+	}
+	if err := json.Unmarshal([]byte(out), &area); err != nil || len(area) != 1 || area[0].CX != 2 || area[0].CY != 2 ||
+		strconv.FormatUint(area[0].Version, 10) != secondVersion || area[0].Present != 1 || area[0].BlockCount != 4 || area[0].CommitTimeMS == 0 {
 		t.Fatalf("GET AREA --json: %q", out)
 	}
 
-	if out := s.ok(t, "SCAN CHUNKS FROM world LIMIT 1"); out != "chunks:\n  1) [0, 0]\nmore = true\n" {
-		t.Fatalf("SCAN CHUNKS: %q", out)
+	var scan struct {
+		Chunks                [][]int64
+		More                  bool
+		Epoch                 string
+		Position              uint64
+		RetainedDeletionFloor uint64 `json:"retained_deletion_floor"`
 	}
-	if out := s.ok(t, "--json", "SCAN CHUNKS FROM world AFTER 0 0"); out != `{"chunks":[[2,2]],"more":false}`+"\n" {
-		t.Fatalf("SCAN CHUNKS --json: %q", out)
+	encodedScan := s.ok(t, "--json", "SCAN CHUNKS FROM world AFTER 0 0")
+	if err := json.Unmarshal([]byte(encodedScan), &scan); err != nil || len(scan.Chunks) != 1 || len(scan.Chunks[0]) != 3 ||
+		scan.Chunks[0][0] != 2 || scan.Chunks[0][1] != 2 || strconv.FormatInt(scan.Chunks[0][2], 10) != secondVersion ||
+		scan.More || len(scan.Epoch) != 32 || strconv.FormatUint(scan.Position, 10) != secondVersion || scan.RetainedDeletionFloor != 0 {
+		t.Fatalf("SCAN CHUNKS --json: %q", encodedScan)
+	}
+	wantScan := "chunks:\n  1) [0, 0, " + firstVersion + "]\nmore = true\nepoch = " + scan.Epoch +
+		"\nposition = " + secondVersion + "\nretained_deletion_floor = 0\n"
+	if out := s.ok(t, "SCAN CHUNKS FROM world LIMIT 1"); out != wantScan {
+		t.Fatalf("SCAN CHUNKS: %q", out)
 	}
 
 	// Dump a chunk to a file and write it back elsewhere, its text and
@@ -388,6 +408,28 @@ func TestCLIChunksAndAreas(t *testing.T) {
 	// After the table's columns changed, the dumped form no longer fits.
 	s.ok(t, "ALTER TABLE world ADD COLUMN extra u8")
 	s.failsCode(t, 2, "SCHEMA_MISMATCH actual=1 current=2 reason=schema_mismatch table=world", "--in", file, "SET CHUNK 6 6 IN world $1")
+}
+
+func withoutChunkTimes(t *testing.T, output string) string {
+	t.Helper()
+	var result strings.Builder
+	count := 0
+	for _, line := range strings.SplitAfter(output, "\n") {
+		text := strings.TrimSpace(line)
+		if strings.HasPrefix(text, "commit_time_ms = ") {
+			value, err := strconv.ParseUint(strings.TrimPrefix(text, "commit_time_ms = "), 10, 64)
+			if err != nil || value == 0 {
+				t.Fatalf("invalid producing time in %q", output)
+			}
+			count++
+			continue
+		}
+		result.WriteString(line)
+	}
+	if count == 0 {
+		t.Fatalf("missing producing time in %q", output)
+	}
+	return result.String()
 }
 
 func TestCLITablesAndAlter(t *testing.T) {
@@ -459,7 +501,7 @@ func TestCLITextColumnsAfterAlter(t *testing.T) {
 		"block 0 0\n  a = 1\n  b = x'0102'\n  label = NULL\n  raw = NULL\n" +
 		"block 1 0\n  a = 2\n  b = x''\n  label = 'new'\n  raw = x'0d0a'\n" +
 		"block 0 1\n  a = 3\n  b = x'ff'\n  label = 'l3'\n  raw = NULL\n"
-	if out := s.ok(t, "--blocks", "GET CHUNK 0 0 FROM v"); !strings.HasSuffix(out, want) {
+	if out := s.ok(t, "--blocks", "GET CHUNK 0 0 FROM v"); !strings.HasSuffix(withoutChunkTimes(t, out), want) {
 		t.Fatalf("GET CHUNK after ADD/DROP: got %q, want suffix %q", out, want)
 	}
 	want = "block 0 0\n  raw = NULL\n  label = NULL\nblock 1 0\n  raw = x'0d0a'\n  label = 'new'\nblock 0 1\n  raw = NULL\n  label = 'l3'\n"

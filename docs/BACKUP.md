@@ -16,8 +16,8 @@ chunk-cli --uri "$CHUNKDB_URI" "BACKUP TO 'snapshot'"
 OK
 1
 tables = 1
-files = 7
-bytes = 551
+files = 8
+bytes = 615
 cuts:
   1) table = world, epoch = <epoch>, revision = 1
 ```

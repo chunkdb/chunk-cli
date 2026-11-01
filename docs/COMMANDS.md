@@ -135,6 +135,7 @@ OK
 {"kind":2,"name":"door"}
 version = 1
 schema_version = 1
+commit_time_ms = <time-ms>
 present = 1 of 4 blocks
 block 1 1
   kind = 2
@@ -167,7 +168,7 @@ chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 3 1 FROM world"
 
 ```output
 2
-wrote 37 bytes to chunk.bin
+wrote 133 bytes to chunk.bin
 3
 kind = 3
 name = 'door'
@@ -195,6 +196,7 @@ Use `--blocks "GET CHUNK 0 0 0 FROM space"` to include the present block and chu
 ## Notes
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.
+Typed output and binary imports require checked CKCF forms in both table dimensions.
 Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.
 The size bound uses the combined hard variable-byte ceiling; the server enforces its current quota while allowing non-growing replacements of older data above a lowered quota.
 Supported `text(max)` and `bytes(max)` columns are variable-length known types.
