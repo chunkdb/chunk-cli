@@ -72,6 +72,13 @@ func TestAreaPageClassificationAndOutput(t *testing.T) {
 	if classified.areaPage == nil || classified.areaPage.dims != 3 || classified.areaPage.limit != 2 || classified.areaPage.after == nil || *classified.areaPage.after != [3]int64{0, 2, 0} || !classified.withSchema || classified.table != "after" || strings.Join(classified.columns, ",") != "limit,after" {
 		t.Fatal(classified)
 	}
+	compressed := classify("GET AREA-1-2 TO 0 0 FROM after COLUMNS limit,after LIMIT 1AFTER-1-2 WITH SCHEMA")
+	if compressed.areaPage == nil || compressed.areaPage.dims != 2 || compressed.table != "after" || strings.Join(compressed.columns, ",") != "limit,after" || !compressed.withSchema || compressed.areaPage.after == nil || *compressed.areaPage.after != ([3]int64{-1, -2, 0}) {
+		t.Fatal(compressed)
+	}
+	if isAreaReadStatement("GET AREAS-1-2 FROM t") {
+		t.Fatal("unrelated verb matched area budget")
+	}
 	for _, statement := range []string{"GET AREA 0 0 TO 1 1 FROM t LIMIT 0", "GET AREA 0 0 TO 1 1 FROM t AFTER 0 0 0", "GET AREA 0 0 TO 1 1 FROM t LIMIT 1 LIMIT 2", "GET AREA 0 0 0 TO 1 1 1 FROM t AFTER 0 0", "GET AREA 0 0 TO 1 1 FROM t AFTER 0 0 AFTER 0 1"} {
 		if classify(statement).areaPage != nil {
 			t.Fatal(statement)
@@ -237,13 +244,17 @@ func TestAreaPageRequiresCapabilityBeforeRequest(t *testing.T) {
 }
 
 func TestAreaReplyBudgetRefusesPartialBodyAndCloses(t *testing.T) {
-	for _, paged := range []bool{false, true} {
-		t.Run(strconv.FormatBool(paged), func(t *testing.T) {
+	for _, mode := range []string{"plain", "page", "compressed"} {
+		t.Run(mode, func(t *testing.T) {
 			statement := "GET AREA 0 0 0 TO 1 0 0 FROM world"
 			prefix := "*1\r\n*4\r\n:0\r\n:0\r\n:0\r\n$33554432\r\n"
-			if paged {
+			if mode != "plain" {
 				statement += " LIMIT 1"
 				prefix = "%3\r\n$6\r\nchunks\r\n" + prefix
+			}
+			if mode == "compressed" {
+				statement = "GET AREA-1-2 TO 0 0 FROM world LIMIT 1"
+				prefix = "%3\r\n$6\r\nchunks\r\n*1\r\n*3\r\n:-1\r\n:-2\r\n$33554432\r\n"
 			}
 			hello := watchWireMap("protocol", ":3\r\n", "server_version", watchWireBulk("test"), "max_line_bytes", ":1048576\r\n", "max_parameters", ":1024\r\n", "max_area_chunks", ":2\r\n", "max_response_bytes", ":80\r\n", "max_scan_limit", ":4096\r\n", "server_signature", "_\r\n", "features", "*1\r\n"+watchWireBulk("area_paging"), "limits", watchWireMap("max_area_chunks", ":2\r\n", "max_area_response_bytes", ":80\r\n"))
 			uri, done := rawAdmissionServer(t, func(conn net.Conn, reader *bufio.Reader) error {

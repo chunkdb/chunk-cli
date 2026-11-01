@@ -8,11 +8,16 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
+
+var areaReadPrefix = regexp.MustCompile(`(?i)^[ \t]*GET[ \t]+AREA\b`)
+
+func isAreaReadStatement(statement string) bool { return areaReadPrefix.MatchString(statement) }
 
 type areaPageRequest struct {
 	dims      int
@@ -40,8 +45,7 @@ func malformedAreaReply(err error) error {
 }
 
 func areaReadLimits(server *chunkclient.ServerInfo, statement string, info statementInfo) (*chunkclient.ReplyLimits, error) {
-	words := strings.Fields(statement)
-	if len(words) < 2 || !strings.EqualFold(words[0], "GET") || !strings.EqualFold(words[1], "AREA") {
+	if !isAreaReadStatement(statement) {
 		return nil, nil
 	}
 	if server == nil || server.MaxAreaChunks == 0 || server.MaxResponseBytes == 0 {

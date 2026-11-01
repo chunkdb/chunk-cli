@@ -33,6 +33,14 @@ func TestCLIAreaPages(t *testing.T) {
 				if first["more"] != true || len(first["chunks"].([]any)) != 0 || first["after"].([]any)[0] != json.Number("1") || len(first["after"].([]any)) != dims {
 					t.Fatal(first)
 				}
+				compressed := "GET AREA-1-2 TO 0 0 FROM t LIMIT 1"
+				if dims == 3 {
+					compressed = "GET AREA-1-2-3 TO 0 0 0 FROM t LIMIT 1"
+				}
+				compact := read(compressed)
+				if compact["more"] != true || len(compact["after"].([]any)) != dims || compact["after"].([]any)[0] != json.Number("-1") || compact["after"].([]any)[1] != json.Number("-2") {
+					t.Fatal("compressed area prefix", compact)
+				}
 				last := read(selector + " COLUMNS v WITH SCHEMA AFTER 3 0" + third + " LIMIT 2")
 				page := last["page"].(map[string]any)
 				chunk := page["chunks"].([]any)[0].(map[string]any)

@@ -103,6 +103,9 @@ func tokenize(statement string, keepCommas ...bool) []string {
 
 func classify(statement string) statementInfo {
 	tokens := tokenize(statement, true)
+	if isAreaReadStatement(statement) {
+		tokens = rawChunkTokens(statement, true)
+	}
 	keyword := func(i int) string {
 		if i < len(tokens) {
 			return strings.ToUpper(tokens[i])
