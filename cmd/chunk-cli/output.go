@@ -293,12 +293,18 @@ func printChunk(w io.Writer, chunk *chunkclient.Chunk, cx, cy int64, opts statem
 }
 
 func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply chunkclient.Value, opts statementOptions) error {
+	if err := opts.areaCheckpoint(); err != nil {
+		return err
+	}
 	if reply.Kind != chunkclient.KindArray {
 		return malformedAreaReply(fmt.Errorf("GET AREA: expected an array, got a %s", reply.Kind))
 	}
 	const maxDecodedAreaArrayBytes = 64 * 1024 * 1024
 	var decodedBytes uint64
 	for _, item := range reply.Items {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		dims := schema.Dims
 		if dims == 0 {
 			dims = 2
@@ -325,6 +331,9 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 	}
 	entries := make([]entry, 0, len(reply.Items))
 	for _, item := range reply.Items {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		if item.Kind != chunkclient.KindArray || len(item.Items) < dims+1 || item.Items[dims].Kind != chunkclient.KindBulk {
 			return malformedAreaReply(fmt.Errorf("GET AREA: invalid %d-axis chunk entry", dims))
 		}
@@ -345,6 +354,9 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 	if opts.json {
 		list := make([]any, len(entries))
 		for i, e := range entries {
+			if err := opts.areaCheckpoint(); err != nil {
+				return err
+			}
 			fields := orderedMap{}
 			for axis, value := range e.coordinates {
 				fields = append(fields, jsonField{[]string{"cx", "cy", "cz"}[axis], value})
@@ -358,6 +370,9 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 		out.WriteString("(empty)\n")
 	}
 	for _, e := range entries {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		out.WriteString("chunk")
 		for _, coordinate := range e.coordinates {
 			fmt.Fprintf(&out, " %d", coordinate)

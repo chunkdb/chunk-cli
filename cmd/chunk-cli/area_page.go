@@ -208,23 +208,15 @@ func (r *areaPageRequest) nextPoint(point [3]int64) *[3]int64 {
 	return nil
 }
 
-// The count is bounded by the requested page, independent of the radius or box.
 func (r *areaPageRequest) validProgress(cursor *[3]int64, limit uint64) bool {
-	point := r.firstPoint()
-	next := &point
-	if r.after != nil {
-		next = r.nextPoint(*r.after)
-	}
-	for visited := uint64(0); next != nil && visited < limit; visited++ {
-		if cursor != nil && *cursor == *next {
-			return r.nextPoint(*next) != nil
-		}
-		next = r.nextPoint(*next)
-	}
-	return cursor == nil && next == nil
+	valid, _ := r.validProgressChecked(cursor, limit, nil)
+	return valid
 }
 
 func printAreaPage(w io.Writer, schema *chunkclient.Schema, info statementInfo, reply chunkclient.Value, opts statementOptions) error {
+	if err := opts.areaCheckpoint(); err != nil {
+		return err
+	}
 	bad := func(why string) error { return malformedAreaReply(fmt.Errorf("GET AREA: %s", why)) }
 	request := info.areaPage
 	dims := schema.Dims
@@ -249,6 +241,9 @@ func printAreaPage(w io.Writer, schema *chunkclient.Schema, info statementInfo, 
 	}
 	seen := map[string]bool{}
 	for _, field := range reply.Map {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		if field.Key.Kind != chunkclient.KindBulk {
 			return bad("page keys must be bulk strings")
 		}
@@ -282,11 +277,18 @@ func printAreaPage(w io.Writer, schema *chunkclient.Schema, info statementInfo, 
 	if request.after != nil && !request.contains(*request.after) {
 		return bad("requested continuation is outside the selector")
 	}
-	if !request.validProgress(cursor, limit) {
+	valid, err := request.validProgressChecked(cursor, limit, opts.areaCheckpoint)
+	if err != nil {
+		return err
+	}
+	if !valid {
 		return bad("continuation or completion exceeds the requested cell limit")
 	}
 	var previous *[3]int64
 	for _, entry := range chunks.Items {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		if entry.Kind != chunkclient.KindArray || len(entry.Items) < dims+1 || entry.Items[dims].Kind != chunkclient.KindBulk {
 			return bad("invalid chunk entry arity")
 		}
@@ -341,6 +343,6 @@ func printAreaPage(w io.Writer, schema *chunkclient.Schema, info statementInfo, 
 		out.WriteString("]\n")
 	}
 	out.Write(entries.Bytes())
-	_, err := w.Write(out.Bytes())
+	_, err = w.Write(out.Bytes())
 	return err
 }

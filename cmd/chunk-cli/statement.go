@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chunkdb/chunk-cli/v2/internal/chunkclient"
 )
@@ -14,8 +15,9 @@ import (
 // statementOptions are the options of one statement: given as global flags
 // for a one-shot statement, or before the statement on a shell line.
 type statementOptions struct {
-	json   bool
-	blocks bool
+	areaCheck *areaResponseDeadline
+	json      bool
+	blocks    bool
 	// in is a file sent as the parameter $1 (a chunk form for SET CHUNK).
 	in string
 	// out is a file the reply's bytes are written to (a chunk form of GET
@@ -467,7 +469,18 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	if replies[0].Err != nil {
 		return fmt.Errorf("DESCRIBE %s: %w", info.table, replies[0].Err)
 	}
+	if info.kind == statementGetArea {
+		opts.areaCheck = &areaResponseDeadline{deadline: replies[1].Deadline, now: time.Now}
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
+	}
 	schema, err := chunkclient.ParseDescribe(replies[0].Value)
+	if info.kind == statementGetArea {
+		if expired := opts.areaCheckpoint(); expired != nil {
+			return expired
+		}
+	}
 	if err != nil {
 		if info.kind == statementGetArea {
 			return malformedAreaReply(err)
@@ -475,6 +488,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		return err
 	}
 	reply := replies[1].Value
+	if info.kind == statementGetArea {
+		return printAreaResponse(stdout, schema, info, replies[1], opts)
+	}
 	if info.withVersion || info.withSchema {
 		return printReadMetadata(stdout, schema, info, reply, opts)
 	}

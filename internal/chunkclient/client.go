@@ -62,6 +62,8 @@ type Request struct {
 type Reply struct {
 	Value Value
 	Err   *ServerError
+	// Deadline is the original exchange deadline, retained for typed decoding.
+	Deadline time.Time
 }
 
 type Client struct {
@@ -389,7 +391,8 @@ func (c *Client) roundTrip(requests []Request) ([]Reply, error) {
 }
 
 func (c *Client) exchange(requests []Request) ([]Reply, error) {
-	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+	deadline := time.Now().Add(c.timeout)
+	if err := c.conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("set deadline: %w", err)
 	}
 	for _, request := range requests {
@@ -419,7 +422,7 @@ func (c *Client) exchange(requests []Request) ([]Reply, error) {
 			}
 			return nil, err
 		default:
-			replies = append(replies, Reply{Value: value})
+			replies = append(replies, Reply{Value: value, Deadline: deadline})
 		}
 	}
 	return replies, nil

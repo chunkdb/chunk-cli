@@ -21,7 +21,7 @@ chunk-cli help
 | `--uri <URI>` | Connection URI; default `chunk://127.0.0.1:4242/` |
 | `--user <name>` | Override the URI's login user |
 | `--password-file <file>` | Read the login password from the first line |
-| `--timeout <duration>` | Network timeout; default `5s` |
+| `--timeout <duration>` | Request timeout, including typed GET AREA validation; default `5s` |
 | `--no-retry` | Run a transaction file once |
 | `--tls-insecure` | Accept an untrusted TLS certificate |
 | `--tls-server-name <name>` | Override the TLS certificate name |
@@ -237,3 +237,4 @@ Repeat the statement with AFTER followed by the displayed coordinates.
 WITH SCHEMA adds a leading schema line; JSON returns `{schema_version, page}` with the complete page map.
 Independent requests can observe intervening writes; pages in an open transaction use its snapshot and pending writes.
 The CLI runs one page per statement and does not accumulate or retry earlier pages.
+The original request deadline also covers area validation and output preparation; expiry closes the connection and ends an open transaction.

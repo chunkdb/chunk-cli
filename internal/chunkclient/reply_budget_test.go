@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net"
 	"runtime"
 	"strings"
 	"testing"
@@ -26,6 +27,31 @@ func (r *headerOnlyReader) Read(output []byte) (int, error) {
 }
 
 const emptyAreaPage = "%3\r\n$6\r\nchunks\r\n*0\r\n$4\r\nmore\r\n#f\r\n$5\r\nafter\r\n_\r\n"
+
+type deadlineRecordingConn struct {
+	net.Conn
+	deadline time.Time
+}
+
+func (c *deadlineRecordingConn) SetDeadline(deadline time.Time) error {
+	c.deadline = deadline
+	return c.Conn.SetDeadline(deadline)
+}
+
+func TestAreaReplyRetainsOriginalExchangeDeadline(t *testing.T) {
+	client := newScriptedClient(t, emptyAreaPage+"+PONG\r\n")
+	connection := &deadlineRecordingConn{Conn: client.conn}
+	client.conn = connection
+	replies, err := client.Pipeline([]Request{{Statement: "GET AREA 0 0 TO 0 0 FROM t LIMIT 1"}, {Statement: "PING"}})
+	if err != nil || len(replies) != 2 {
+		t.Fatal(replies, err)
+	}
+	for _, reply := range replies {
+		if reply.Deadline.IsZero() || reply.Deadline != connection.deadline {
+			t.Fatal(reply.Deadline, connection.deadline)
+		}
+	}
+}
 
 func TestAreaReplyBudgetRejectsBeforeBodyAllocation(t *testing.T) {
 	for _, tc := range []struct {
