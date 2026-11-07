@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `CREATE SLOT ... OWNER <user>` sets a slot's owner, and `SHOW SLOTS` validates and prints its nullable `owner`.
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
