@@ -98,7 +98,7 @@ CREATE SLOT IF NOT EXISTS with another OWNER returns `INVALID_ARGUMENT reason=sl
 Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
 Changing filters requires a different slot.
 `SHOW SLOTS` includes typed filters, stable column IDs, nullable loss reasons and the owner.
-The owner is shown to that user and to users who manage users, and is `NULL` otherwise.
+The owner is shown to that user, to users who manage users and to everyone on a server started with `--auth none`, and is `NULL` otherwise.
 A renamed column displays its current name; a dropped column retains its ID with a null name and loses the filtered slot.
 
 JSON events include nullable `tag` and `txn`; changes also include `chunk_changes`.
