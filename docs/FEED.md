@@ -70,6 +70,7 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
     columns = NULL
     no_before = false
     chunks = false
+  owner = admin
 OK
 ```
 
