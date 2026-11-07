@@ -89,12 +89,16 @@ OK
 
 Slot names match `[a-z_][a-z0-9_]*` and contain 1–63 bytes.
 Creating and dropping slots requires `ADMIN`.
-Watching requires `READ`.
+Watching requires `READ`; watching another user's slot also requires `ADMIN` on `*`.
 
 CREATE SLOT stores AREA, COLUMNS, NO BEFORE and CHUNKS filters.
+`OWNER <user>` sets the slot's owner; it defaults to the user running CREATE SLOT, and the user need not exist yet.
+Under `--auth none`, CREATE SLOT without OWNER records no owner.
+CREATE SLOT IF NOT EXISTS with another OWNER returns `INVALID_ARGUMENT reason=slot_filters`.
 Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
 Changing filters requires a different slot.
-`SHOW SLOTS` includes typed filters, stable column IDs and nullable loss reasons.
+`SHOW SLOTS` includes typed filters, stable column IDs, nullable loss reasons and the owner.
+The owner is shown to that user and to users who manage users, and is `NULL` otherwise.
 A renamed column displays its current name; a dropped column retains its ID with a null name and loses the filtered slot.
 
 JSON events include nullable `tag` and `txn`; changes also include `chunk_changes`.

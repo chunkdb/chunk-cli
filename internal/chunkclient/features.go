@@ -64,7 +64,8 @@ func validateFeatureFlags(flags Value) error {
 }
 
 // ValidateSlots validates the persisted filters, including nullable renamed-away
-// column names. Older replies without filters remain readable.
+// column names, and the nullable owner. Older replies without filters or owner
+// remain readable.
 func ValidateSlots(reply Value) error {
 	if reply.Kind != KindArray {
 		return errors.New("SHOW SLOTS: expected array")
@@ -94,6 +95,9 @@ func ValidateSlots(reply Value) error {
 		}
 		if reason, found := slot.Lookup("lost_reason"); found && reason.Kind != KindNull && reason.Kind != KindBulk {
 			return errors.New("SHOW SLOTS: invalid lost_reason")
+		}
+		if owner, found := slot.Lookup("owner"); found && owner.Kind != KindNull && owner.Kind != KindBulk {
+			return errors.New("SHOW SLOTS: invalid owner")
 		}
 		filters, found := slot.Lookup("filters")
 		if !found {
