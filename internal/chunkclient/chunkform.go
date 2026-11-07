@@ -143,13 +143,15 @@ func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, err
 			return nil, fmt.Errorf("the chunk form ends inside a text or bytes entry at byte %d", offset)
 		}
 		id := binary.LittleEndian.Uint32(form[offset:])
-		block := int(binary.LittleEndian.Uint32(form[offset+4:]))
-		length := int(binary.LittleEndian.Uint32(form[offset+8:]))
+		// Compared as uint64 before indexing, so a header value above the
+		// largest int is refused rather than turned negative.
+		block := binary.LittleEndian.Uint32(form[offset+4:])
+		length := binary.LittleEndian.Uint32(form[offset+8:])
 		offset += 12
-		if length > len(form)-offset {
+		if uint64(length) > uint64(len(form)-offset) {
 			return nil, fmt.Errorf("a text or bytes entry of %d bytes runs past the chunk form", length)
 		}
-		if block >= blocks || !chunk.Present[block] {
+		if uint64(block) >= uint64(blocks) || !chunk.Present[block] {
 			return nil, fmt.Errorf("a text or bytes entry names block %d, which is not a present block", block)
 		}
 		index, ok := columnOfID[id]
@@ -157,8 +159,8 @@ func DecodeChunkForm(schema *Schema, columns []string, form []byte) (*Chunk, err
 			return nil, fmt.Errorf("a text or bytes entry names column id %d, which is not a text or bytes column of the form (table %s, schema version %d)",
 				id, schema.Table, schema.Version)
 		}
-		chunk.Values[index][block] = Value{Kind: KindBulk, Bulk: form[offset : offset+length]}
-		offset += length
+		chunk.Values[index][block] = Value{Kind: KindBulk, Bulk: form[offset : offset+int(length)]}
+		offset += int(length)
 	}
 	return chunk, nil
 }
