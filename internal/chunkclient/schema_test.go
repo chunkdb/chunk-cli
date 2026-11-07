@@ -263,6 +263,20 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 			e.entry(5, 1, "x")
 			return e.Bytes()
 		}(),
+		"block over int32": func() []byte {
+			var e chunkFormBuilder
+			e.Write(full[:55])
+			e.entry(5, 0xffffffff, "x")
+			return e.Bytes()
+		}(),
+		"length over int32": func() []byte {
+			var e chunkFormBuilder
+			e.Write(full[:55])
+			e.u32(5)
+			e.u32(0)
+			e.u32(0xffffffff)
+			return e.Bytes()
+		}(),
 		"unknown id": func() []byte {
 			var e chunkFormBuilder
 			e.Write(full)
@@ -354,6 +368,57 @@ func TestFormatFloat(t *testing.T) {
 	} {
 		if got := FormatFloat(tc.value, tc.bits); got != tc.want {
 			t.Errorf("FormatFloat(%v, %d) = %q, want %q", tc.value, tc.bits, got, tc.want)
+		}
+	}
+}
+
+func TestParseDescribeSizeBounds(t *testing.T) {
+	const chunk, large = "$5\r\nchunk\r\n*2\r\n:2\r\n:2", "$5\r\nlarge\r\n*2\r\n:8\r\n:8"
+	pair := func(key, w, h string) string {
+		return "$5\r\n" + key + "\r\n*2\r\n:" + w + "\r\n:" + h
+	}
+	parse := func(reply string) (*Schema, error) {
+		value, err := readReply(bufio.NewReader(strings.NewReader(reply)))
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return ParseDescribe(value)
+	}
+	largest := strings.Replace(strings.Replace(describeW, chunk, pair("chunk", "2147483647", "2147483647"), 1), large, pair("large", "2147483647", "2147483647"), 1)
+	schema, err := parse(largest)
+	if err != nil || schema.ChunkWidth != 2147483647 || schema.ChunkHeight != 2147483647 || schema.LargeWidth != 2147483647 || schema.LargeHeight != 2147483647 {
+		t.Fatalf("largest sizes: %+v, %v", schema, err)
+	}
+	for _, size := range []string{"2147483648", "4294967295", "18446744073709551615"} {
+		for _, broken := range []string{
+			strings.Replace(describeW, chunk, pair("chunk", size, "2"), 1),
+			strings.Replace(describeW, chunk, pair("chunk", "2", size), 1),
+			strings.Replace(describeW, large, pair("large", size, "8"), 1),
+			strings.Replace(describeW, large, pair("large", "8", size), 1),
+		} {
+			if _, err := parse(broken); err == nil || !strings.Contains(err.Error(), "invalid size") {
+				t.Errorf("size %s: got %v, want an invalid size", size, err)
+			}
+		}
+	}
+}
+
+func TestParseDescribeDims(t *testing.T) {
+	withDims := func(dims string) string {
+		return strings.Replace(describeW, "%6\r\n$5\r\ntable", "%7\r\n$4\r\ndims\r\n:"+dims+"\r\n$5\r\ntable", 1)
+	}
+	for dims, want := range map[string]int{"2": 2, "3": 3} {
+		if schema := mustSchema(t, withDims(dims)); schema.Dims != want {
+			t.Fatalf("dims %s: got %d", dims, schema.Dims)
+		}
+	}
+	for _, dims := range []string{"0", "1", "4", "-2", "4294967298", "18446744073709551615"} {
+		value, err := readReply(bufio.NewReader(strings.NewReader(withDims(dims))))
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if _, err := ParseDescribe(value); err == nil || err.Error() != "DESCRIBE: invalid dims" {
+			t.Errorf("dims %s: got %v, want invalid dims", dims, err)
 		}
 	}
 }

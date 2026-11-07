@@ -227,3 +227,19 @@ func TestFoundationWatchFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeSchemaPushDims(t *testing.T) {
+	push := func(dims string) chunkclient.Value {
+		return chunkclient.Value{Kind: chunkclient.KindPush, Items: []chunkclient.Value{watchBulk("schema"), foundationMapValue(watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("revision"), watchInt("1"), watchBulk("schema_version"), watchInt("1"), watchBulk("dims"), watchInt(dims), watchBulk("columns"), watchArray(), watchBulk("chunk_columns"), watchArray())}}
+	}
+	for dims, want := range map[string]int{"2": 2, "3": 3} {
+		if _, metadata, err := normalizeSchemaPush(push(dims)); err != nil || metadata.dims != want {
+			t.Fatalf("dims %s: got %+v, %v", dims, metadata, err)
+		}
+	}
+	for _, dims := range []string{"0", "1", "4", "-3", "4294967298", "18446744073709551615"} {
+		if _, _, err := normalizeSchemaPush(push(dims)); err == nil || err.Error() != "WATCH: invalid schema dimensions" {
+			t.Errorf("dims %s: got %v, want invalid schema dimensions", dims, err)
+		}
+	}
+}

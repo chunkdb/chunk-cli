@@ -197,10 +197,14 @@ func ParseDescribe(reply Value) (*Schema, error) {
 	schema.Dims = 2
 	if dims, found := reply.Lookup("dims"); found {
 		n, err := dims.Uint64()
-		if err != nil || n != 2 && n != 3 {
+		switch {
+		case err == nil && n == 2:
+			schema.Dims = 2
+		case err == nil && n == 3:
+			schema.Dims = 3
+		default:
 			return nil, errors.New("DESCRIBE: invalid dims")
 		}
-		schema.Dims = int(n)
 	}
 	if epoch, found := reply.Lookup("epoch"); found {
 		if epoch.Kind != KindBulk || !ValidEpoch(string(epoch.Bulk)) {
@@ -286,7 +290,7 @@ func sizePair(pair Value) (int, int, error) {
 	var out [2]int
 	for i, item := range pair.Items[:2] {
 		value, err := item.Uint64()
-		if err != nil || value == 0 || value > 1<<31 {
+		if err != nil || value == 0 || value > math.MaxInt32 {
 			return 0, 0, fmt.Errorf("invalid size %q", item.Text)
 		}
 		out[i] = int(value)
