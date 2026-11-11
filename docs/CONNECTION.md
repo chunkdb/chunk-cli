@@ -43,6 +43,10 @@ TLS protects statements and replies.
 For a certificate with a different name, set `--tls-server-name <name>`.
 `--tls-insecure` accepts an untrusted certificate, including local self-signed certificates.
 
+Over `chunks://` the CLI binds the login to the TLS connection, so a login relayed by something that ends TLS in between fails with `AUTH_FAILED reason=channel_binding`, even with `--tls-insecure`.
+Set `--channel-binding off` when a load balancer in front of the server ends TLS.
+`--channel-binding require` also refuses to connect over `chunk://` or without a user.
+
 The default network timeout is `5s`.
 Use `--timeout 10s` to change it.
 One-shot statements and interactive shell statements are not retried.

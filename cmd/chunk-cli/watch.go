@@ -763,7 +763,7 @@ func watchCall(ctx context.Context, client *chunkclient.Client, call func() erro
 }
 
 func connectWatchLogin(ctx context.Context, opts globalOptions, uri chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
-	client, err := chunkclient.DialContext(ctx, chunkclient.Config{URI: uri, Timeout: opts.Timeout, TLSInsecure: opts.TLSInsecure, TLSServerName: opts.TLSServerName, SessionOptions: opts.SessionOptions})
+	client, err := chunkclient.DialContext(ctx, chunkclient.Config{URI: uri, Timeout: opts.Timeout, TLSInsecure: opts.TLSInsecure, TLSServerName: opts.TLSServerName, ChannelBinding: opts.ChannelBinding, SessionOptions: opts.SessionOptions})
 	if err != nil {
 		return nil, err
 	}

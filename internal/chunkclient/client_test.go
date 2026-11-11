@@ -283,6 +283,7 @@ func TestHelloRefusals(t *testing.T) {
 		{"-ERR PROTOCOL expected HELLO 2\r\n", "", "older chunkdb protocol", nil},
 		{"-ERR UNKNOWN_COMMAND HELLO\r\n", "", "chunkdb 1.x", nil},
 		{"-ERR AUTH_REQUIRED use AUTH <token>\r\n", "bot", "chunkdb 1.x", nil},
+		{"-ERR AUTH_REQUIRED reason=channel_binding this server takes only bound logins\r\n", "bot", "AUTH_REQUIRED reason=channel_binding", ErrAuthRequired},
 		{"-ERR AUTH_REQUIRED use HELLO 3 USER <name> $1\r\n", "", "AUTH_REQUIRED", ErrAuthRequired},
 		{"-ERR AUTH_FAILED temporary auth ban\r\n", "bot", "AUTH_FAILED", ErrAuthFailed},
 		{"+OK\r\n", "", "expected a map", nil},

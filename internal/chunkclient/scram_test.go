@@ -23,7 +23,7 @@ const (
 )
 
 func TestScramRFC7677(t *testing.T) {
-	login := newLogin("user", "pencil", rfcNonce)
+	login := newLogin("user", "pencil", rfcNonce, "", nil)
 	if login.first != "n,,n=user,r="+rfcNonce {
 		t.Fatalf("client-first %q", login.first)
 	}
@@ -40,7 +40,7 @@ func TestScramRFC7677(t *testing.T) {
 }
 
 func TestScramRefusesServerFirst(t *testing.T) {
-	login := newLogin("user", "pencil", rfcNonce)
+	login := newLogin("user", "pencil", rfcNonce, "", nil)
 	for message, want := range map[string]string{
 		"r=other,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096":            "does not continue",
 		"r=" + rfcNonce + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096": "does not continue",
