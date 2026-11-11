@@ -63,6 +63,10 @@ func startWatchProcessTrusted(t *testing.T, uri, caFile string, args ...string) 
 	global := []string{"-test.run=^TestWatchProcess$", "--", "--uri", uri}
 	if caFile == "" {
 		global = append(global, "--tls-insecure")
+	} else {
+		// A trusted certificate is the recording proxy's, which ends TLS
+		// itself with the server's key: a login through it cannot be bound.
+		global = append(global, "--channel-binding", "off")
 	}
 	all := append(append(global, "watch", "world"), args...)
 	p.command = exec.Command(os.Args[0], all...)

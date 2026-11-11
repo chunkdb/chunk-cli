@@ -588,7 +588,7 @@ func TestCLIUsers(t *testing.T) {
 	if out := s.ok(t, "GRANT READ ON world TO bot"); out != "OK\n" {
 		t.Fatalf("GRANT: %q", out)
 	}
-	if out := s.ok(t, "--json", "SHOW USERS"); !strings.Contains(out, `{"name":"bot","manages_users":false,"grants":{"world":"READ"}}`) {
+	if out := s.ok(t, "--json", "SHOW USERS"); !strings.Contains(out, `{"name":"bot","manages_users":false,"requires_channel_binding":false,"grants":{"world":"READ"}}`) {
 		t.Fatalf("SHOW USERS: %q", out)
 	}
 
@@ -636,7 +636,7 @@ func TestCLIUsers(t *testing.T) {
 		t.Fatalf("shell: %d %q %q", code, out, errOut)
 	}
 	if code, out, errOut := s.cliAt(t, s.uriFor("carol", "carol"), "", "--json", "SHOW USERS"); code != 0 ||
-		!strings.Contains(out, `{"name":"carol","manages_users":true,"grants":{}}`) || strings.Contains(out, `"bot"`) {
+		!strings.Contains(out, `{"name":"carol","manages_users":true,"requires_channel_binding":false,"grants":{}}`) || strings.Contains(out, `"bot"`) {
 		t.Fatalf("carol SHOW USERS: %d %q %q", code, out, errOut)
 	}
 	if code, _, errOut := bot("second", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
