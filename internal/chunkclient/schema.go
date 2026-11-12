@@ -213,10 +213,14 @@ func ParseDescribe(reply Value) (*Schema, error) {
 	schema.Dims = 2
 	if dims, found := reply.Lookup("dims"); found {
 		n, err := dims.Uint64()
-		if err != nil || n != 2 && n != 3 {
+		switch {
+		case err == nil && n == 2:
+			schema.Dims = 2
+		case err == nil && n == 3:
+			schema.Dims = 3
+		default:
 			return nil, errors.New("DESCRIBE: invalid dims")
 		}
-		schema.Dims = int(n)
 	}
 	if epoch, found := reply.Lookup("epoch"); found {
 		if epoch.Kind != KindBulk || !ValidEpoch(string(epoch.Bulk)) {

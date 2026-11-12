@@ -43,10 +43,14 @@ func normalizeSchemaPush(push chunkclient.Value) (chunkclient.Value, watchSchema
 		known[key] = value
 	}
 	dims, err := known["dims"].Uint64()
-	if err != nil || dims != 2 && dims != 3 {
+	switch {
+	case err == nil && dims == 2:
+		metadata.dims = 2
+	case err == nil && dims == 3:
+		metadata.dims = 3
+	default:
 		return push, metadata, errors.New("WATCH: invalid schema dimensions")
 	}
-	metadata.dims = int(dims)
 	metadata.chunkColumns, err = chunkclient.ParseColumns(known["chunk_columns"])
 	if err != nil {
 		return push, metadata, err

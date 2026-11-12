@@ -18,10 +18,15 @@ import (
 )
 
 type Config struct {
-	URI            chunkuri.Parsed
-	Timeout        time.Duration
-	TLSInsecure    bool
-	TLSServerName  string
+	URI           chunkuri.Parsed
+	Timeout       time.Duration
+	TLSInsecure   bool
+	TLSServerName string
+	// TLSMaxVersion caps the TLS version offered; zero offers the newest.
+	TLSMaxVersion uint16
+	// ChannelBinding binds logins to the TLS connection; the zero value is
+	// ChannelBindingAuto.
+	ChannelBinding ChannelBinding
 	SessionOptions map[string]Value
 }
 
@@ -76,6 +81,7 @@ type Client struct {
 	// unusable.
 	broken         error
 	sessionOptions map[string]Value
+	channelBinding ChannelBinding
 }
 
 func Dial(cfg Config) (*Client, error) {
@@ -87,6 +93,12 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 	options, optionErr := normalizeSessionOptions(cfg.SessionOptions)
 	if optionErr != nil {
 		return nil, optionErr
+	}
+	if cfg.ChannelBinding == "" {
+		cfg.ChannelBinding = ChannelBindingAuto
+	}
+	if _, err := ParseChannelBinding(string(cfg.ChannelBinding)); err != nil {
+		return nil, err
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
@@ -103,6 +115,7 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.URI.Secure {
 		tlsCfg := &tls.Config{
 			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         cfg.TLSMaxVersion,
 			InsecureSkipVerify: cfg.TLSInsecure,
 		}
 		if cfg.TLSServerName != "" {
@@ -122,6 +135,7 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 
 	return &Client{
 		sessionOptions: options,
+		channelBinding: cfg.ChannelBinding,
 		conn:           conn,
 		reader:         bufio.NewReader(conn),
 		writer:         bufio.NewWriter(conn),
@@ -168,10 +182,14 @@ type Login struct {
 // server's limits. With a user it logs in with SCRAM-SHA-256: `HELLO 3 USER
 // <name> $1` with the client-first message, then `AUTH $1` with the proof;
 // the password never crosses the network, and the server must prove that it
-// holds the user's verifier.
+// holds the user's verifier. Over TLS the login is bound to the connection
+// (Config.ChannelBinding).
 func (c *Client) Hello(login Login) (*ServerInfo, error) {
 	line := "HELLO " + strconv.Itoa(ProtocolVersion)
 	if login.User == "" {
+		if c.channelBinding == ChannelBindingRequire {
+			return nil, errors.New("channel binding is required, and there is no user to log in as: only a login with a user can be bound")
+		}
 		reply, err := c.helloStep(c.helloRequest(line, nil), false)
 		if err != nil {
 			return nil, err
@@ -179,7 +197,11 @@ func (c *Client) Hello(login Login) (*ServerInfo, error) {
 		return c.acceptHello(reply, "")
 	}
 
-	scram, err := startLogin(login.User, login.Password)
+	bindingType, bindingData, err := loginBinding(c.conn, c.channelBinding)
+	if err != nil {
+		return nil, err
+	}
+	scram, err := startLogin(login.User, login.Password, bindingType, bindingData)
 	if err != nil {
 		return nil, err
 	}
@@ -218,8 +240,9 @@ func (c *Client) helloStep(request Request, withUser bool) (Value, error) {
 	case serverErr.Code == "PROTOCOL" && strings.Contains(serverErr.Message, "HELLO 2"):
 		return Value{}, fmt.Errorf("the server speaks an older chunkdb protocol (%s); this chunk-cli needs protocol %d", serverErr.Message, ProtocolVersion)
 	// A 1.x server does not know HELLO; one that requires a token answers
-	// AUTH_REQUIRED, which a server with users never answers to a login.
-	case serverErr.Code == "UNKNOWN_COMMAND" || (serverErr.Code == "AUTH_REQUIRED" && withUser):
+	// AUTH_REQUIRED without a reason, which a protocol 3 server never
+	// answers to a login.
+	case serverErr.Code == "UNKNOWN_COMMAND" || (serverErr.Code == "AUTH_REQUIRED" && withUser && serverErr.Keys["reason"] == ""):
 		return Value{}, fmt.Errorf("the server does not speak protocol %d (chunkdb 1.x); this chunk-cli needs a server with protocol %d", ProtocolVersion, ProtocolVersion)
 	}
 	return Value{}, serverErr

@@ -16,8 +16,9 @@ import (
 // verifier, and the fewest a login accepts from the server.
 const MinIterations = 4096
 
-// scramChannelBinding is the GS2 header "n,," (no channel binding) in base64.
-const scramChannelBinding = "c=biws"
+// gs2Unbound is the GS2 header of a login that is not bound to its
+// connection.
+const gs2Unbound = "n,,"
 
 // scramLogin is one SCRAM-SHA-256 login (RFC 5802, RFC 7677) in progress.
 type scramLogin struct {
@@ -27,11 +28,16 @@ type scramLogin struct {
 	// first is the client-first message, firstBare it without the GS2
 	// header.
 	first, firstBare string
+	// gs2Header is n,, or p=<channel binding type>,, and bindingData what
+	// the connection gives for that type.
+	gs2Header   string
+	bindingData []byte
 }
 
 // startLogin returns the login with its client-first message; the nonce is
-// 18 random bytes in base64.
-func startLogin(user, password string) (*scramLogin, error) {
+// 18 random bytes in base64. A bindingType binds the login to bindingData,
+// what its connection gives for that type.
+func startLogin(user, password, bindingType string, bindingData []byte) (*scramLogin, error) {
 	if err := checkUserName(user); err != nil {
 		return nil, err
 	}
@@ -39,12 +45,19 @@ func startLogin(user, password string) (*scramLogin, error) {
 	if _, err := rand.Read(random); err != nil {
 		return nil, fmt.Errorf("read random nonce: %w", err)
 	}
-	return newLogin(user, password, base64.StdEncoding.EncodeToString(random)), nil
+	return newLogin(user, password, base64.StdEncoding.EncodeToString(random), bindingType, bindingData), nil
 }
 
-func newLogin(user, password, nonce string) *scramLogin {
+func newLogin(user, password, nonce, bindingType string, bindingData []byte) *scramLogin {
 	bare := "n=" + user + ",r=" + nonce
-	return &scramLogin{user: user, password: password, nonce: nonce, first: "n,," + bare, firstBare: bare}
+	header := gs2Unbound
+	if bindingType != "" {
+		header = "p=" + bindingType + ",,"
+	}
+	return &scramLogin{
+		user: user, password: password, nonce: nonce, first: header + bare, firstBare: bare,
+		gs2Header: header, bindingData: bindingData,
+	}
 }
 
 // checkUserName refuses a name that HELLO 3 USER and the client-first
@@ -77,7 +90,9 @@ func (l *scramLogin) finish(serverFirst string) (clientFinal, serverSignature st
 	storedKey := sha256.Sum256(clientKey)
 	serverKey := hmacSHA256(salted, []byte("Server Key"))
 
-	withoutProof := scramChannelBinding + ",r=" + nonce
+	// c= repeats the header, followed by the channel binding data.
+	bound := append([]byte(l.gs2Header), l.bindingData...)
+	withoutProof := "c=" + base64.StdEncoding.EncodeToString(bound) + ",r=" + nonce
 	authMessage := []byte(l.firstBare + "," + serverFirst + "," + withoutProof)
 	signature := hmacSHA256(storedKey[:], authMessage)
 	proof := make([]byte, len(clientKey))

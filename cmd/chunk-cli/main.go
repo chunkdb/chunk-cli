@@ -26,6 +26,7 @@ type globalOptions struct {
 	Timeout        time.Duration
 	TLSInsecure    bool
 	TLSServerName  string
+	ChannelBinding chunkclient.ChannelBinding
 	Statement      statementOptions
 	SessionOptions map[string]chunkclient.Value
 	NoRetry        bool
@@ -156,6 +157,7 @@ func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclie
 		Timeout:        opts.Timeout,
 		TLSInsecure:    opts.TLSInsecure,
 		TLSServerName:  opts.TLSServerName,
+		ChannelBinding: opts.ChannelBinding,
 		SessionOptions: opts.SessionOptions,
 	})
 	if err != nil {
@@ -232,6 +234,11 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.BoolVar(&opts.NoRetry, "no-retry", false, "run a transaction file once")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
+	fs.Func("channel-binding", "bind the login to the TLS connection: auto, off or require (default auto)", func(text string) error {
+		mode, err := chunkclient.ParseChannelBinding(text)
+		opts.ChannelBinding = mode
+		return err
+	})
 	fs.Func("hello-option", "HELLO key=value (repeatable; unknown values are bytes)", func(text string) error {
 		key, value, found := strings.Cut(text, "=")
 		key = strings.ToLower(key)
@@ -297,6 +304,9 @@ Options:
   --no-retry                run a transaction file once
   --tls-insecure
   --tls-server-name <name>
+  --channel-binding <auto|off|require>
+                            bind the login to the TLS connection (default auto);
+                            off for TLS that ends at a load balancer
   --hello-option <key=value> repeatable HELLO session option
   --json                    print replies as JSON
   --blocks                  print the values of every present block of a chunk
