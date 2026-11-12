@@ -130,6 +130,7 @@ func TestDocSlotTranscript(t *testing.T) {
 		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("2"),
 		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
+		watchBulk("owner"), watchBulk("admin"),
 	)
 	var out bytes.Buffer
 	if err := printReply(&out, watchArray(slot), statementOptions{}); err != nil {
@@ -160,6 +161,7 @@ func TestDocSlotTranscript(t *testing.T) {
 		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
 		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
 		{"lost_reason = NULL", "lost_reason = schema_filter"},
+		{"owner = admin", "owner = reader"},
 	} {
 		changed := strings.Replace(out.String(), replacement[0], replacement[1], 1)
 		if normalizeDocOutput(changed) == expected {

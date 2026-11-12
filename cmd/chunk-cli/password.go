@@ -102,9 +102,10 @@ func readPasswordFile(path string) (string, error) {
 	return line, nil
 }
 
-// passwordStatement rewrites `CREATE USER <name> PASSWORD [MANAGES USERS]`
-// and `ALTER USER <name> PASSWORD` into the VERIFIER statements the server
-// takes, with the verifier as $1; ok is false for any other statement.
+// passwordStatement rewrites `CREATE USER <name> PASSWORD` with its
+// trailing clauses and `ALTER USER <name> PASSWORD` into the VERIFIER
+// statements the server takes, with the verifier as $1; ok is false for
+// any other statement.
 func passwordStatement(statement string) (rewritten, user string, ok bool) {
 	words := strings.Fields(statement)
 	if len(words) < 4 || !strings.EqualFold(words[1], "USER") || !strings.EqualFold(words[3], "PASSWORD") ||

@@ -25,6 +25,7 @@ chunk-cli help
 | `--no-retry` | Run a transaction file once |
 | `--tls-insecure` | Accept an untrusted TLS certificate |
 | `--tls-server-name <name>` | Override the TLS certificate name |
+| `--channel-binding <mode>` | Bind the login to the TLS connection: `auto` (default), `off` or `require` |
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
 | `--blocks` | Include present blocks in chunk, area and scan data output |

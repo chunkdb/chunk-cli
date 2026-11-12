@@ -114,6 +114,14 @@ func TestFoundationFeatureStatusAndSlotFilters(t *testing.T) {
 			t.Fatal("accepted malformed filter", key)
 		}
 	}
+	for _, owner := range []Value{foundationBulk("bot"), {Kind: KindNull}, {Kind: KindInteger, Text: "1"}} {
+		owned := slot
+		owned.Map = append(append([]MapEntry{}, slot.Map...), MapEntry{foundationBulk("owner"), owner})
+		err := ValidateSlots(Value{Kind: KindArray, Items: []Value{owned}})
+		if valid := owner.Kind != KindInteger; valid != (err == nil) {
+			t.Fatalf("owner %v: %v", owner, err)
+		}
+	}
 	badFlags := flags
 	badFlags.Map = append([]MapEntry{}, flags.Map...)
 	badFlags.Map[1].Value = Value{Kind: KindBigNumber, Text: "18446744073709551616"}

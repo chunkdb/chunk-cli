@@ -8,6 +8,8 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 
 ### Changed
 - Decode checked chunk forms with three-axis coordinates, chunk columns, producing timestamps and retained scan deletions, while bounding decoded output and binary imports (chunkdb/chunkdb#133).
+- Bind logins over `chunks://` to their TLS connection (`tls-exporter` on TLS 1.3, `tls-server-end-point` on TLS 1.2); `--channel-binding auto|off|require` selects the mode, and `CREATE USER <name> PASSWORD REQUIRE CHANNEL BINDING` is passed on. Part of chunkdb/chunkdb#162.
+- `CREATE SLOT ... OWNER <user>` sets a slot's owner, and `SHOW SLOTS` validates and prints its nullable `owner`.
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
@@ -21,6 +23,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- A DESCRIBE chunk or large-chunk dimension of 2147483648 is refused as an invalid size, as larger ones already were; a chunk form entry whose block or length does not fit an `int` is refused on 32-bit platforms.
 - Print never-written chunks as (null), or JSON null, while retaining versioned empty forms and refusing NULL binary exports. (#6).
 - Connection errors explain how to check a refused endpoint, TLS mismatch or timeout while preserving the underlying error
 - Raw MIGRATE statements reach the server when the keyword is not lowercase or is followed by a quoted name; malformed file markers report their line instead of merging steps

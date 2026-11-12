@@ -194,3 +194,79 @@ func TestCLIWatchSlotTerminalError(t *testing.T) {
 		})
 	}
 }
+
+// slotOwners returns each slot's owner as SHOW SLOTS prints it in JSON.
+func slotOwners(t *testing.T, s *testServer, uri string) map[string]*string {
+	t.Helper()
+	var rows []struct {
+		Name  string  `json:"name"`
+		Owner *string `json:"owner"`
+	}
+	code, out, errout := s.cliAt(t, uri, "", "--json", "SHOW SLOTS ON world")
+	if err := json.Unmarshal([]byte(out), &rows); code != 0 || err != nil {
+		t.Fatalf("SHOW SLOTS: %d %q %q %v", code, out, errout, err)
+	}
+	owners := map[string]*string{}
+	for _, row := range rows {
+		owners[row.Name] = row.Owner
+	}
+	return owners
+}
+
+func ownerText(owner *string) string {
+	if owner == nil {
+		return "null"
+	}
+	return *owner
+}
+
+func TestCLIWatchSlotOwnerIntegration(t *testing.T) {
+	s := startServer(t, false)
+	s.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+	s.ok(t, "--new-password-file", writePasswordFile(t, "bot-password"), "CREATE USER bot PASSWORD")
+	s.ok(t, "GRANT READ ON world TO bot")
+	botURI := s.uriFor("bot", "bot-password")
+	for _, statement := range []string{
+		"CREATE SLOT 'botslot' ON world OWNER bot",
+		"CREATE SLOT 'adminslot' ON world",
+		"CREATE SLOT 'later' ON world NO BEFORE OWNER future AREA 0 0 TO 0 0",
+		"CREATE SLOT IF NOT EXISTS 'botslot' ON world OWNER bot",
+	} {
+		if out := s.ok(t, statement); out != "OK\n" {
+			t.Fatalf("%s: %q", statement, out)
+		}
+	}
+	owners := slotOwners(t, s, s.uri)
+	if len(owners) != 3 || ownerText(owners["botslot"]) != "bot" || ownerText(owners["adminslot"]) != adminUser || ownerText(owners["later"]) != "future" {
+		t.Fatalf("owners seen by %s: %v %v %v", adminUser, ownerText(owners["botslot"]), ownerText(owners["adminslot"]), ownerText(owners["later"]))
+	}
+	owners = slotOwners(t, s, botURI)
+	if ownerText(owners["botslot"]) != "bot" || ownerText(owners["adminslot"]) != "null" || ownerText(owners["later"]) != "null" {
+		t.Fatalf("owners seen by bot: %v %v %v", ownerText(owners["botslot"]), ownerText(owners["adminslot"]), ownerText(owners["later"]))
+	}
+	code, out, errout := s.cliAt(t, botURI, "", "SHOW SLOTS ON world")
+	if code != 0 || !strings.Contains(out, "owner = bot\n") || strings.Count(out, "owner = NULL\n") != 2 {
+		t.Fatalf("SHOW SLOTS as bot: %d %q %q", code, out, errout)
+	}
+	code, _, errout = s.cli(t, "", "CREATE SLOT IF NOT EXISTS 'botslot' ON world OWNER "+adminUser)
+	if code == 0 || !strings.Contains(errout, "INVALID_ARGUMENT") || !strings.Contains(errout, "slot_filters") {
+		t.Fatalf("conditional creation with another owner: %d %q", code, errout)
+	}
+	p := startWatchProcess(t, botURI, "--slot", "botslot")
+	trace := fixtureStart(t, p, false)
+	trace.stop(t, p, trace.frontier, 1)
+	code, _, errout = s.cliAt(t, botURI, "", "watch", "world", "--slot", "adminslot", "--no-reconnect")
+	if code == 0 || !strings.Contains(errout, "PERMISSION_DENIED") {
+		t.Fatalf("watch of another user's slot: %d %q", code, errout)
+	}
+
+	open := startServerWith(t, false, false)
+	open.ok(t, "CREATE TABLE world (id u8) CHUNK 2 x 2")
+	open.ok(t, "CREATE SLOT 'consumer' ON world")
+	if owners := slotOwners(t, open, open.uri); len(owners) != 1 || owners["consumer"] != nil {
+		t.Fatalf("slot created without login: %v", owners)
+	}
+	if out := open.ok(t, "SHOW SLOTS ON world"); !strings.Contains(out, "owner = NULL\n") {
+		t.Fatal(out)
+	}
+}
