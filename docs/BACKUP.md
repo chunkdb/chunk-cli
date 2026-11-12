@@ -14,12 +14,12 @@ chunk-cli --uri "$CHUNKDB_URI" "BACKUP TO 'snapshot'"
 
 ```output
 OK
-2
+1
 tables = 1
-files = 7
-bytes = 515
+files = 8
+bytes = 615
 cuts:
-  1) table = world, epoch = <epoch>, revision = 2
+  1) table = world, epoch = <epoch>, revision = 1
 ```
 
 The reply reports table cuts, file counts and copied bytes.

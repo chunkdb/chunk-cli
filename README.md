@@ -25,7 +25,7 @@ chunk-cli --uri "$CHUNKDB_URI" "GET BLOCK 1 1 FROM world"
 
 ```output
 OK
-2
+1
 kind = 2
 name = 'door'
 ```

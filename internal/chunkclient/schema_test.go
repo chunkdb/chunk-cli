@@ -121,8 +121,9 @@ const formWColumns = "\x02\x00\x00\x00\x00\x00\x00\x00" +
 	"\x01\x00\x00\x00\x00\x00\x00\x00\x02\xf0\x00\x04\x00\x00\x00\x01\x00\x00\x00\x02\x00\x00\x00hi"
 
 func values(chunk *Chunk, column int) string {
-	out := make([]string, len(chunk.Values[column]))
-	for i, v := range chunk.Values[column] {
+	out := make([]string, len(chunk.Present))
+	for i := range chunk.Present {
+		v := chunk.ValueAt(column, i)
 		switch v.Kind {
 		case KindNull:
 			out[i] = "NULL"
@@ -143,7 +144,10 @@ func values(chunk *Chunk, column int) string {
 
 func TestDecodeChunkFormFromServer(t *testing.T) {
 	schema := mustSchema(t, describeW)
-	chunk, err := DecodeChunkForm(schema, nil, []byte(formW))
+	if _, err := DecodeChunkForm(schema, nil, []byte(formW)); err == nil {
+		t.Fatal("accepted an earlier binary form")
+	}
+	chunk, err := DecodeChunkForm(schema, nil, checkedPackedForm(t, schema, nil, 2, []byte(formW)[16:]))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -156,7 +160,7 @@ func TestDecodeChunkFormFromServer(t *testing.T) {
 		}
 	}
 
-	subset, err := DecodeChunkForm(schema, []string{"name", "light"}, []byte(formWColumns))
+	subset, err := DecodeChunkForm(schema, []string{"name", "light"}, checkedPackedForm(t, schema, []string{"name", "light"}, 2, []byte(formWColumns)[16:]))
 	if err != nil {
 		t.Fatalf("decode COLUMNS: %v", err)
 	}
@@ -230,7 +234,7 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 	b.entry(5, 3, "z")
 	b.entry(6, 2, "\r\n\x00")
 
-	chunk, err := DecodeChunkForm(schema, nil, b.Bytes())
+	chunk, err := DecodeChunkForm(schema, nil, b.checked(t, schema, nil))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -252,36 +256,36 @@ func TestDecodeChunkFormTypes(t *testing.T) {
 
 	// Too short, an entry past the end, an entry of an absent block, an
 	// unknown column id.
-	full := b.Bytes()
+	full := b.checked(t, schema, nil)
 	for name, form := range map[string][]byte{
 		"short":         full[:20],
 		"cut entry":     full[:len(full)-1],
 		"partial entry": append(append([]byte{}, full...), 1, 2, 3),
 		"absent block": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full[:55]) // versions, presence and payload
+			e.Write(b.Bytes()[:55]) // versions, presence and payload
 			e.entry(5, 1, "x")
-			return e.Bytes()
+			return e.checked(t, schema, nil)
 		}(),
 		"block over int32": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full[:55])
+			e.Write(b.Bytes()[:55])
 			e.entry(5, 0xffffffff, "x")
-			return e.Bytes()
+			return e.checked(t, schema, nil)
 		}(),
 		"length over int32": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full[:55])
+			e.Write(b.Bytes()[:55])
 			e.u32(5)
 			e.u32(0)
 			e.u32(0xffffffff)
-			return e.Bytes()
+			return e.checked(t, schema, nil)
 		}(),
 		"unknown id": func() []byte {
 			var e chunkFormBuilder
-			e.Write(full)
+			e.Write(b.Bytes())
 			e.entry(1, 0, "x")
-			return e.Bytes()
+			return e.checked(t, schema, nil)
 		}(),
 	} {
 		if _, err := DecodeChunkForm(schema, nil, form); err == nil {
@@ -305,7 +309,7 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 	b.entry(3, 0, "x")
 	b.entry(4, 0, "zz")
 	b.entry(4, 1, "y")
-	chunk, err := DecodeChunkForm(schema, nil, b.Bytes())
+	chunk, err := DecodeChunkForm(schema, nil, b.checked(t, schema, nil))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -320,13 +324,13 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 	d.header(9, 4)
 	d.WriteByte(0b0011)
 	d.entry(4, 1, "y")
-	chunk, err = DecodeChunkForm(schema, []string{"d"}, d.Bytes())
+	chunk, err = DecodeChunkForm(schema, []string{"d"}, d.checked(t, schema, []string{"d"}))
 	if err != nil || values(chunk, 0) != "'' 'y' NULL NULL" {
 		t.Fatalf("got %+v, %v", chunk, err)
 	}
 	// A form of another schema version is refused.
 	older := testSchema(t, 3, schema.Columns...)
-	if _, err := DecodeChunkForm(older, nil, b.Bytes()); err == nil || !strings.Contains(err.Error(), "schema version 4") {
+	if _, err := DecodeChunkForm(older, nil, b.checked(t, schema, nil)); err == nil || !strings.Contains(err.Error(), "schema version mismatch") {
 		t.Fatalf("schema version mismatch: got %v", err)
 	}
 	if _, err := DecodeChunkForm(schema, []string{"d"}, []byte{1, 2, 3}); err == nil {
@@ -351,7 +355,7 @@ func TestDecodeChunkFormAfterColumnsChanged(t *testing.T) {
 			e.Write([]byte{0x21, 0x00})
 		}
 		e.entry(form.id, 0, "x")
-		if _, err := DecodeChunkForm(form.schema, form.columns, e.Bytes()); err == nil {
+		if _, err := DecodeChunkForm(form.schema, form.columns, e.checked(t, form.schema, form.columns)); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
@@ -384,12 +388,13 @@ func TestParseDescribeSizeBounds(t *testing.T) {
 		}
 		return ParseDescribe(value)
 	}
-	largest := strings.Replace(strings.Replace(describeW, chunk, pair("chunk", "2147483647", "2147483647"), 1), large, pair("large", "2147483647", "2147483647"), 1)
+	// Each chunk side is at most 4096 blocks and each large side at most 1000000 chunks.
+	largest := strings.Replace(strings.Replace(describeW, chunk, pair("chunk", "4096", "256"), 1), large, pair("large", "1000000", "1000000"), 1)
 	schema, err := parse(largest)
-	if err != nil || schema.ChunkWidth != 2147483647 || schema.ChunkHeight != 2147483647 || schema.LargeWidth != 2147483647 || schema.LargeHeight != 2147483647 {
+	if err != nil || schema.ChunkWidth != 4096 || schema.ChunkHeight != 256 || schema.LargeWidth != 1000000 || schema.LargeHeight != 1000000 {
 		t.Fatalf("largest sizes: %+v, %v", schema, err)
 	}
-	for _, size := range []string{"2147483648", "4294967295", "18446744073709551615"} {
+	for _, size := range []string{"0", "2147483648", "4294967295", "18446744073709551615"} {
 		for _, broken := range []string{
 			strings.Replace(describeW, chunk, pair("chunk", size, "2"), 1),
 			strings.Replace(describeW, chunk, pair("chunk", "2", size), 1),
@@ -401,11 +406,24 @@ func TestParseDescribeSizeBounds(t *testing.T) {
 			}
 		}
 	}
+	for _, broken := range []string{
+		strings.Replace(describeW, chunk, pair("chunk", "4097", "2"), 1),
+		strings.Replace(describeW, large, pair("large", "8", "1000001"), 1),
+	} {
+		if _, err := parse(broken); err == nil || !strings.Contains(err.Error(), "invalid size") {
+			t.Errorf("got %v, want an invalid size", err)
+		}
+	}
 }
 
 func TestParseDescribeDims(t *testing.T) {
 	withDims := func(dims string) string {
-		return strings.Replace(describeW, "%6\r\n$5\r\ntable", "%7\r\n$4\r\ndims\r\n:"+dims+"\r\n$5\r\ntable", 1)
+		reply := strings.Replace(describeW, "%6\r\n$5\r\ntable", "%7\r\n$4\r\ndims\r\n:"+dims+"\r\n$5\r\ntable", 1)
+		if dims == "3" {
+			reply = strings.Replace(reply, "$5\r\nchunk\r\n*2\r\n:2\r\n:2", "$5\r\nchunk\r\n*3\r\n:2\r\n:2\r\n:2", 1)
+			reply = strings.Replace(reply, "$5\r\nlarge\r\n*2\r\n:8\r\n:8", "$5\r\nlarge\r\n*3\r\n:8\r\n:8\r\n:8", 1)
+		}
+		return reply
 	}
 	for dims, want := range map[string]int{"2": 2, "3": 3} {
 		if schema := mustSchema(t, withDims(dims)); schema.Dims != want {

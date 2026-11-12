@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- Decode checked chunk forms with three-axis coordinates, chunk columns, producing timestamps and retained scan deletions, while bounding decoded output and binary imports (chunkdb/chunkdb#133).
 - Bind logins over `chunks://` to their TLS connection (`tls-exporter` on TLS 1.3, `tls-server-end-point` on TLS 1.2); `--channel-binding auto|off|require` selects the mode, and `CREATE USER <name> PASSWORD REQUIRE CHANNEL BINDING` is passed on. Part of chunkdb/chunkdb#162.
 - `CREATE SLOT ... OWNER <user>` sets a slot's owner, and `SHOW SLOTS` validates and prints its nullable `owner`.
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.

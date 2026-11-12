@@ -83,9 +83,11 @@ func TestGetChunkNullTransactionAndExport(t *testing.T) {
 
 func TestGetChunkVersionedEmpty(t *testing.T) {
 	describe := watchWireMap("table", watchWireBulk("world"), "version", ":1\r\n", "chunk", "*2\r\n:2\r\n:2\r\n", "large", "*2\r\n:4\r\n:4\r\n", "options", "%0\r\n", "columns", "*1\r\n"+slotWireColumn())
-	form := make([]byte, 21)
-	binary.LittleEndian.PutUint64(form, 7)
-	binary.LittleEndian.PutUint64(form[8:], 1)
+	descriptor := make([]byte, 28)
+	for i, value := range []uint32{1, 1, 8, 0, 4, 0, 0} {
+		binary.LittleEndian.PutUint32(descriptor[4*i:], value)
+	}
+	form := checkedWireFixture(1, 7, []uint16{1, 2, 6}, [][]byte{{0}, {0, 0, 0, 0}, descriptor})
 	uri, done := fakeMigrationServer(t, []string{"DESCRIBE world", "GET CHUNK 0 0 FROM world"}, []string{describe, watchWireBulk(string(form))})
 	client, err := connect(globalOptions{URI: uri, Timeout: time.Second}, console{})
 	if err != nil {
