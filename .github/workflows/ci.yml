@@ -48,10 +48,6 @@ jobs:
         shell: bash
         run: |
           branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          if [ "$branch" = "feat/commit-core" ]; then
-            printf 'ref=%s\n' 'ef2e5ad301b6cf5797601599e69159ee7698bf14' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           ref=main
           if refs=$(git ls-remote --exit-code --heads https://github.com/chunkdb/chunkdb.git "refs/heads/$branch"); then
             while IFS=$'\t' read -r oid remote_ref; do
