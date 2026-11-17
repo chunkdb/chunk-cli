@@ -117,22 +117,27 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		opts.statement += " SLOT '" + name + "'"
 	}
 	if area != "" {
+		// Two-axis tables take four bounds, three-axis tables six.
 		parts := strings.Split(area, ",")
-		var xy [4]int64
-		if len(parts) != 4 {
-			return watchOptions{}, errors.New("--area needs cx0,cy0,cx1,cy1")
+		if len(parts) != 4 && len(parts) != 6 {
+			return watchOptions{}, errors.New("--area needs cx0,cy0,cx1,cy1 or cx0,cy0,cz0,cx1,cy1,cz1")
 		}
+		bounds := make([]int64, len(parts))
 		for i, part := range parts {
 			n, err := strconv.ParseInt(part, 10, 64)
 			if err != nil {
 				return watchOptions{}, fmt.Errorf("--area: %w", err)
 			}
-			xy[i] = n
+			bounds[i] = n
+			parts[i] = strconv.FormatInt(n, 10)
 		}
-		if xy[0] > xy[2] || xy[1] > xy[3] {
-			return watchOptions{}, errors.New("--area bounds are reversed")
+		axes := len(parts) / 2
+		for axis := 0; axis < axes; axis++ {
+			if bounds[axis] > bounds[axis+axes] {
+				return watchOptions{}, errors.New("--area bounds are reversed")
+			}
 		}
-		opts.statement += fmt.Sprintf(" AREA %d %d TO %d %d", xy[0], xy[1], xy[2], xy[3])
+		opts.statement += " AREA " + strings.Join(parts[:axes], " ") + " TO " + strings.Join(parts[axes:], " ")
 	}
 	if after != "" {
 		p, err := parseWatchPosition(after)

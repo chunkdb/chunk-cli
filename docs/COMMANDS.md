@@ -7,7 +7,7 @@ Global options precede the command or quoted statement.
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
 chunk-cli [options] transaction <file>
-chunk-cli [options] watch <table> [--slot name] [--ack-every n] [--area cx0,cy0,cx1,cy1] [--after epoch:revision] [--json]
+chunk-cli [options] watch <table> [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
 chunk-cli version
