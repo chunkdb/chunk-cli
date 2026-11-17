@@ -20,9 +20,11 @@ import (
 const epochB = "fedcba9876543210fedcba9876543210"
 const epochC = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+type epochWatchFrames struct{ statement, events string }
+
 // The initial description and WATCH attach are explicitly gated. Each
 // metadata request uses the real CLI constructor and RESP decoder.
-func epochWatchFixture(t *testing.T, ctx context.Context, initial, fallback, startEpoch, eventEpoch string, modern, resync, slot bool) (string, <-chan struct{}, chan<- struct{}, <-chan error, *atomic.Int32) {
+func epochWatchFixture(t *testing.T, ctx context.Context, initial, fallback, startEpoch, eventEpoch string, modern, resync, slot bool, frames ...epochWatchFrames) (string, <-chan struct{}, chan<- struct{}, <-chan error, *atomic.Int32) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -84,6 +86,9 @@ func epochWatchFixture(t *testing.T, ctx context.Context, initial, fallback, sta
 				if resync {
 					statement += " AFTER " + watchEpoch + " 0"
 				}
+				if len(frames) != 0 {
+					statement = frames[0].statement
+				}
 				if line != statement+"\r\n" {
 					done <- fmt.Errorf("WATCH attach got %q", line)
 					return
@@ -105,6 +110,9 @@ func epochWatchFixture(t *testing.T, ctx context.Context, initial, fallback, sta
 				}
 				if resync {
 					event = ">3\r\n" + watchWireBulk("resync") + watchWireBulk(eventEpoch) + ":0\r\n" + event
+				}
+				if len(frames) != 0 {
+					event = frames[0].events
 				}
 				if _, err := io.WriteString(conn, start+event); err != nil {
 					done <- err

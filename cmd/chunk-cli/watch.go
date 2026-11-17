@@ -30,6 +30,7 @@ func (p watchPosition) MarshalJSON() ([]byte, error) {
 type watchOptions struct {
 	table       string
 	statement   string
+	columns     []string
 	json        bool
 	slot        string
 	ackEvery    uint64
@@ -144,11 +145,12 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	if columns != "" {
 		names := strings.Split(columns, ",")
 		for _, name := range names {
-			if name == "" || name[0] >= '0' && name[0] <= '9' || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+			if !watchColumnName(name) {
 				return watchOptions{}, fmt.Errorf("invalid column %q", name)
 			}
 		}
 		opts.statement += " COLUMNS " + strings.Join(names, ", ")
+		opts.columns = names
 	}
 	if noBefore {
 		opts.statement += " NO BEFORE"
@@ -163,6 +165,28 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		opts.statement += fmt.Sprintf(" ACK TIMEOUT %d", ackTimeout)
 	}
 	return opts, nil
+}
+
+func watchColumnName(name string) bool {
+	return name != "" && (name[0] < '0' || name[0] > '9') && strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") == ""
+}
+
+// renameWatchColumns names the projected column IDs as the current description
+// does. The server resolves COLUMNS by name on every attach, so a resumed
+// statement must not use names that a rename has moved to another column.
+func renameWatchColumns(statement string, from []string, schema *chunkclient.Schema) (string, []string, error) {
+	names := make([]string, len(schema.Columns))
+	for i, column := range schema.Columns {
+		if !watchColumnName(column.Name) {
+			return "", nil, fmt.Errorf("WATCH: projected column %d has name %q", column.ID, column.Name)
+		}
+		names[i] = column.Name
+	}
+	clause := " COLUMNS " + strings.Join(from, ", ")
+	if !strings.Contains(statement, clause) {
+		return "", nil, errors.New("WATCH: statement has no COLUMNS clause")
+	}
+	return strings.Replace(statement, clause, " COLUMNS "+strings.Join(names, ", "), 1), names, nil
 }
 
 // runWatch owns the stream reader. Cancellation sends UNWATCH concurrently;
@@ -181,6 +205,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	}
 	// A statement connection occupies a server worker until closed. Describe
 	// before opening the stream so even a one-worker server can start WATCH.
+	var projectedIDs []uint32
+	var projectionEpoch string
+	schemas := map[watchSchemaKey][]chunkclient.Column{}
 	lookup := func() (*chunkclient.Schema, error) {
 		describe, err := connectWatchLogin(ctx, opts, uri, login)
 		if err != nil {
@@ -189,21 +216,73 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		defer describe.Close()
 		var schema *chunkclient.Schema
 		err = watchCall(ctx, describe, func() error { schema, err = describe.Describe(watch.table); return err })
-		return schema, err
+		if err != nil || len(watch.columns) == 0 {
+			return schema, err
+		}
+		if projectedIDs == nil || projectionEpoch != schema.Epoch {
+			// An accepted schema push owns the projection in its epoch, even
+			// if a later description has renamed the requested columns.
+			var columns []chunkclient.Column
+			var latest uint64
+			for key, known := range schemas {
+				if key.epoch == schema.Epoch && (columns == nil || key.version > latest) {
+					columns, latest = known, key.version
+				}
+			}
+			if columns == nil {
+				columns, err = blockColumns(schema, watch.columns)
+				if err != nil {
+					return nil, err
+				}
+			}
+			projectedIDs = make([]uint32, len(columns))
+			for i, column := range columns {
+				projectedIDs[i] = column.ID
+			}
+			projectionEpoch = schema.Epoch
+		}
+		columns := make([]chunkclient.Column, 0, len(projectedIDs))
+		for _, id := range projectedIDs {
+			var found bool
+			for _, column := range schema.Columns {
+				if column.ID == id {
+					columns = append(columns, column)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("WATCH: projected column %d no longer exists", id)
+			}
+		}
+		schema.Columns = columns
+		return schema, nil
 	}
 	initial, err := lookup()
 	if err != nil {
 		return err
 	}
 	initialKey := watchSchemaKey{initial.Epoch, initial.Version}
-	schemas := map[watchSchemaKey][]chunkclient.Column{initialKey: initial.Columns}
+	schemas[initialKey] = initial.Columns
 	metadata := map[watchSchemaKey]watchSchemaMetadata{initialKey: schemaMetadataOf(initial)}
 	var position watchPosition
 	watch.delivered = &position
 	reconnecting := false
+	named := watch.columns
 	for attempt := 0; ; attempt++ {
 		before := position
-		err = runWatchConnection(ctx, opts, watch, uri, login, stdout, schemas, lookup, metadata)
+		err = nil
+		if reconnecting && len(named) != 0 {
+			var current *chunkclient.Schema
+			if current, err = lookup(); err != nil {
+				err = &watchConnectionError{err}
+			} else {
+				watch.statement, named, err = renameWatchColumns(watch.statement, named, current)
+			}
+		}
+		if err == nil {
+			err = runWatchConnection(ctx, opts, watch, uri, login, stdout, schemas, lookup, metadata)
+		}
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
