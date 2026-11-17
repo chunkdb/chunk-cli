@@ -69,8 +69,9 @@ For storage features and their raw masks, use `SHOW STATUS` with `ADMIN` on `*`.
 
 - **Connection refused:** check the URI, host, port and server availability.
 - **TLS error:** check the URI scheme and certificate settings.
+- **Connection closed or reset before the reply:** use `chunks://` for a TLS server.
 - **AUTH_REQUIRED:** supply a user and password.
-- **AUTH_FAILED:** check the supplied credentials.
+- **AUTH_FAILED:** check the user and the password from `--password-file`, the URI or `CHUNKDB_PASSWORD`.
 
 Without a user, the connection succeeds only when the server disables authentication.
 For example, omitting the user from the connection URI prints this error and exits 1:

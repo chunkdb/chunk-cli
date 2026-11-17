@@ -1,6 +1,9 @@
 package chunkuri
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseChunkURI(t *testing.T) {
 	parsed, err := Parse("chunk://token@localhost:4242/")
@@ -84,5 +87,25 @@ func TestParseCredentials(t *testing.T) {
 		if _, err := Parse(raw); err == nil {
 			t.Fatalf("Parse(%q): expected an error", raw)
 		}
+	}
+}
+
+func TestParseErrorsShowTheForm(t *testing.T) {
+	for raw, want := range map[string]string{
+		"127.0.0.1:4242":              "the uri has no scheme; add chunk:// as in chunk://user@host:4242/, or chunks:// for TLS",
+		"admin:secret@127.0.0.1:4242": "the uri has no scheme; add chunk:// as in chunk://user@host:4242/, or chunks:// for TLS",
+		"http://127.0.0.1:4242/":      `unsupported scheme "http"; use chunk://user@host:4242/, or chunks:// for TLS`,
+		"chunk:///":                   "missing host in uri; use chunk://user@host:4242/, or chunks:// for TLS",
+		"chunk://h:99999/":            `invalid port "99999"; use a port from 1 to 65535, as in chunk://user@host:4242/, or chunks:// for TLS`,
+		"chunk://:pw@h:1/":            "the uri has a password but no user; use chunk://user:password@host:4242/",
+		"chunk://t@h:1/a/b":           `uri path must name one table: "/a/b"; use chunk://user@host:4242/table`,
+	} {
+		_, err := Parse(raw)
+		if err == nil || err.Error() != want {
+			t.Fatalf("Parse(%q) = %v, want %q", raw, err, want)
+		}
+	}
+	if _, err := Parse("admin:secret@127.0.0.1:4242"); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error repeats the password: %v", err)
 	}
 }

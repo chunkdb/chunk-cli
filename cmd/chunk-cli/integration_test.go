@@ -582,9 +582,12 @@ func TestCLIConnection(t *testing.T) {
 	expect("URI login", s.uri, 0, "PONG\n", "", "PING")
 	expect("--user and --password-file", s.uriFor("", ""), 0, "PONG\n", "", "--user", adminUser, "--password-file", writePasswordFile(t, adminPassword), "PING")
 	expect("--password-file over the URI", s.uriFor(adminUser, "wrong"), 0, "PONG\n", "", "--password-file", writePasswordFile(t, adminPassword), "PING")
-	expect("wrong password", s.uriFor(adminUser, "wrong"), 1, "", "error: connecting failed: AUTH_FAILED reason=auth_failed invalid user or password; check the username and password in your connection URI\n", "PING")
-	expect("unknown user", s.uriFor("nobody", adminPassword), 1, "", "error: connecting failed: AUTH_FAILED reason=auth_failed invalid user or password; check the username and password in your connection URI\n", "PING")
-	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI", "PING")
+	// The server owns the text after the code; the CLI adds the bracketed step.
+	for _, login := range [][2]string{{adminUser, "wrong"}, {"nobody", adminPassword}} {
+		expect("refused login", s.uriFor(login[0], login[1]), 1, "", "error: connecting failed: AUTH_FAILED reason=auth_failed ", "PING")
+		expect("refused login", s.uriFor(login[0], login[1]), 1, "", " (check the password from --password-file, the URI or CHUNKDB_PASSWORD)\n", "PING")
+	}
+	expect("no user", s.uriFor("", ""), 1, "", "error: connecting failed: AUTH_REQUIRED reason=auth_required ", "PING")
 	expect("no user", s.uriFor("", ""), 1, "", "(log in with --user or chunk://user:password@host/)", "PING")
 	expect("no password", s.uriFor(adminUser, ""), 1, "", "error: no password for user admin", "PING")
 	t.Setenv(passwordEnv, adminPassword)
@@ -607,6 +610,14 @@ func TestCLIConnection(t *testing.T) {
 	if code := run([]string{"--uri", secure.uri, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 1 ||
 		!strings.Contains(stderr.String(), "certificate") {
 		t.Fatalf("TLS without --tls-insecure: %d %q", code, stderr.String())
+	}
+	// The TLS server closes a plain connection with EOF or a reset.
+	stdout.Reset()
+	stderr.Reset()
+	plain := "chunk://" + strings.TrimPrefix(secure.uri, "chunks://")
+	if code := run([]string{"--uri", plain, "PING"}, strings.NewReader(""), &stdout, &stderr); code != 1 ||
+		!strings.Contains(stderr.String(), "; check chunk:// versus chunks:// and the server logs: ") {
+		t.Fatalf("chunk:// against a TLS server: %d %q", code, stderr.String())
 	}
 
 	// A server without users logs in without a user.

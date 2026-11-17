@@ -495,6 +495,8 @@ func connectionError(operation, address string, secure bool, err error) error {
 		return fmt.Errorf("%s %s: TLS connection failed; check the server certificate and chunks:// endpoint: %w", operation, address, err)
 	case errors.Is(err, io.EOF):
 		return fmt.Errorf("%s %s: connection closed before the reply; check chunk:// versus chunks:// and the server logs: %w", operation, address, err)
+	case errors.Is(err, syscall.ECONNRESET):
+		return fmt.Errorf("%s %s: connection reset by the server; check chunk:// versus chunks:// and the server logs: %w", operation, address, err)
 	default:
 		return fmt.Errorf("%s %s: %w", operation, address, err)
 	}
