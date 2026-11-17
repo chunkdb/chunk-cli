@@ -24,6 +24,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- `watch --area` accepts six inclusive bounds for three-axis tables, `cx0,cy0,cz0,cx1,cy1,cz1`, and refuses any other count
 - `watch --columns` decodes rows in the requested column order from the first change; within a table epoch the projection follows column IDs across renames, and a reconnect requests the projected columns by their current names.
 - A DESCRIBE chunk or large-chunk dimension of 2147483648 is refused as an invalid size, as larger ones already were; a chunk form entry whose block or length does not fit an `int` is refused on 32-bit platforms.
 - Print never-written chunks as (null), or JSON null, while retaining versioned empty forms and refusing NULL binary exports. (#6).
