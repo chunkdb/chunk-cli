@@ -32,7 +32,11 @@ func TestWatchThreeAxisArea(t *testing.T) {
 	if err != nil || opts.statement != "WATCH space AREA -1 0 2 TO 3 4 5" {
 		t.Fatalf("got %+v, %v", opts, err)
 	}
-	for _, area := range []string{"0,0,0,0,0", "0,0,0,0,0,0,0", "0,0,0,0,0,0,0,0", "0,0,1,0,0,0", "1,0,0,0,0,0", "0,0,0,0,0,x"} {
+	opts, err = parseWatchArgs([]string{"space", "--area", "0,0,3,0,0,5"}, false)
+	if err != nil || opts.statement != "WATCH space AREA 0 0 3 TO 0 0 5" {
+		t.Fatalf("z above x1 and y1: %+v, %v", opts, err)
+	}
+	for _, area := range []string{"0,0,0,0,0", "0,5,0,0,1,0", "0,0,0,0,0,0,0", "0,0,0,0,0,0,0,0", "0,0,1,0,0,0", "1,0,0,0,0,0", "0,0,0,0,0,x"} {
 		if _, err := parseWatchArgs([]string{"space", "--area", area}, false); err == nil {
 			t.Errorf("accepted --area %s", area)
 		}
