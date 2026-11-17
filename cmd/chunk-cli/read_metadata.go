@@ -12,6 +12,12 @@ import (
 
 // Metadata precedes the row/entries in the requested, fixed prefix order.
 func printReadMetadata(w io.Writer, schema *chunkclient.Schema, info statementInfo, reply chunkclient.Value, opts statementOptions) error {
+	bad := func(err error) error {
+		if info.kind == statementGetArea {
+			return malformedAreaReply(err)
+		}
+		return err
+	}
 	count := 1
 	if info.withVersion {
 		count++
@@ -20,7 +26,7 @@ func printReadMetadata(w io.Writer, schema *chunkclient.Schema, info statementIn
 		count++
 	}
 	if reply.Kind != chunkclient.KindArray || len(reply.Items) < count {
-		return errors.New("GET: invalid metadata reply")
+		return bad(errors.New("GET: invalid metadata reply"))
 	}
 	fields := orderedMap{}
 	var out bytes.Buffer
@@ -30,7 +36,7 @@ func printReadMetadata(w io.Writer, schema *chunkclient.Schema, info statementIn
 		if reply.Items[i].Kind != chunkclient.KindNull {
 			n, err := reply.Items[i].Uint64()
 			if err != nil {
-				return fmt.Errorf("GET: invalid version: %w", err)
+				return bad(fmt.Errorf("GET: invalid version: %w", err))
 			}
 			version = n
 		}
@@ -41,7 +47,7 @@ func printReadMetadata(w io.Writer, schema *chunkclient.Schema, info statementIn
 	if info.withSchema {
 		version, err := reply.Items[i].Uint64()
 		if err != nil {
-			return fmt.Errorf("GET: invalid schema version: %w", err)
+			return bad(fmt.Errorf("GET: invalid schema version: %w", err))
 		}
 		if version != schema.Version {
 			return &chunkclient.ServerError{Code: "SCHEMA_MISMATCH", Keys: map[string]string{"expected": fmt.Sprint(schema.Version), "actual": fmt.Sprint(version)}, Message: "re-read schema before decoding values"}
@@ -57,7 +63,12 @@ func printReadMetadata(w io.Writer, schema *chunkclient.Schema, info statementIn
 		err = printBlock(&values, schema, info.columns, reply.Items[i], opts)
 	} else {
 		key = "entries"
-		err = printArea(&values, schema, info.columns, reply.Items[i], opts)
+		if info.areaPage != nil {
+			key = "page"
+			err = printAreaPage(&values, schema, info, reply.Items[i], opts)
+		} else {
+			err = printArea(&values, schema, info.columns, reply.Items[i], opts)
+		}
 	}
 	if err != nil {
 		return err
