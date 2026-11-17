@@ -30,6 +30,7 @@ func (p watchPosition) MarshalJSON() ([]byte, error) {
 type watchOptions struct {
 	table       string
 	statement   string
+	columns     []string
 	json        bool
 	slot        string
 	ackEvery    uint64
@@ -149,6 +150,7 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 			}
 		}
 		opts.statement += " COLUMNS " + strings.Join(names, ", ")
+		opts.columns = names
 	}
 	if noBefore {
 		opts.statement += " NO BEFORE"
@@ -181,6 +183,9 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	}
 	// A statement connection occupies a server worker until closed. Describe
 	// before opening the stream so even a one-worker server can start WATCH.
+	var projectedIDs []uint32
+	var projectionEpoch string
+	schemas := map[watchSchemaKey][]chunkclient.Column{}
 	lookup := func() (*chunkclient.Schema, error) {
 		describe, err := connectWatchLogin(ctx, opts, uri, login)
 		if err != nil {
@@ -189,14 +194,54 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		defer describe.Close()
 		var schema *chunkclient.Schema
 		err = watchCall(ctx, describe, func() error { schema, err = describe.Describe(watch.table); return err })
-		return schema, err
+		if err != nil || len(watch.columns) == 0 {
+			return schema, err
+		}
+		if projectedIDs == nil || projectionEpoch != schema.Epoch {
+			// An accepted schema push owns the projection in its epoch, even
+			// if a later description has renamed the requested columns.
+			var columns []chunkclient.Column
+			var latest uint64
+			for key, known := range schemas {
+				if key.epoch == schema.Epoch && (columns == nil || key.version > latest) {
+					columns, latest = known, key.version
+				}
+			}
+			if columns == nil {
+				columns, err = blockColumns(schema, watch.columns)
+				if err != nil {
+					return nil, err
+				}
+			}
+			projectedIDs = make([]uint32, len(columns))
+			for i, column := range columns {
+				projectedIDs[i] = column.ID
+			}
+			projectionEpoch = schema.Epoch
+		}
+		columns := make([]chunkclient.Column, 0, len(projectedIDs))
+		for _, id := range projectedIDs {
+			var found bool
+			for _, column := range schema.Columns {
+				if column.ID == id {
+					columns = append(columns, column)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("WATCH: projected column %d no longer exists", id)
+			}
+		}
+		schema.Columns = columns
+		return schema, nil
 	}
 	initial, err := lookup()
 	if err != nil {
 		return err
 	}
 	initialKey := watchSchemaKey{initial.Epoch, initial.Version}
-	schemas := map[watchSchemaKey][]chunkclient.Column{initialKey: initial.Columns}
+	schemas[initialKey] = initial.Columns
 	metadata := map[watchSchemaKey]watchSchemaMetadata{initialKey: schemaMetadataOf(initial)}
 	var position watchPosition
 	watch.delivered = &position

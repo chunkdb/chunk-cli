@@ -82,7 +82,7 @@ OK
 - `--after <epoch:revision>` resumes from a retained position.
 - `--slot` resumes from its saved acknowledgement and acknowledges only completely printed eligible events.
 - `--ack-every` requires a slot; its default is 1, counting change, chunks and progress events.
-- `--columns a,b` projects named columns; `--no-before` omits before rows.
+- `--columns a,b` projects block columns in the requested order; chunk metadata remains complete. `--no-before` omits before rows.
 - `--chunks` streams committed chunk versions and binary forms, including a nullable form for deletion.
 - Chunk-column changes appear in chunk change metadata; binary chunk forms retain the complete chunk-column row.
 - `--takeover` requires a slot and replaces its active consumer.
