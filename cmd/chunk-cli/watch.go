@@ -145,7 +145,7 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	if columns != "" {
 		names := strings.Split(columns, ",")
 		for _, name := range names {
-			if name == "" || name[0] >= '0' && name[0] <= '9' || strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
+			if !watchColumnName(name) {
 				return watchOptions{}, fmt.Errorf("invalid column %q", name)
 			}
 		}
@@ -165,6 +165,28 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		opts.statement += fmt.Sprintf(" ACK TIMEOUT %d", ackTimeout)
 	}
 	return opts, nil
+}
+
+func watchColumnName(name string) bool {
+	return name != "" && (name[0] < '0' || name[0] > '9') && strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") == ""
+}
+
+// renameWatchColumns names the projected column IDs as the current description
+// does. The server resolves COLUMNS by name on every attach, so a resumed
+// statement must not use names that a rename has moved to another column.
+func renameWatchColumns(statement string, from []string, schema *chunkclient.Schema) (string, []string, error) {
+	names := make([]string, len(schema.Columns))
+	for i, column := range schema.Columns {
+		if !watchColumnName(column.Name) {
+			return "", nil, fmt.Errorf("WATCH: projected column %d has name %q", column.ID, column.Name)
+		}
+		names[i] = column.Name
+	}
+	clause := " COLUMNS " + strings.Join(from, ", ")
+	if !strings.Contains(statement, clause) {
+		return "", nil, errors.New("WATCH: statement has no COLUMNS clause")
+	}
+	return strings.Replace(statement, clause, " COLUMNS "+strings.Join(names, ", "), 1), names, nil
 }
 
 // runWatch owns the stream reader. Cancellation sends UNWATCH concurrently;
@@ -246,9 +268,21 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 	var position watchPosition
 	watch.delivered = &position
 	reconnecting := false
+	named := watch.columns
 	for attempt := 0; ; attempt++ {
 		before := position
-		err = runWatchConnection(ctx, opts, watch, uri, login, stdout, schemas, lookup, metadata)
+		err = nil
+		if reconnecting && len(named) != 0 {
+			var current *chunkclient.Schema
+			if current, err = lookup(); err != nil {
+				err = &watchConnectionError{err}
+			} else {
+				watch.statement, named, err = renameWatchColumns(watch.statement, named, current)
+			}
+		}
+		if err == nil {
+			err = runWatchConnection(ctx, opts, watch, uri, login, stdout, schemas, lookup, metadata)
+		}
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
