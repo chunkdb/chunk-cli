@@ -15,6 +15,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
+- Replace the README start with a checked world example: a named migration for `world_cli`, two writes, block and area reads, and a watched change; `examples/world.sh` applies the same migration, so it reruns cleanly and does not clash with the server quick start's `world` table. Part of chunkdb/chunkdb#152.
 - Clarify CLI commands and user guides with checked input and output examples (#6).
 - Correct the world example description and link feed recovery to the server procedure (#6).
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).
