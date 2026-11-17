@@ -39,6 +39,7 @@ type testServer struct {
 	scheme          string
 	address         string
 	tlsCert, tlsKey string
+	dataDirectory   string
 }
 
 // uriFor returns the server's URI with the login of user (none when empty).
@@ -89,6 +90,7 @@ func startServerConfigured(t *testing.T, tls, users bool, workers int, extraArgs
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.dataDirectory = dataDirectory
 	args := []string{"--listen-uri", s.uriFor("", ""), "--data-dir", dataDirectory, "--durability", "relaxed", "--workers", strconv.Itoa(workers), "--log-level", "warn"}
 	args = append(args, extraArgs...)
 	if users {

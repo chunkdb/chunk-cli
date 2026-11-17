@@ -89,9 +89,11 @@ func TestWatchReconnectPreservesAfterIdentifiers(t *testing.T) {
 				t.Fatal(err)
 			}
 			resumed := "WATCH " + table + " AREA 0 0 TO 1 1 COLUMNS after NO BEFORE AFTER " + watchEpoch + " 1"
+			describe := admissionDescribe(watchEpoch, 1, admissionColumn("after", "u8", 1), 1, 2)
 			uri, done := retryFixture(t, [][]retryExchange{
-				{{"DESCRIBE " + table, admissionDescribe(watchEpoch, 1, admissionColumn("after", "u8", 1), 1, 2)}},
+				{{"DESCRIBE " + table, describe}},
 				{{watch.statement, "+OK " + watchEpoch + " 0\r\n" + fixtureProgressWire(1)}},
+				{{"DESCRIBE " + table, describe}},
 				{{resumed, "+OK " + watchEpoch + " 1\r\n" + fixtureProgressWire(2)}, {"UNWATCH", "+OK\r\n"}},
 			})
 			ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
@@ -103,6 +105,31 @@ func TestWatchReconnectPreservesAfterIdentifiers(t *testing.T) {
 			waitSlotServer(t, done)
 		})
 	}
+}
+
+// A resumed WATCH names the projected column IDs as they are now. A lost
+// description connection is retried like a lost stream.
+func TestWatchReconnectRenamesProjectedColumns(t *testing.T) {
+	watch, err := parseWatchArgs([]string{"world", "--columns", "label,n", "--no-before"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := admissionDescribe(watchEpoch, 1, admissionColumn("n", "u8", 1)+admissionColumn("label", "u8", 2), 2, 2)
+	renamed := admissionDescribe(watchEpoch, 2, admissionColumn("n", "u8", 1)+admissionColumn("caption", "u8", 2)+admissionColumn("label", "u8", 3), 3, 2)
+	uri, done := retryFixture(t, [][]retryExchange{
+		{{"DESCRIBE world", initial}},
+		{{"WATCH world COLUMNS label, n NO BEFORE", "+OK " + watchEpoch + " 0\r\n" + fixtureProgressWire(1)}},
+		{{"HELLO 3", ""}},
+		{{"DESCRIBE world", renamed}},
+		{{"WATCH world COLUMNS caption, n NO BEFORE AFTER " + watchEpoch + " 1", "+OK " + watchEpoch + " 1\r\n" + fixtureProgressWire(2)}, {"UNWATCH", "+OK\r\n"}},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	out := &retryProgressOutput{cancel: cancel, revision: 2}
+	if err := runWatch(ctx, globalOptions{URI: uri, Timeout: time.Second}, watch, console{}, out); err != nil {
+		t.Fatal(err)
+	}
+	waitSlotServer(t, done)
 }
 
 func TestWatchReconnectWaitsForSlotRelease(t *testing.T) {

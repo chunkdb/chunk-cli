@@ -89,11 +89,15 @@ func rawChunkShapeOf(statement string) (rawChunkShape, bool) {
 // CQL separates words, integer coordinates and $digit parameters without
 // requiring spaces. Keep quoted identifiers intact; this splitter is local
 // to the binary import shape and does not change ordinary classification.
-func rawChunkTokens(statement string) []string {
+func rawChunkTokens(statement string, keepCommas ...bool) []string {
 	var result []string
 	digit := func(c byte) bool { return c >= '0' && c <= '9' }
 	word := func(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' }
-	for _, token := range tokenize(statement) {
+	for _, token := range tokenize(statement, keepCommas...) {
+		if token == "," && len(keepCommas) != 0 {
+			result = append(result, token)
+			continue
+		}
 		if strings.HasPrefix(token, "\"") {
 			result = append(result, token)
 			continue

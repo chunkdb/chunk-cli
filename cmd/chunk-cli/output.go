@@ -293,8 +293,33 @@ func printChunk(w io.Writer, chunk *chunkclient.Chunk, cx, cy int64, opts statem
 }
 
 func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply chunkclient.Value, opts statementOptions) error {
+	if err := opts.areaCheckpoint(); err != nil {
+		return err
+	}
 	if reply.Kind != chunkclient.KindArray {
-		return fmt.Errorf("GET AREA: expected an array, got a %s", reply.Kind)
+		return malformedAreaReply(fmt.Errorf("GET AREA: expected an array, got a %s", reply.Kind))
+	}
+	const maxDecodedAreaArrayBytes = 64 * 1024 * 1024
+	var decodedBytes uint64
+	for _, item := range reply.Items {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
+		dims := schema.Dims
+		if dims == 0 {
+			dims = 2
+		}
+		if item.Kind != chunkclient.KindArray || len(item.Items) < dims+1 || item.Items[dims].Kind != chunkclient.KindBulk {
+			return malformedAreaReply(fmt.Errorf("GET AREA: invalid %d-axis chunk entry", dims))
+		}
+		bytes, err := chunkclient.ChunkDecodeArrayBytes(schema, names, item.Items[dims].Bulk, opts.blocks)
+		if err != nil {
+			return malformedAreaReply(err)
+		}
+		if bytes > maxDecodedAreaArrayBytes-decodedBytes {
+			return &chunkclient.DecodeLimitError{Detail: "GET AREA: decoded arrays exceed 64 MiB; use a smaller page or fewer columns"}
+		}
+		decodedBytes += bytes
 	}
 	type entry struct {
 		coordinates []int64
@@ -306,26 +331,32 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 	}
 	entries := make([]entry, 0, len(reply.Items))
 	for _, item := range reply.Items {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		if item.Kind != chunkclient.KindArray || len(item.Items) < dims+1 || item.Items[dims].Kind != chunkclient.KindBulk {
-			return fmt.Errorf("GET AREA: invalid %d-axis chunk entry", dims)
+			return malformedAreaReply(fmt.Errorf("GET AREA: invalid %d-axis chunk entry", dims))
 		}
 		coordinates := make([]int64, dims)
 		for axis := range coordinates {
 			var err error
 			coordinates[axis], err = item.Items[axis].Int64()
 			if err != nil {
-				return fmt.Errorf("GET AREA: invalid chunk coordinate")
+				return malformedAreaReply(fmt.Errorf("GET AREA: invalid chunk coordinate"))
 			}
 		}
 		chunk, err := decodeOutputChunk(schema, names, item.Items[dims].Bulk, opts.blocks)
 		if err != nil {
-			return fmt.Errorf("GET AREA: chunk %v: %w", coordinates, err)
+			return malformedAreaReply(fmt.Errorf("GET AREA: chunk %v: %w", coordinates, err))
 		}
 		entries = append(entries, entry{coordinates, chunk})
 	}
 	if opts.json {
 		list := make([]any, len(entries))
 		for i, e := range entries {
+			if err := opts.areaCheckpoint(); err != nil {
+				return err
+			}
 			fields := orderedMap{}
 			for axis, value := range e.coordinates {
 				fields = append(fields, jsonField{[]string{"cx", "cy", "cz"}[axis], value})
@@ -339,6 +370,9 @@ func printArea(w io.Writer, schema *chunkclient.Schema, names []string, reply ch
 		out.WriteString("(empty)\n")
 	}
 	for _, e := range entries {
+		if err := opts.areaCheckpoint(); err != nil {
+			return err
+		}
 		out.WriteString("chunk")
 		for _, coordinate := range e.coordinates {
 			fmt.Fprintf(&out, " %d", coordinate)
