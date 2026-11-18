@@ -16,7 +16,7 @@ type migrationStep struct {
 }
 
 func checkMigrationOptions(opts statementOptions) error {
-	if opts.blocks || opts.in != "" || opts.out != "" || opts.newPasswordFile != "" {
+	if opts.blocks || opts.hasIn() || opts.out != "" || opts.newPasswordFile != "" {
 		return errors.New("migrate and migrations take only connection options and --json")
 	}
 	return nil

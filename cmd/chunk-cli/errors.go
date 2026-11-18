@@ -20,9 +20,13 @@ func printError(w io.Writer, err error, json bool) int {
 		return code
 	}
 	name, class, message := "CLIENT_ERROR", "fatal", err.Error()
+	var reason any
 	keys := orderedMap{}
 	if server != nil {
 		name, class, message = server.Code, server.RetryClass(), server.Message
+		if value, found := server.Keys["reason"]; found {
+			reason = value
+		}
 		names := make([]string, 0, len(server.Keys))
 		for key := range server.Keys {
 			names = append(names, key)
@@ -39,6 +43,6 @@ func printError(w io.Writer, err error, json bool) int {
 			keys = append(keys, jsonField{key, value})
 		}
 	}
-	_ = writeJSON(w, orderedMap{{"error", orderedMap{{"code", name}, {"class", class}, {"keys", keys}, {"message", message}}}})
+	_ = writeJSON(w, orderedMap{{"error", orderedMap{{"code", name}, {"class", class}, {"reason", reason}, {"keys", keys}, {"message", message}}}})
 	return code
 }

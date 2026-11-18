@@ -273,7 +273,7 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	})
 	fs.BoolVar(&opts.Statement.json, "json", false, "print replies as JSON")
 	fs.BoolVar(&opts.Statement.blocks, "blocks", false, "print the values of every present block of a chunk")
-	fs.StringVar(&opts.Statement.in, "in", "", "send the file as parameter $1")
+	fs.Func("in", "send the file as parameter $1, or n=file as parameter $n; repeat for more", opts.Statement.addIn)
 	fs.StringVar(&opts.Statement.out, "out", "", "write the reply's bytes to the file")
 	fs.StringVar(&opts.Statement.newPasswordFile, "new-password-file", "", "the password of CREATE USER / ALTER USER ... PASSWORD")
 
@@ -320,6 +320,7 @@ Options:
   --json                    print replies as JSON
   --blocks                  print the values of every present block of a chunk
   --in <file>               send parameter $1; SET CHUNK needs known column types
+  --in <n>=<file>           send parameter $n; repeat for several, from $1 on
   --out <file>              write the reply's bytes to the file (GET CHUNK)
   --new-password-file <file>
                             the password of CREATE USER <name> PASSWORD and

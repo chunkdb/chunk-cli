@@ -52,7 +52,7 @@ type shellTxn struct {
 // control runs BEGIN, COMMIT or ROLLBACK and prints its reply: OK, or the
 // version COMMIT gave every written chunk.
 func (t *shellTxn) control(client *chunkclient.Client, control txnControl, statement string, opts statementOptions, stdout io.Writer) error {
-	if opts.in != "" || opts.out != "" {
+	if opts.hasIn() || opts.out != "" {
 		return fmt.Errorf("%s takes no --in or --out", control)
 	}
 	reply, err := client.Do(statement)

@@ -29,7 +29,7 @@ chunk-cli help
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
 | `--blocks` | Include present blocks in chunk, area and scan data output |
-| `--in <file>` | Supply binary parameter `$1` |
+| `--in <file>` or `--in <n>=<file>` | Supply binary parameter `$1`, or `$n`; repeat for several, numbered from `$1` without a gap |
 | `--out <file>` | Write reply bytes to a file |
 | `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
 
@@ -40,6 +40,7 @@ See [Connection](CONNECTION.md) for password precedence.
 
 The shell accepts one statement per line, plus `exit`, `quit`, and `help`.
 Per-line options are `--json`, `--blocks`, `--in`, `--out` and `--new-password-file`.
+A line's own `--in` replaces the `--in` files given on the command line.
 
 ## Returns
 
@@ -104,13 +105,13 @@ The CLI refuses to decode rows when returned schema metadata differs from its fe
 | `AUTH_REQUIRED` | No login is supplied | Follow [Connection](CONNECTION.md) |
 
 Failed commands print `error: <CODE> <keys> <message>` to stderr.
-With `--json`, stderr contains `{error:{code,class,keys,message}}`; local failures use `CLIENT_ERROR` and class `fatal`.
+With `--json`, stderr contains `{error:{code,class,reason,keys,message}}`; `reason` is the server's `reason` key, or null; local failures use `CLIENT_ERROR`, class `fatal` and a null `reason`.
 Unknown error codes are fatal; unknown keys remain diagnostic strings.
 Classification depends only on the error code, never message text or keys.
 
 | Exit | Class | Codes |
 | --- | --- | --- |
-| 1 | `fatal` | All other codes, including `SLOT_BUSY`, `MIGRATION_MISMATCH`, `CANCELLED`, `TIMEOUT`, `KILLED` and unknown codes |
+| 1 | `fatal` | `PROTOCOL`, `BAD_REQUEST`, `AUTH_REQUIRED`, `AUTH_FAILED`, `PERMISSION_DENIED`, `SYNTAX`, `INVALID_ARGUMENT`, `OUT_OF_RANGE`, `NO_TABLE`, `TABLE_EXISTS`, `UNKNOWN_COMMAND`, `CHECK_FAILED`, `MIGRATION_MISMATCH`, `SLOT_BUSY`, `SLOT_LOST`, `RESYNC_REQUIRED`, `CANCELLED`, `TIMEOUT`, `KILLED`, `INTERNAL` and unknown codes |
 | 2 | `reread` | `VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH` |
 | 3 | `rerun` | `CONFLICT`; roll back and rerun the transaction |
 | 4 | `backoff` | `BUSY`, `DISK_FULL`, `RATE_LIMITED` |

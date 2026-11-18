@@ -18,7 +18,7 @@ func TestParseGlobalFlagsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if opts.URI != "chunk://127.0.0.1:4242/" || opts.Timeout != 5*time.Second || opts.Statement != (statementOptions{}) {
+	if opts.URI != "chunk://127.0.0.1:4242/" || opts.Timeout != 5*time.Second || !reflect.DeepEqual(opts.Statement, statementOptions{}) {
 		t.Fatalf("unexpected defaults: %+v", opts)
 	}
 	if len(args) != 1 || args[0] != "PING" {
@@ -45,7 +45,7 @@ func TestParseGlobalFlagsCustomValues(t *testing.T) {
 		!opts.TLSInsecure || opts.TLSServerName != "example.com" {
 		t.Fatalf("unexpected options: %+v", opts)
 	}
-	if opts.Statement != (statementOptions{json: true, blocks: true, in: "a.bin", out: "b.bin", newPasswordFile: "new.txt"}) {
+	if !reflect.DeepEqual(opts.Statement, statementOptions{json: true, blocks: true, in: "a.bin", out: "b.bin", newPasswordFile: "new.txt"}) {
 		t.Fatalf("unexpected statement options: %+v", opts.Statement)
 	}
 	if strings.Join(args, " ") != "GET BLOCK -1 2 FROM world" {
@@ -150,7 +150,7 @@ func TestTxnStatements(t *testing.T) {
 func TestParseLineOptions(t *testing.T) {
 	defaults := statementOptions{json: true}
 	opts, statement, err := parseLineOptions("--blocks --out a.bin  GET CHUNK 0 0 FROM w  ", defaults)
-	if err != nil || statement != "GET CHUNK 0 0 FROM w" || opts != (statementOptions{json: true, blocks: true, out: "a.bin"}) {
+	if err != nil || statement != "GET CHUNK 0 0 FROM w" || !reflect.DeepEqual(opts, statementOptions{json: true, blocks: true, out: "a.bin"}) {
 		t.Fatalf("got %+v, %q, %v", opts, statement, err)
 	}
 	opts, statement, err = parseLineOptions("--in c.bin SET CHUNK 1 0 IN w $1", statementOptions{})
@@ -158,7 +158,7 @@ func TestParseLineOptions(t *testing.T) {
 		t.Fatalf("got %+v, %q, %v", opts, statement, err)
 	}
 	opts, statement, err = parseLineOptions("SET BLOCK 0 0 IN w name = '--json  x'", defaults)
-	if err != nil || statement != "SET BLOCK 0 0 IN w name = '--json  x'" || opts != defaults {
+	if err != nil || statement != "SET BLOCK 0 0 IN w name = '--json  x'" || !reflect.DeepEqual(opts, defaults) {
 		t.Fatalf("got %+v, %q, %v", opts, statement, err)
 	}
 	opts, statement, err = parseLineOptions("--new-password-file pw.txt ALTER USER bot PASSWORD", statementOptions{})
