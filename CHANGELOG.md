@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `watch` takes its table from the URI path when none is named, as in `chunk://host:4242/world`. Part of chunkdb/chunkdb#151.
 - Connection, URI and login errors name the next step: the `chunk://user@host:4242/` form, `chunk://` versus `chunks://` after a reset, and the password sources after `AUTH_FAILED`. Part of chunkdb/chunkdb#152.
 - Render GET AREA pages with exact continuation cursors, enforce negotiated reply bounds while reading, and bound aggregate decoded output arrays (chunkdb/chunkdb#136).
 - Decode checked chunk forms with three-axis coordinates, chunk columns, producing timestamps and retained scan deletions, while bounding decoded output and binary imports (chunkdb/chunkdb#133).

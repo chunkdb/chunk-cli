@@ -70,7 +70,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if strings.EqualFold(rest[0], "watch") {
-		watch, err := parseWatchArgs(rest[1:], opts.Statement.json)
+		watchArgs := rest[1:]
+		if len(watchArgs) == 0 || strings.HasPrefix(watchArgs[0], "-") {
+			uri, err := chunkuri.Parse(opts.URI)
+			if err != nil {
+				return fail(err)
+			}
+			watchArgs = withURITable(watchArgs, uri.Table)
+		}
+		watch, err := parseWatchArgs(watchArgs, opts.Statement.json)
 		if err != nil {
 			return fail(err)
 		}
@@ -299,7 +307,7 @@ Usage:
   chunk-cli [options] <CQL statement>
   chunk-cli [options] shell
   chunk-cli [options] transaction <file>
-  chunk-cli [options] watch <table> [watch options]
+  chunk-cli [options] watch [<table>] [watch options]
   chunk-cli [options] migrate <file>
   chunk-cli [options] migrations
   chunk-cli version | help

@@ -206,3 +206,27 @@ func TestWatchAckEveryRequiresSlot(t *testing.T) {
 		t.Fatalf("argument error: %v", err)
 	}
 }
+
+func TestWatchUsesURIPathTable(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		table string
+		want  string
+	}{
+		{"path table", []string{"--slot", "consumer"}, "world", "WATCH world SLOT 'consumer'"},
+		{"path table alone", nil, "world", "WATCH world"},
+		{"named table wins", []string{"space", "--no-before"}, "world", "WATCH space NO BEFORE"},
+	}
+	for _, c := range cases {
+		opts, err := parseWatchArgs(withURITable(c.args, c.table), false)
+		if err != nil || opts.statement != c.want {
+			t.Errorf("%s: got %+v, %v", c.name, opts, err)
+		}
+	}
+	for _, args := range [][]string{nil, {"--slot", "consumer"}} {
+		if _, err := parseWatchArgs(withURITable(args, ""), false); err == nil || !strings.Contains(err.Error(), "URI path") {
+			t.Errorf("accepted %q without a table: %v", args, err)
+		}
+	}
+}

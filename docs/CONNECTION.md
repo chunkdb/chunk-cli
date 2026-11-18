@@ -33,6 +33,7 @@ PONG
 
 `--user` overrides the URI's user.
 Password precedence is `--password-file`, URI password, `CHUNKDB_PASSWORD`, then a terminal prompt without echo.
+A URI path such as `/world` selects the table for `watch` when it names none.
 URI credentials use percent escapes for `:`, `@`, `/` and `%`.
 The CLI uses SCRAM-SHA-256 to prove password knowledge without sending the password itself.
 
