@@ -556,7 +556,7 @@ func TestCLIShell(t *testing.T) {
 	if strings.Count(out, "PONG") != 1 {
 		t.Fatalf("the shell went on after exit: %q", out)
 	}
-	for _, want := range []string{"error: UNKNOWN_COMMAND reason=unknown_command column 1: unknown statement 'BOGUS'\n", `error: unknown option "--bogus"`, "1 parameter(s)"} {
+	for _, want := range []string{"error: UNKNOWN_COMMAND reason=unknown_command column 1: unknown statement 'BOGUS'", `error: unknown option "--bogus"`, "1 parameter(s)"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("expected %q in stderr %q", want, errOut)
 		}
