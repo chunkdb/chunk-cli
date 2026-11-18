@@ -50,6 +50,9 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 	if opts.Statement.out != "" || opts.Statement.newPasswordFile != "" || opts.Statement.blocks {
 		return errors.New("transaction supports --json and --in; --out, --blocks and password options do not apply")
 	}
+	if len(opts.Statement.inMore) > 0 {
+		return errors.New("transaction supports --json and --in <file>; numbered --in does not apply")
+	}
 	file := opts.Statement.in
 	if len(args) == 1 && file == "" {
 		file = args[0]

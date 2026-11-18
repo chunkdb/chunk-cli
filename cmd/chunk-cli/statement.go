@@ -541,6 +541,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 }
 
 // hasIn reports whether any --in file was given.
+// maxInParameter is the largest parameter number the server accepts.
+const maxInParameter = 65535
+
 func (o statementOptions) hasIn() bool { return o.in != "" || len(o.inMore) > 0 }
 
 // addIn records an --in value: a file for the parameter $1, or n=file for the
@@ -551,6 +554,9 @@ func (o *statementOptions) addIn(spec string) error {
 		if n, err := strconv.Atoi(digits); err == nil {
 			if n < 1 {
 				return fmt.Errorf("--in %s: parameters are numbered from $1", spec)
+			}
+			if n > maxInParameter {
+				return fmt.Errorf("--in %s: parameters are numbered up to $%d; write ./%s for a file name that starts with digits and =", spec, maxInParameter, spec)
 			}
 			number, file = n, rest
 		}

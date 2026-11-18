@@ -29,7 +29,7 @@ chunk-cli help
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
 | `--blocks` | Include present blocks in chunk, area and scan data output |
-| `--in <file>` or `--in <n>=<file>` | Supply binary parameter `$1`, or `$n`; repeat for several, numbered from `$1` without a gap |
+| `--in <file>` or `--in <n>=<file>` | Supply binary parameter `$1`, or `$n`; repeat for several, numbered from `$1` without a gap, up to `$65535`; a file name that starts with digits and `=` needs `./` in front |
 | `--out <file>` | Write reply bytes to a file |
 | `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
 

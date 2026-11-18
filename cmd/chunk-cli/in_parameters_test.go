@@ -31,6 +31,14 @@ func TestInFlagNumbersParameters(t *testing.T) {
 	if _, err := gap.inFiles(); err == nil || !strings.Contains(err.Error(), "$2") {
 		t.Fatal(err)
 	}
+	for _, spec := range []string{"65536=x.bin", "4000000000=x.bin", "99999999999=x.bin"} {
+		if err := (&statementOptions{}).addIn(spec); err == nil {
+			t.Fatal("accepted", spec)
+		}
+	}
+	if err := (&statementOptions{}).addIn("65535=x.bin"); err != nil {
+		t.Fatal(err)
+	}
 	if err := (&statementOptions{}).addIn("a=b.bin"); err != nil {
 		t.Fatal("a file name containing = must stay a $1 file", err)
 	}
@@ -59,4 +67,12 @@ func TestInSendsEveryNumberedParameter(t *testing.T) {
 		t.Fatal(got, out.String(), failure.String())
 	}
 	waitSlotServer(t, done)
+}
+
+func TestTransactionRefusesNumberedIn(t *testing.T) {
+	var out, failure bytes.Buffer
+	got := run([]string{"--uri", "chunk://127.0.0.1:1", "--no-retry", "--in", "t.cql", "--in", "2=x.bin", "transaction"}, strings.NewReader(""), &out, &failure)
+	if got == 0 || !strings.Contains(failure.String(), "numbered --in") {
+		t.Fatal(got, failure.String())
+	}
 }
