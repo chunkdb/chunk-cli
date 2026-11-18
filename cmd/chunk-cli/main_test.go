@@ -233,3 +233,22 @@ func TestPrintReply(t *testing.T) {
 		t.Fatalf("got %q, %v", out.String(), err)
 	}
 }
+
+func TestLoginErrorNextStep(t *testing.T) {
+	failed := &chunkclient.ServerError{Code: "AUTH_FAILED", Message: "invalid user or password", Keys: map[string]string{"reason": "auth_failed"}}
+	bound := &chunkclient.ServerError{Code: "AUTH_FAILED", Message: "the login is bound to another TLS connection", Keys: map[string]string{"reason": "channel_binding"}}
+	required := &chunkclient.ServerError{Code: "AUTH_REQUIRED", Message: "log in", Keys: map[string]string{"reason": "auth_required"}}
+	for _, tc := range []struct {
+		login chunkclient.Login
+		err   error
+		want  string
+	}{
+		{chunkclient.Login{User: "admin"}, failed, "connecting failed: " + failed.Error() + " (check the password from --password-file, the URI or CHUNKDB_PASSWORD)"},
+		{chunkclient.Login{User: "admin"}, bound, "connecting failed: " + bound.Error()},
+		{chunkclient.Login{}, required, "connecting failed: " + required.Error() + " (log in with --user or chunk://user:password@host/)"},
+	} {
+		if got := loginError(tc.login, tc.err); got.Error() != tc.want || !errors.Is(got, tc.err) {
+			t.Fatalf("loginError(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}

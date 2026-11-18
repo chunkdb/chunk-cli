@@ -69,8 +69,9 @@ For storage features and their raw masks, use `SHOW STATUS` with `ADMIN` on `*`.
 
 - **Connection refused:** check the URI, host, port and server availability.
 - **TLS error:** check the URI scheme and certificate settings.
+- **Connection closed or reset before the reply:** use `chunks://` for a TLS server.
 - **AUTH_REQUIRED:** supply a user and password.
-- **AUTH_FAILED:** check the supplied credentials.
+- **AUTH_FAILED:** check the user and the password from `--password-file`, the URI or `CHUNKDB_PASSWORD`.
 
 Without a user, the connection succeeds only when the server disables authentication.
 For example, omitting the user from the connection URI prints this error and exits 1:
@@ -80,7 +81,7 @@ chunk-cli --uri "${CHUNKDB_URI/admin@/}" PING
 ```
 
 ```output
-error: connecting failed: AUTH_REQUIRED reason=auth_required use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message; set the username and password in your client connection URI (log in with --user or chunk://user:password@host/)
+error: connecting failed: AUTH_REQUIRED reason=auth_required log in with a user name and password: name the user in the URI, such as chunk://admin@host:4242/, and give the client the password (clients use HELLO 3 USER <name> $1 with a SCRAM-SHA-256 client-first message) (log in with --user or chunk://user:password@host/)
 ```
 Failed commands preserve the server's error code and metadata.
 See [error exit codes](COMMANDS.md#errors) before deciding whether to retry.

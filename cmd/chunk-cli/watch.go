@@ -854,7 +854,7 @@ func connectWatchLogin(ctx context.Context, opts globalOptions, uri chunkuri.Par
 	err = watchCall(ctx, client, func() error { _, err := client.Hello(login); return err })
 	if err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("connecting failed: %w", err)
+		return nil, loginError(login, err)
 	}
 	return client, nil
 }

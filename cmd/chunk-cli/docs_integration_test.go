@@ -449,7 +449,11 @@ func TestCLIDocExamples(t *testing.T) {
 					if err != nil {
 						t.Fatalf("%v; raw WATCH: %s", err, strings.Join(trace.raw, "\n"))
 					}
-					trace.awaitACK(t, watchWire, watch.lines, revision, schemaVersion)
+					// Only a slot consumer acknowledges; an ordinary watch has printed
+					// the change, which proves its registration.
+					if strings.Contains(examples[watchIndex].input, "--slot") {
+						trace.awaitACK(t, watchWire, watch.lines, revision, schemaVersion)
+					}
 					watch.finish(t, func(line string) error { return trace.drain(strings.TrimSuffix(line, "\n"), revision, schemaVersion) })
 					outputs[watchIndex] = strings.Join(trace.semantic, "\n") + "\n"
 					watch = nil

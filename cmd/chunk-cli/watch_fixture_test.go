@@ -418,12 +418,16 @@ func (f *watchFixture) awaitACK(t *testing.T, proxy *recordingProxy, lines <-cha
 func fixtureDocMutation(expected string) (uint64, uint64, error) {
 	change := regexp.MustCompile(`(?m)^change revision ([0-9]+) time_ms `).FindStringSubmatch(expected)
 	schema := regexp.MustCompile(`(?m)^schema <epoch>:[0-9]+ version ([0-9]+)$`).FindStringSubmatch(expected)
-	if len(change) != 2 || len(schema) != 2 {
-		return 0, 0, fmt.Errorf("marked WATCH requires exact change and schema metadata")
+	if len(change) != 2 {
+		return 0, 0, fmt.Errorf("marked WATCH requires exact change metadata")
 	}
 	revision, err := strconv.ParseUint(change[1], 10, 64)
 	if err != nil {
 		return 0, 0, err
+	}
+	// An ordinary watch prints no schema line; version 0 then refuses one.
+	if len(schema) != 2 {
+		return revision, 0, nil
 	}
 	version, err := strconv.ParseUint(schema[1], 10, 64)
 	return revision, version, err

@@ -165,12 +165,21 @@ func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclie
 	}
 	if _, err := client.Hello(login); err != nil {
 		_ = client.Close()
-		if login.User == "" && errors.Is(err, chunkclient.ErrAuthRequired) {
-			return nil, fmt.Errorf("connecting failed: %w (log in with --user or chunk://user:password@host/)", err)
-		}
-		return nil, fmt.Errorf("connecting failed: %w", err)
+		return nil, loginError(login, err)
 	}
 	return client, nil
+}
+
+// loginError adds the next step for a refused login.
+func loginError(login chunkclient.Login, err error) error {
+	var serverErr *chunkclient.ServerError
+	switch {
+	case login.User == "" && errors.Is(err, chunkclient.ErrAuthRequired):
+		return fmt.Errorf("connecting failed: %w (log in with --user or chunk://user:password@host/)", err)
+	case errors.Is(err, chunkclient.ErrAuthFailed) && errors.As(err, &serverErr) && serverErr.Keys["reason"] != "channel_binding":
+		return fmt.Errorf("connecting failed: %w (check the password from --password-file, the URI or %s)", err, passwordEnv)
+	}
+	return fmt.Errorf("connecting failed: %w", err)
 }
 
 // runShell reads one statement per line. A server error is printed and the

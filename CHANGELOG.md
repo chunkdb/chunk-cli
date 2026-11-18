@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- Connection, URI and login errors name the next step: the `chunk://user@host:4242/` form, `chunk://` versus `chunks://` after a reset, and the password sources after `AUTH_FAILED`. Part of chunkdb/chunkdb#152.
 - Render GET AREA pages with exact continuation cursors, enforce negotiated reply bounds while reading, and bound aggregate decoded output arrays (chunkdb/chunkdb#136).
 - Decode checked chunk forms with three-axis coordinates, chunk columns, producing timestamps and retained scan deletions, while bounding decoded output and binary imports (chunkdb/chunkdb#133).
 - Bind logins over `chunks://` to their TLS connection (`tls-exporter` on TLS 1.3, `tls-server-end-point` on TLS 1.2); `--channel-binding auto|off|require` selects the mode, and `CREATE USER <name> PASSWORD REQUIRE CHANNEL BINDING` is passed on. Part of chunkdb/chunkdb#162.
@@ -14,6 +15,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
+- Replace the README start with a checked world example: a named migration for `world_cli`, two writes, block and area reads, and a watched change; `examples/world.sh` applies the same migration, so it reruns cleanly and does not clash with the server quick start's `world` table. Part of chunkdb/chunkdb#152.
 - Clarify CLI commands and user guides with checked input and output examples (#6).
 - Correct the world example description and link feed recovery to the server procedure (#6).
 - Rewrite the CLI README and user guides for chunkdb 2.0, with a short start and runnable feature examples (#6).

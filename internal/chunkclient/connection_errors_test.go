@@ -28,6 +28,7 @@ func TestConnectionErrorAdvicePreservesCause(t *testing.T) {
 		{"tls_mismatch", tls.RecordHeaderError{Msg: "bad record"}, true, "connect host:4242: TLS handshake failed; use chunks:// for a TLS server or chunk:// for a plain server: "},
 		{"tls_certificate", errors.New("certificate invalid"), true, "connect host:4242: TLS connection failed; check the server certificate and chunks:// endpoint: "},
 		{"closed", io.EOF, false, "connect host:4242: connection closed before the reply; check chunk:// versus chunks:// and the server logs: "},
+		{"reset", syscall.ECONNRESET, false, "connect host:4242: connection reset by the server; check chunk:// versus chunks:// and the server logs: "},
 		{"canceled", context.Canceled, true, "connect host:4242: "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,4 +110,42 @@ func TestClosedReplyAdvice(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	<-done
+}
+
+func TestResetReplyAdvice(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		// A TLS server that reads a plain request closes with unread data,
+		// which resets the connection.
+		_, err = conn.Read(make([]byte, 1))
+		conn.(*net.TCPConn).SetLinger(0)
+		conn.Close()
+		done <- err
+	}()
+	uri, err := chunkuri.Parse("chunk://" + listener.Addr().String() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := Dial(Config{URI: uri, Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_, err = client.Hello(Login{})
+	if !errors.Is(err, syscall.ECONNRESET) || !strings.Contains(err.Error(), "connection reset by the server; check chunk:// versus chunks:// and the server logs") {
+		t.Fatalf("got %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

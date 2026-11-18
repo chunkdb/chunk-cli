@@ -10,6 +10,9 @@ import (
 
 const DefaultPort = 4242
 
+// form is the URI shape that the errors below point to.
+const form = "chunk://user@host:4242/, or chunks:// for TLS"
+
 type Parsed struct {
 	Scheme string
 	Host   string
@@ -25,25 +28,30 @@ type Parsed struct {
 }
 
 func Parse(raw string) (Parsed, error) {
+	// Without a scheme the parser reports an unrelated path error, and its
+	// text would repeat a password in the URI.
+	if !strings.Contains(raw, "://") {
+		return Parsed{}, fmt.Errorf("the uri has no scheme; add chunk:// as in %s", form)
+	}
 	u, err := neturl.Parse(raw)
 	if err != nil {
-		return Parsed{}, fmt.Errorf("parse uri: %w", err)
+		return Parsed{}, fmt.Errorf("parse uri: %w; use %s", err, form)
 	}
 
 	if u.Scheme != "chunk" && u.Scheme != "chunks" {
-		return Parsed{}, fmt.Errorf("unsupported scheme %q (use chunk:// or chunks://)", u.Scheme)
+		return Parsed{}, fmt.Errorf("unsupported scheme %q; use %s", u.Scheme, form)
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return Parsed{}, fmt.Errorf("missing host in uri")
+		return Parsed{}, fmt.Errorf("missing host in uri; use %s", form)
 	}
 
 	port := DefaultPort
 	if p := u.Port(); p != "" {
 		parsed, err := strconv.Atoi(p)
 		if err != nil || parsed <= 0 || parsed > 65535 {
-			return Parsed{}, fmt.Errorf("invalid port %q", p)
+			return Parsed{}, fmt.Errorf("invalid port %q; use a port from 1 to 65535, as in %s", p, form)
 		}
 		port = parsed
 	}
@@ -54,12 +62,12 @@ func Parse(raw string) (Parsed, error) {
 		password, hasPassword = u.User.Password()
 	}
 	if user == "" && hasPassword {
-		return Parsed{}, fmt.Errorf("the uri has a password but no user")
+		return Parsed{}, fmt.Errorf("the uri has a password but no user; use chunk://user:password@host:4242/")
 	}
 
 	table := strings.TrimPrefix(u.Path, "/")
 	if strings.Contains(table, "/") {
-		return Parsed{}, fmt.Errorf("uri path must name one table: %q", u.Path)
+		return Parsed{}, fmt.Errorf("uri path must name one table: %q; use chunk://user@host:4242/table", u.Path)
 	}
 
 	return Parsed{
