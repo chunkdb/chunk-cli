@@ -30,10 +30,75 @@ func ValidateStatus(reply Value) error {
 		if err := validateFeatureFlags(table); err != nil {
 			return err
 		}
+		if state, found := table.Lookup("state"); found && state.Kind != KindBulk {
+			return errors.New("SHOW STATUS: invalid table state")
+		}
+		if reason, found := table.Lookup("reason"); found && reason.Kind != KindBulk && reason.Kind != KindNull {
+			return errors.New("SHOW STATUS: invalid table reason")
+		}
 	}
 	pending, found := reply.Lookup("activation_pending")
 	if !found || pending.Kind != KindBool {
 		return errors.New("SHOW STATUS: invalid activation_pending")
+	}
+	// Servers before 2.0 omit the server fields; when present they are typed.
+	if version, found := reply.Lookup("version"); found && version.Kind != KindBulk {
+		return errors.New("SHOW STATUS: invalid version")
+	}
+	if uptime, found := reply.Lookup("uptime_ms"); found {
+		if _, err := uptime.Uint64(); err != nil {
+			return errors.New("SHOW STATUS: invalid uptime_ms")
+		}
+	}
+	if readOnly, found := reply.Lookup("read_only"); found && readOnly.Kind != KindBool {
+		return errors.New("SHOW STATUS: invalid read_only")
+	}
+	if fenced, found := reply.Lookup("fenced"); found {
+		if fenced.Kind != KindArray {
+			return errors.New("SHOW STATUS: invalid fenced")
+		}
+		for _, table := range fenced.Items {
+			name, nameFound := table.Lookup("name")
+			reason, reasonFound := table.Lookup("reason")
+			if table.Kind != KindMap || !nameFound || name.Kind != KindBulk || !reasonFound || reason.Kind != KindBulk {
+				return errors.New("SHOW STATUS: invalid fenced table")
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateTableStats checks the counts of SHOW TABLE STATS without rejecting
+// extension keys.
+func ValidateTableStats(reply Value) error {
+	if reply.Kind != KindMap {
+		return errors.New("SHOW TABLE STATS: expected map")
+	}
+	epoch, found := reply.Lookup("epoch")
+	if !found || epoch.Kind != KindBulk || !ValidEpoch(string(epoch.Bulk)) {
+		return errors.New("SHOW TABLE STATS: invalid epoch")
+	}
+	revision, found := reply.Lookup("revision")
+	if !found {
+		return errors.New("SHOW TABLE STATS: missing revision")
+	}
+	if revision.Kind != KindNull {
+		if _, err := revision.Uint64(); err != nil {
+			return errors.New("SHOW TABLE STATS: invalid revision")
+		}
+	}
+	dims, found := reply.Lookup("dims")
+	if n, err := dims.Uint64(); !found || err != nil || n != 2 && n != 3 {
+		return errors.New("SHOW TABLE STATS: invalid dims")
+	}
+	for _, key := range []string{"chunks", "tombstones", "retained_deletion_floor", "loaded_chunks", "files", "disk_bytes", "slots", "watches"} {
+		value, found := reply.Lookup(key)
+		if !found {
+			return fmt.Errorf("SHOW TABLE STATS: missing %s", key)
+		}
+		if _, err := value.Uint64(); err != nil {
+			return fmt.Errorf("SHOW TABLE STATS: invalid %s", key)
+		}
 	}
 	return nil
 }
@@ -88,6 +153,17 @@ func ValidateSlots(reply Value) error {
 			if !found || value.Kind != KindBulk {
 				return fmt.Errorf("SHOW SLOTS: invalid %s", key)
 			}
+		}
+		// revision, lag_revisions and attached came with 2.0.
+		for _, key := range []string{"revision", "lag_revisions"} {
+			if value, found := slot.Lookup(key); found {
+				if _, err := value.Uint64(); err != nil {
+					return fmt.Errorf("SHOW SLOTS: invalid %s", key)
+				}
+			}
+		}
+		if attached, found := slot.Lookup("attached"); found && attached.Kind != KindBool {
+			return errors.New("SHOW SLOTS: invalid attached")
 		}
 		lost, found := slot.Lookup("lost")
 		if !found || lost.Kind != KindBool {

@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `watch --catalog` streams WATCH CATALOG with one line per table, user and slot change; `DESCRIBE` prints a table's `checks` and `fenced` reason; `SHOW STATUS`, `SHOW TABLE STATS` and `SHOW SLOTS` check the types of their 2.0 fields; COMMANDS.md lists the CLI form of every statement. Part of chunkdb/chunkdb#151.
 - Ctrl-C during a one-shot statement sends CANCEL for it from a second connection; `--tls-ca <file>` verifies `chunks://` servers with the PEM CA certificates in the file. Part of chunkdb/chunkdb#151.
 - `GET AREA ... SCALE` chunks print their scale and reduction and count samples; `SET BLOCK` and `DELETE BLOCK ... RETURNING` print typed rows; transaction files may open with `BEGIN READ ONLY`. Part of chunkdb/chunkdb#151.
 - `SCAN CHUNKS ... WHERE ... WITH DATA` prints the page's `after` coordinate and accepts empty filtered pages; tests cover IF conditions, computed values and WHERE on AGGREGATE and SCAN CHUNKS. Part of chunkdb/chunkdb#151.
@@ -21,6 +22,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
+- Follow the server's rights and statements: BACKUP TO takes `BACKUP` or `MANAGES USERS` and RESTORE TABLE restores one table online, `migrations` lists the records within your rights, transactions list every statement they allow, and the shell rolls back a conflict itself. Part of chunkdb/chunkdb#151.
 - CONNECTION.md says `statement_timeout_ms` is applied, COMMANDS.md says `--uri` defaults to `chunk://127.0.0.1:4242/`, and the watch synopsis lists `--columns`, `--no-before`, `--chunks`, `--takeover`, `--ack-timeout-ms` and `--no-reconnect`. Part of #45.
 - Add a checked AGGREGATE example with a BY CHUNK JSON reply to the command reference. Part of chunkdb/chunkdb#151.
 - Replace the README start with a checked world example: a named migration for `world_cli`, two writes, block and area reads, and a watched change; `examples/world.sh` applies the same migration, so it reruns cleanly and does not clash with the server quick start's `world` table. Part of chunkdb/chunkdb#152.

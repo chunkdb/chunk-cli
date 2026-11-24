@@ -59,6 +59,12 @@ func startWatchProcess(t *testing.T, uri string, args ...string) *watchProcess {
 
 func startWatchProcessTrusted(t *testing.T, uri, caFile string, args ...string) *watchProcess {
 	t.Helper()
+	return startWatchCommand(t, uri, caFile, append([]string{"world"}, args...)...)
+}
+
+// startWatchCommand runs `chunk-cli watch <watchArgs>`.
+func startWatchCommand(t *testing.T, uri, caFile string, watchArgs ...string) *watchProcess {
+	t.Helper()
 	p := &watchProcess{lines: make(chan string, 64), done: make(chan error, 1)}
 	global := []string{"-test.run=^TestWatchProcess$", "--", "--uri", uri}
 	if caFile == "" {
@@ -68,7 +74,7 @@ func startWatchProcessTrusted(t *testing.T, uri, caFile string, args ...string) 
 		// itself with the server's key: a login through it cannot be bound.
 		global = append(global, "--channel-binding", "off")
 	}
-	all := append(append(global, "watch", "world"), args...)
+	all := append(append(global, "watch"), watchArgs...)
 	p.command = exec.Command(os.Args[0], all...)
 	p.command.Env = append(os.Environ(), "CHUNKCLI_WATCH_PROCESS=1")
 	if caFile != "" {

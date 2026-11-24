@@ -224,8 +224,17 @@ func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 			out.WriteByte('\n')
 		}
 	}
+	if len(schema.Checks) > 0 {
+		out.WriteString("checks:\n")
+		for _, check := range schema.Checks {
+			fmt.Fprintf(&out, "  %s (%s)\n", check.Name, check.Expression)
+		}
+	}
 	out.WriteString("options:\n")
 	writeHuman(&out, chunkclient.Value{Kind: chunkclient.KindMap, Map: schema.Options}, "  ")
+	if schema.Fenced != "" {
+		fmt.Fprintf(&out, "fenced = %s\n", formatValue(chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte(schema.Fenced)}, nil))
+	}
 	_, err := w.Write(out.Bytes())
 	return err
 }

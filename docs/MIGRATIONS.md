@@ -57,7 +57,7 @@ Add a new named step for later changes.
 
 Supported steps are CREATE/ALTER/DROP TABLE, GRANT/REVOKE and CREATE/DROP SLOT.
 Each step requires its statement's rights even when skipped.
-Listing history requires `MANAGES USERS`.
+`migrations` lists the records within your rights; `user` is `NULL` without `MANAGES USERS`.
 
 ## If it fails
 
