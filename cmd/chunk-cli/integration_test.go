@@ -643,9 +643,7 @@ func TestCLIUsers(t *testing.T) {
 	if out := s.ok(t, "GRANT READ ON world TO bot"); out != "OK\n" {
 		t.Fatalf("GRANT: %q", out)
 	}
-	if out := s.ok(t, "--json", "SHOW USERS"); !strings.Contains(out, `{"name":"bot","manages_users":false,"requires_channel_binding":false,"grants":{"world":"READ"}}`) {
-		t.Fatalf("SHOW USERS: %q", out)
-	}
+	assertShownUser(t, s.ok(t, "--json", "SHOW USERS"), "bot", false, false, map[string]string{"world": "READ"})
 
 	bot := func(password string, args ...string) (int, string, string) {
 		t.Helper()
@@ -690,9 +688,10 @@ func TestCLIUsers(t *testing.T) {
 	if code, out, errOut := s.cli(t, script, "shell"); code != 0 || out != "chunk> OK\nchunk> OK\nchunk> " || errOut != "" {
 		t.Fatalf("shell: %d %q %q", code, out, errOut)
 	}
-	if code, out, errOut := s.cliAt(t, s.uriFor("carol", "carol"), "", "--json", "SHOW USERS"); code != 0 ||
-		!strings.Contains(out, `{"name":"carol","manages_users":true,"requires_channel_binding":false,"grants":{}}`) || strings.Contains(out, `"bot"`) {
+	if code, out, errOut := s.cliAt(t, s.uriFor("carol", "carol"), "", "--json", "SHOW USERS"); code != 0 || strings.Contains(out, `"bot"`) {
 		t.Fatalf("carol SHOW USERS: %d %q %q", code, out, errOut)
+	} else {
+		assertShownUser(t, out, "carol", true, false, map[string]string{})
 	}
 	if code, _, errOut := bot("second", "PING"); code != 1 || !strings.Contains(errOut, "AUTH_FAILED") {
 		t.Fatalf("dropped user: %d %q", code, errOut)
@@ -928,4 +927,34 @@ func TestCLITransactions(t *testing.T) {
 	if out := s.ok(t, "GET BLOCK 0 0 FROM world COLUMNS id"); out != "id = 12\n" {
 		t.Fatalf("after leaving the shell: %q", out)
 	}
+}
+
+// assertShownUser checks the fields of one user in SHOW USERS --json output
+// and ignores fields a newer server adds.
+func assertShownUser(t *testing.T, out, name string, managesUsers, channelBinding bool, grants map[string]string) {
+	t.Helper()
+	var users []struct {
+		Name                   string            `json:"name"`
+		ManagesUsers           bool              `json:"manages_users"`
+		RequiresChannelBinding bool              `json:"requires_channel_binding"`
+		Grants                 map[string]string `json:"grants"`
+	}
+	if err := json.Unmarshal([]byte(out), &users); err != nil {
+		t.Fatalf("SHOW USERS: %v: %q", err, out)
+	}
+	for _, user := range users {
+		if user.Name != name {
+			continue
+		}
+		if user.ManagesUsers != managesUsers || user.RequiresChannelBinding != channelBinding || len(user.Grants) != len(grants) {
+			t.Fatalf("SHOW USERS %s: %+v", name, user)
+		}
+		for table, right := range grants {
+			if user.Grants[table] != right {
+				t.Fatalf("SHOW USERS %s grants: %+v", name, user.Grants)
+			}
+		}
+		return
+	}
+	t.Fatalf("SHOW USERS has no %s: %q", name, out)
 }
