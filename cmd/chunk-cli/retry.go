@@ -37,7 +37,10 @@ func retryAfter(server *chunkclient.ServerError) (time.Duration, bool) {
 	if !named {
 		return 0, false
 	}
-	return time.Duration(min(ms, uint64(maxRetryAfter/time.Millisecond))) * time.Millisecond, true
+	if ms >= uint64(maxRetryAfter/time.Millisecond) {
+		return maxRetryAfter, true
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 func pause(ctx context.Context, delay time.Duration) error {
