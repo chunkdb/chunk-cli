@@ -149,11 +149,11 @@ type Schema struct {
 	LargeHeight   int
 	LargeDepth    int
 	Options       []MapEntry
+	columnIndexes map[string]int
 	// Checks are the table's CHECK constraints, in DESCRIBE order.
 	Checks []Check
 	// Fenced is the reason a fenced table does not serve, or empty.
-	Fenced        string
-	columnIndexes map[string]int
+	Fenced string
 }
 
 // Check is a CHECK constraint of DESCRIBE.
