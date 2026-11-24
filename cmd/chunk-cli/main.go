@@ -339,6 +339,7 @@ Watch options:
   --ack-every <n>           acknowledge every n printed eligible events (default 1)
   --area <cx0,cy0,cx1,cy1>   inclusive chunk rectangle; three-axis tables take
                             cx0,cy0,cz0,cx1,cy1,cz1
+                            (repeat for several areas)
   --columns <a,b>           projected columns
   --no-before               omit before rows
   --chunks                  stream committed chunk forms
