@@ -109,3 +109,18 @@ func TestParseErrorsShowTheForm(t *testing.T) {
 		t.Fatalf("error repeats the password: %v", err)
 	}
 }
+
+func TestParseErrorsRedactThePassword(t *testing.T) {
+	for raw, want := range map[string]string{
+		"chunk://bot:s3cret%zz@h:1/":      "invalid uri chunk://bot:xxxxx@h:1/; use chunk://user@host:4242/, or chunks:// for TLS and percent-encode reserved characters in the user and password",
+		"chunks://bot:s3cret@h:x/":        "invalid uri chunks://bot:xxxxx@h:x/; use chunk://user@host:4242/, or chunks:// for TLS and percent-encode reserved characters in the user and password",
+		"chunk://bot:s3cret@h%zz:1/":      "invalid uri chunk://bot:xxxxx@h%zz:1/; use chunk://user@host:4242/, or chunks:// for TLS and percent-encode reserved characters in the user and password",
+		"chunk://bot@h%zz:1/":             "invalid uri chunk://bot@h%zz:1/; use chunk://user@host:4242/, or chunks:// for TLS and percent-encode reserved characters in the user and password",
+		"chunk://bot:s3cret@h:1/a b%zz/c": "invalid uri chunk://bot:xxxxx@h:1/a b%zz/c; use chunk://user@host:4242/, or chunks:// for TLS and percent-encode reserved characters in the user and password",
+	} {
+		_, err := Parse(raw)
+		if err == nil || err.Error() != want || strings.Contains(err.Error(), "s3cret") {
+			t.Errorf("Parse(%q) = %v, want %q", raw, err, want)
+		}
+	}
+}

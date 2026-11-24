@@ -35,7 +35,8 @@ func Parse(raw string) (Parsed, error) {
 	}
 	u, err := neturl.Parse(raw)
 	if err != nil {
-		return Parsed{}, fmt.Errorf("parse uri: %w; use %s", err, form)
+		// The parser's error repeats the URI, password included.
+		return Parsed{}, fmt.Errorf("invalid uri %s; use %s and percent-encode reserved characters in the user and password", redact(raw), form)
 	}
 
 	if u.Scheme != "chunk" && u.Scheme != "chunks" {
@@ -83,4 +84,22 @@ func Parse(raw string) (Parsed, error) {
 
 func (p Parsed) Address() string {
 	return net.JoinHostPort(p.Host, strconv.Itoa(p.Port))
+}
+
+// redact replaces the password in raw with xxxxx, so that an error can
+// show the URI without its password.
+func redact(raw string) string {
+	prefix, rest := "", raw
+	if i := strings.Index(raw, "://"); i >= 0 {
+		prefix, rest = raw[:i+3], raw[i+3:]
+	}
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return raw
+	}
+	user, _, hasPassword := strings.Cut(rest[:at], ":")
+	if !hasPassword {
+		return raw
+	}
+	return prefix + user + ":xxxxx" + rest[at:]
 }

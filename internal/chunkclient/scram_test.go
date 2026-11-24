@@ -42,13 +42,16 @@ func TestScramRFC7677(t *testing.T) {
 func TestScramRefusesServerFirst(t *testing.T) {
 	login := newLogin("user", "pencil", rfcNonce, "", nil)
 	for message, want := range map[string]string{
-		"r=other,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096":            "does not continue",
-		"r=" + rfcNonce + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096": "does not continue",
-		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=1":   "fewer than 4096",
-		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=x":   "not a SCRAM server-first",
-		"r=" + rfcNonce + "x,s=!!,i=4096":                      "not a SCRAM server-first",
-		"r=" + rfcNonce + "x,i=4096":                           "not a SCRAM server-first",
-		"e=other-error":                                        "not a SCRAM server-first",
+		"r=other,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096":                   "does not continue",
+		"r=" + rfcNonce + ",s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096":        "does not continue",
+		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=1":          "issues 4096 to 1000000",
+		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4095":       "issues 4096 to 1000000",
+		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=1000001":    "issues 4096 to 1000000",
+		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4294967296": "issues 4096 to 1000000",
+		"r=" + rfcNonce + "x,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=x":          "not a SCRAM server-first",
+		"r=" + rfcNonce + "x,s=!!,i=4096":                             "not a SCRAM server-first",
+		"r=" + rfcNonce + "x,i=4096":                                  "not a SCRAM server-first",
+		"e=other-error":                                               "not a SCRAM server-first",
 	} {
 		if _, _, err := login.finish(message); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v, want %q", message, err, want)
