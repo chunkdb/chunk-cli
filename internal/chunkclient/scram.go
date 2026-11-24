@@ -16,6 +16,10 @@ import (
 // verifier, and the fewest a login accepts from the server.
 const MinIterations = 4096
 
+// maxServerIterations is the most PBKDF2 iterations a chunkdb server issues
+// in a login; a larger count would hold the client in PBKDF2.
+const maxServerIterations = 1000000
+
 // gs2Unbound is the GS2 header of a login that is not bound to its
 // connection.
 const gs2Unbound = "n,,"
@@ -125,8 +129,8 @@ func parseServerFirst(message string) (nonce string, salt []byte, iterations int
 	if err != nil || iterations <= 0 {
 		return "", nil, 0, malformed
 	}
-	if iterations < MinIterations {
-		return "", nil, 0, fmt.Errorf("the server asks for %d SCRAM iterations, fewer than %d", iterations, MinIterations)
+	if iterations < MinIterations || iterations > maxServerIterations {
+		return "", nil, 0, fmt.Errorf("the server asks for %d SCRAM iterations; a chunkdb server issues %d to %d", iterations, MinIterations, maxServerIterations)
 	}
 	return nonce, salt, iterations, nil
 }

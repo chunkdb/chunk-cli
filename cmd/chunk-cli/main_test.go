@@ -78,6 +78,9 @@ func TestRunLocalCommands(t *testing.T) {
 		{[]string{"--help"}, 0, "Usage:", ""},
 		{nil, 1, "", "Usage:"},
 		{[]string{"--uri", "http://x/", "PING"}, 1, "", "error: unsupported scheme"},
+		// A URI that does not parse is shown without its password.
+		{[]string{"--uri", "chunk://bot:s3cret%zz@h:1/", "PING"}, 1, "", "error: invalid uri chunk://bot:xxxxx@h:1/;"},
+		{[]string{"--json", "--uri", "chunk://bot:s3cret%zz@h:1/", "PING"}, 1, "", "invalid uri chunk://bot:xxxxx@h:1/;"},
 		// A one-shot statement cannot hold a transaction; nothing connects.
 		{[]string{"--uri", "http://x/", "BEGIN"}, 1, "", "error: BEGIN runs in the shell (chunk-cli shell)"},
 		{[]string{"--uri", "http://x/", "commit"}, 1, "", "error: COMMIT runs in the shell"},
@@ -85,7 +88,8 @@ func TestRunLocalCommands(t *testing.T) {
 	} {
 		var stdout, stderr bytes.Buffer
 		code := run(tc.args, strings.NewReader(""), &stdout, &stderr)
-		if code != tc.code || !strings.Contains(stdout.String(), tc.out) || !strings.Contains(stderr.String(), tc.error) {
+		if code != tc.code || !strings.Contains(stdout.String(), tc.out) || !strings.Contains(stderr.String(), tc.error) ||
+			strings.Contains(stdout.String()+stderr.String(), "s3cret") {
 			t.Errorf("%v: got %d, %q, %q", tc.args, code, stdout.String(), stderr.String())
 		}
 	}
