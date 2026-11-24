@@ -25,6 +25,7 @@ chunk-cli help
 | `--no-retry` | Run a transaction file once |
 | `--tls-insecure` | Accept an untrusted TLS certificate |
 | `--tls-server-name <name>` | Override the TLS certificate name |
+| `--tls-ca <file>` | Verify the server with the PEM CA certificates in the file instead of the system roots |
 | `--channel-binding <mode>` | Bind the login to the TLS connection: `auto` (default), `off` or `require` |
 | `--hello-option <key=value>` | Supply a HELLO session option; repeat for multiple keys |
 | `--json` | Print JSON replies |
@@ -222,6 +223,7 @@ A filtered scan page can hold no chunks; continue with `AFTER` the printed `afte
 
 ## Notes
 
+Ctrl-C during a one-shot statement sends `CANCEL` for it from a second connection with the same login: the server stops it with `CANCELLED applied=false`, and a statement past its decision point still completes; a second Ctrl-C quits at once.
 `--out` exports the raw chunk form, including columns whose types this client does not know.
 Typed output and binary imports require checked CKCF forms in both table dimensions.
 Binary `SET CHUNK --in` imports require known column types and a form within the fetched schema size bound.

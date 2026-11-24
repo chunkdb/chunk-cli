@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,7 @@ type globalOptions struct {
 	Timeout        time.Duration
 	TLSInsecure    bool
 	TLSServerName  string
+	TLSRootCAs     *x509.CertPool
 	ChannelBinding chunkclient.ChannelBinding
 	Statement      statementOptions
 	SessionOptions map[string]chunkclient.Value
@@ -123,7 +125,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	term := console{in: stdin, out: stderr}
-	client, err := connect(opts, term)
+	client, reconnect, err := connectAgain(opts, term)
 	if err != nil {
 		return fail(err)
 	}
@@ -138,7 +140,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	} else if shell {
 		err = runShell(client, term, stdout, opts.Statement)
 	} else {
+		stop := cancelOnInterrupt(client, reconnect, stderr)
 		err = execute(client, nil, statement, opts.Statement, stdout, term)
+		stop()
 	}
 	if err != nil {
 		return fail(err)
@@ -146,17 +150,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// connect opens the connection and logs in with HELLO 3.
-func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
+// connectAgain opens the connection like connect and returns a function that
+// opens another with the same login, without asking for the password again.
+func connectAgain(opts globalOptions, term console) (*chunkclient.Client, func() (*chunkclient.Client, error), error) {
 	parsedURI, err := chunkuri.Parse(opts.URI)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	login, err := loginFor(opts, parsedURI, term)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return connectLogin(opts, parsedURI, login)
+	client, err := connectLogin(opts, parsedURI, login)
+	return client, func() (*chunkclient.Client, error) { return connectLogin(opts, parsedURI, login) }, err
+}
+
+// connect opens the connection and logs in with HELLO 3.
+func connect(opts globalOptions, term console) (*chunkclient.Client, error) {
+	client, _, err := connectAgain(opts, term)
+	return client, err
 }
 
 func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclient.Login) (*chunkclient.Client, error) {
@@ -165,6 +177,7 @@ func connectLogin(opts globalOptions, parsedURI chunkuri.Parsed, login chunkclie
 		Timeout:        opts.Timeout,
 		TLSInsecure:    opts.TLSInsecure,
 		TLSServerName:  opts.TLSServerName,
+		TLSRootCAs:     opts.TLSRootCAs,
 		ChannelBinding: opts.ChannelBinding,
 		SessionOptions: opts.SessionOptions,
 	})
@@ -251,6 +264,18 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 	fs.BoolVar(&opts.NoRetry, "no-retry", false, "run a transaction file once")
 	fs.BoolVar(&opts.TLSInsecure, "tls-insecure", false, "allow insecure TLS certificates for chunks://")
 	fs.StringVar(&opts.TLSServerName, "tls-server-name", "", "optional TLS server name override")
+	fs.Func("tls-ca", "verify chunks:// servers with the PEM certificates in this file instead of the system roots", func(file string) error {
+		pem, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return fmt.Errorf("%s holds no PEM certificate", file)
+		}
+		opts.TLSRootCAs = pool
+		return nil
+	})
 	fs.Func("channel-binding", "bind the login to the TLS connection: auto, off or require (default auto)", func(text string) error {
 		mode, err := chunkclient.ParseChannelBinding(text)
 		opts.ChannelBinding = mode
@@ -321,6 +346,7 @@ Options:
   --no-retry                run a transaction file once
   --tls-insecure
   --tls-server-name <name>
+  --tls-ca <file>           verify the server with these PEM CA certificates
   --channel-binding <auto|off|require>
                             bind the login to the TLS connection (default auto);
                             off for TLS that ends at a load balancer
