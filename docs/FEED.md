@@ -1,6 +1,6 @@
 # Watch changes with a durable slot
 
-A watch streams committed block changes.
+A watch streams committed block changes; `watch --catalog` streams [catalog changes](#watch-the-catalog).
 A durable slot retains changes until your consumer acknowledges them.
 A revision orders commits within a table, and an epoch identifies that table's lifetime.
 Use the connection variables from the [README](../README.md) and unused `world` and `consumer` names.
@@ -110,9 +110,35 @@ JSON events include nullable `tag` and `txn`; changes also include `chunk_change
 Schema events carry dimensions, block columns and chunk columns.
 Progress advances the completed frontier without a mutation.
 Progress is ACK-eligible, but never starts or extends the oldest unacknowledged mutation's deadline.
-Schema, resync, reserved catalog events and unknown events are not ACK-eligible.
+Schema, resync, catalog and unknown events are not ACK-eligible.
 Unknown push kinds are fully decoded and ignored without consuming an ordinary reply.
 Resync includes nullable `parent_epoch` and `fork_revision` for lineage checks.
+
+## Watch the catalog
+
+`watch --catalog` streams changes to tables, users and slots with WATCH CATALOG.
+It needs `MONITOR` or `ADMIN` on `*`; users and slot owners appear only with `MANAGES USERS`.
+
+```sh
+chunk-cli --uri "$CHUNKDB_URI" watch --catalog
+```
+
+```text
+start <epoch>:<revision>
+catalog revision <revision> time_ms <time-ms>
+  create table world
+  create user admin
+  create slot consumer on world
+catalog revision <revision> time_ms <time-ms> user admin
+  drop slot consumer on world
+```
+
+The first event holds the whole catalog: start your copy from it.
+Each later event prints one `action kind name` line per change, with `on <table>` for a slot, and names the user whose statement made it.
+`--json` prints each event with the `data` of each change: the DESCRIBE map of a table, the SHOW USERS map of a user, and a slot's filters and owner.
+A `resync` line means the watch fell behind; the whole catalog follows it, so start your copy over from it.
+`--catalog` takes only `--json` and `--no-reconnect`; a reconnect starts again from the whole catalog.
+See the server's [WATCH CATALOG](https://github.com/chunkdb/chunkdb/blob/main/docs/reference/FEED.md#watch-catalog) reference for the event rules.
 
 ## If it fails
 

@@ -36,6 +36,35 @@ type watchOptions struct {
 	ackEvery    uint64
 	noReconnect bool
 	delivered   *watchPosition
+	// catalog streams WATCH CATALOG instead of a table.
+	catalog bool
+}
+
+// wantsCatalog reports whether watch arguments ask for WATCH CATALOG.
+func wantsCatalog(args []string) bool {
+	for _, arg := range args {
+		if arg == "--catalog" || arg == "-catalog" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseCatalogWatchArgs reads `watch --catalog [--json] [--no-reconnect]`.
+func parseCatalogWatchArgs(args []string, json bool) (watchOptions, error) {
+	opts := watchOptions{statement: "WATCH CATALOG", json: json, catalog: true}
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.Bool("catalog", true, "stream catalog changes")
+	fs.BoolVar(&opts.json, "json", json, "one JSON object per event")
+	fs.BoolVar(&opts.noReconnect, "no-reconnect", false, "stop after losing the connection")
+	if err := fs.Parse(args); err != nil {
+		return watchOptions{}, fmt.Errorf("watch --catalog takes only --json and --no-reconnect: %w", err)
+	}
+	if fs.NArg() != 0 {
+		return watchOptions{}, fmt.Errorf("watch --catalog takes no table, got %q", fs.Arg(0))
+	}
+	return opts, nil
 }
 
 func parseWatchPosition(text string) (watchPosition, error) {
@@ -63,6 +92,9 @@ func withURITable(args []string, uriTable string) []string {
 }
 
 func parseWatchArgs(args []string, json bool) (watchOptions, error) {
+	if wantsCatalog(args) {
+		return parseCatalogWatchArgs(args, json)
+	}
 	if len(args) == 0 {
 		return watchOptions{}, errors.New("watch needs a table; name one, or select it with the URI path as in chunk://user@host:4242/world")
 	}
@@ -263,13 +295,17 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		schema.Columns = columns
 		return schema, nil
 	}
-	initial, err := lookup()
-	if err != nil {
-		return err
+	metadata := map[watchSchemaKey]watchSchemaMetadata{}
+	// A catalog watch has no table schema to describe.
+	if !watch.catalog {
+		initial, err := lookup()
+		if err != nil {
+			return err
+		}
+		initialKey := watchSchemaKey{initial.Epoch, initial.Version}
+		schemas[initialKey] = initial.Columns
+		metadata[initialKey] = schemaMetadataOf(initial)
 	}
-	initialKey := watchSchemaKey{initial.Epoch, initial.Version}
-	schemas[initialKey] = initial.Columns
-	metadata := map[watchSchemaKey]watchSchemaMetadata{initialKey: schemaMetadataOf(initial)}
 	var position watchPosition
 	watch.delivered = &position
 	reconnecting := false
@@ -307,7 +343,8 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if attempt >= maxRetries {
 			return fmt.Errorf("watch gave up after %d reconnect attempts: %w", maxRetries, err)
 		}
-		if position.Epoch != "" {
+		// A catalog watch starts over from the whole catalog.
+		if position.Epoch != "" && !watch.catalog {
 			watch.statement = resumeWatchStatement(watch.statement, position)
 		}
 		if err := retryPause(ctx, attempt); err != nil {
@@ -460,7 +497,11 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 		if ctx.Err() != nil {
 			continue
 		} // UNWATCH drains without decoding or printing.
-		if err := printWatchEvent(stdout, push, watch.json, schemas, fetch, metadata); err != nil {
+		show := func() error { return printWatchEvent(stdout, push, watch.json, schemas, fetch, metadata) }
+		if watch.catalog {
+			show = func() error { return printCatalogEvent(stdout, push, watch.json) }
+		}
+		if err := show(); err != nil {
 			if ctx.Err() != nil {
 				continue
 			}
@@ -474,7 +515,7 @@ func consumeWatch(ctx context.Context, watch watchOptions, stream watchStream, s
 			continue
 		}
 		kind := string(push.Items[0].Bulk)
-		if watch.delivered != nil && (kind == "change" || kind == "chunks" || kind == "progress" || kind == "resync") {
+		if watch.delivered != nil && (kind == "change" || kind == "chunks" || kind == "progress" || kind == "resync" || watch.catalog && kind == "catalog") {
 			revision, _ := push.Items[2].Uint64()
 			*watch.delivered = watchPosition{Epoch: string(push.Items[1].Bulk), Revision: revision}
 		}
@@ -815,23 +856,37 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 		if err != nil {
 			return err
 		}
+		fmt.Fprintf(&out, "catalog revision %d time_ms %d", revision, timestamp)
+		if user != nil {
+			fmt.Fprintf(&out, " user %s", user)
+		}
+		out.WriteByte('\n')
 		for _, event := range items[5].Items {
 			if event.Kind != chunkclient.KindMap {
 				return errors.New("WATCH: invalid catalog entry")
 			}
-			for _, key := range []string{"kind", "action", "name", "table"} {
+			// One line per entry: `create table world`, `drop slot s on world`.
+			var words []string
+			for _, key := range []string{"action", "kind", "name", "table"} {
 				value, found := event.Lookup(key)
 				if !found || value.Kind != chunkclient.KindBulk && value.Kind != chunkclient.KindNull {
 					return fmt.Errorf("WATCH: invalid catalog %s", key)
 				}
+				if key == "table" {
+					if value.Kind == chunkclient.KindNull {
+						continue
+					}
+					words = append(words, "on")
+				}
+				words = append(words, formatValue(value, nil))
 			}
 			data, found := event.Lookup("data")
 			if !found || data.Kind != chunkclient.KindMap && data.Kind != chunkclient.KindNull {
 				return errors.New("WATCH: invalid catalog data")
 			}
+			fmt.Fprintf(&out, "  %s\n", strings.Join(words, " "))
 		}
 		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"events", jsonValue(items[5], nil)}, jsonField{"txn", txn})
-		fmt.Fprintf(&out, "catalog %s:%d\n", epoch, revision)
 	default:
 		return fmt.Errorf("WATCH: unknown event %q", kind)
 	}

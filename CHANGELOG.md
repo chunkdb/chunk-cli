@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `watch --catalog` streams WATCH CATALOG with one line per table, user and slot change; `DESCRIBE` prints a table's `checks` and `fenced` reason; `SHOW STATUS`, `SHOW TABLE STATS` and `SHOW SLOTS` check the types of their 2.0 fields; COMMANDS.md lists the CLI form of every statement. Part of chunkdb/chunkdb#151.
 - Ctrl-C during a one-shot statement sends CANCEL for it from a second connection; `--tls-ca <file>` verifies `chunks://` servers with the PEM CA certificates in the file. Part of chunkdb/chunkdb#151.
 - `GET AREA ... SCALE` chunks print their scale and reduction and count samples; `SET BLOCK` and `DELETE BLOCK ... RETURNING` print typed rows; transaction files may open with `BEGIN READ ONLY`. Part of chunkdb/chunkdb#151.
 - `SCAN CHUNKS ... WHERE ... WITH DATA` prints the page's `after` coordinate and accepts empty filtered pages; tests cover IF conditions, computed values and WHERE on AGGREGATE and SCAN CHUNKS. Part of chunkdb/chunkdb#151.
