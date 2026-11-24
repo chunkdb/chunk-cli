@@ -16,13 +16,13 @@ import (
 
 // transactionStatements snapshots the input before any request is sent.
 func transactionStatements(source []byte) ([]string, error) {
-	_, statements, err := transactionFile(source)
+	_, statements, err := parseTransactionFile(source)
 	return statements, err
 }
 
-// transactionFile returns the BEGIN statement that opens the file's
+// parseTransactionFile returns the BEGIN statement that opens the file's
 // transaction, BEGIN or BEGIN READ ONLY, and the statements inside it.
-func transactionFile(source []byte) (string, []string, error) {
+func parseTransactionFile(source []byte) (string, []string, error) {
 	begin := "BEGIN"
 	var statements []string
 	scanner := bufio.NewScanner(bytes.NewReader(source))
@@ -80,7 +80,7 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 	if err != nil {
 		return fmt.Errorf("read transaction %s: %w", file, err)
 	}
-	begin, statements, err := transactionFile(source)
+	begin, statements, err := parseTransactionFile(source)
 	if err != nil {
 		return err
 	}
