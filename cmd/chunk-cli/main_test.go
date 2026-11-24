@@ -1,4 +1,4 @@
- || strings.Contains(stdout.String()+stderr.String(), "s3cret")package main
+package main
 
 import (
 	"bytes"
