@@ -33,7 +33,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 
 ### Fixed
 - A connection lost or timed out after a statement was sent exits 5, the `unknown_outcome` status, and `--json` reports class `unknown_outcome`, since the statement may have applied; inside a transaction only `COMMIT` does, because the server rolls back the statements before it. A lost login still exits 1. Part of #45.
-- Transaction-file retries wait the error's `retry_after_ms` when it has one, and `reread` errors (`VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH`) are not retried, since the same statements fail the same way. Part of #45.
+- Transaction-file retries wait the error's `retry_after_ms`, at most 10 seconds, when it has one, and `reread` errors (`VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH`) are not retried, since the same statements fail the same way. Part of #45.
 - A watch reconnect never sends `TAKEOVER`: only the first attach takes the slot over when `--takeover` is given, and `SLOT_BUSY` on a reconnect ends the watch with that error. Part of #45.
 - Reply lines are capped at 1 MiB, as in the Go library. Part of #45.
 - User names are checked as `[a-z_][a-z0-9_]*` before login, so a name with `$`, `'` or `"` fails before connecting instead of changing HELLO. Part of #45.

@@ -89,7 +89,7 @@ Replies are printed only after a successful commit, so failed attempts produce n
 The entire file is read before connecting and runs again from `BEGIN` for `rerun` and `backoff` error classes.
 A `reread` error is not retried: the same statements would fail the same way.
 Each attempt uses a new connection, so an unfinished transaction is discarded before another attempt.
-There are at most six attempts; each waits the error's `retry_after_ms` when it has one, otherwise 25, 50, 100, 200 and 400 milliseconds.
+There are at most six attempts; each waits the error's `retry_after_ms`, at most 10 seconds, when it has one, otherwise 25, 50, 100, 200 and 400 milliseconds.
 `--no-retry` runs the file once.
 The final error preserves its code and exit class and reports the number of attempts.
 A connection failure or `OUTCOME_UNKNOWN` is reported without replay because the commit may have applied; a connection lost after `COMMIT` was sent exits 5.

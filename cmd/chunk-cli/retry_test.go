@@ -272,6 +272,23 @@ func TestTransactionFileWaitsRetryAfter(t *testing.T) {
 	waitSlotServer(t, done)
 }
 
+func TestRetryAfterIsCapped(t *testing.T) {
+	for keys, want := range map[string]time.Duration{
+		"600":                  600 * time.Millisecond,
+		"10000":                maxRetryAfter,
+		"60000":                maxRetryAfter,
+		"18446744073709551615": maxRetryAfter,
+	} {
+		server := &chunkclient.ServerError{Code: "RATE_LIMITED", Keys: map[string]string{"retry_after_ms": keys}}
+		if got, named := retryAfter(server); !named || got != want {
+			t.Errorf("retry_after_ms=%s: got %v, %v; want %v", keys, got, named, want)
+		}
+	}
+	if _, named := retryAfter(&chunkclient.ServerError{Code: "BUSY"}); named {
+		t.Error("an error without retry_after_ms named a delay")
+	}
+}
+
 func TestLostStatementExitsWithUnknownOutcome(t *testing.T) {
 	for _, json := range []bool{false, true} {
 		t.Run(fmt.Sprint(json), func(t *testing.T) {

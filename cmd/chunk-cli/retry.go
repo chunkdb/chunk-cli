@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"math"
 	"net"
 	"syscall"
 	"time"
@@ -19,14 +18,26 @@ func retryPause(ctx context.Context, attempt int) error {
 	return pause(ctx, 25*time.Millisecond<<min(attempt, 4))
 }
 
-// serverRetryPause waits the retry_after_ms the server named, or the backoff
-// of the attempt when it named none.
+// maxRetryAfter caps one wait for a server's retry_after_ms.
+const maxRetryAfter = 10 * time.Second
+
+// serverRetryPause waits the retry_after_ms the server named, at most
+// maxRetryAfter, or the backoff of the attempt when it named none.
 func serverRetryPause(ctx context.Context, attempt int, server *chunkclient.ServerError) error {
-	ms, named := server.UintKey("retry_after_ms")
+	delay, named := retryAfter(server)
 	if !named {
 		return retryPause(ctx, attempt)
 	}
-	return pause(ctx, time.Duration(min(ms, uint64(math.MaxInt64/int64(time.Millisecond))))*time.Millisecond)
+	return pause(ctx, delay)
+}
+
+// retryAfter is the server's retry_after_ms, capped at maxRetryAfter.
+func retryAfter(server *chunkclient.ServerError) (time.Duration, bool) {
+	ms, named := server.UintKey("retry_after_ms")
+	if !named {
+		return 0, false
+	}
+	return time.Duration(min(ms, uint64(maxRetryAfter/time.Millisecond))) * time.Millisecond, true
 }
 
 func pause(ctx context.Context, delay time.Duration) error {
