@@ -83,6 +83,12 @@ func TestLoginFor(t *testing.T) {
 		{globalOptions{User: "admin"}, "chunk://h/", "no password for user admin"},
 		{globalOptions{PasswordFile: file}, "chunk://h/", "--password-file needs a user"},
 		{globalOptions{User: "bot", PasswordFile: filepath.Join(t.TempDir(), "missing")}, "chunk://h/", "read the password"},
+		// HELLO carries the name unquoted.
+		{globalOptions{User: "a$b"}, "chunk://h/", `invalid user name "a$b": names are [a-z_][a-z0-9_]*`},
+		{globalOptions{User: "bot\"x"}, "chunk://h/", "invalid user name"},
+		{globalOptions{}, "chunk://o%27neil:pw@h/", "invalid user name"},
+		{globalOptions{}, "chunk://Bot:pw@h/", "invalid user name"},
+		{globalOptions{User: "1bot"}, "chunk://h/", "invalid user name"},
 	} {
 		if _, err := loginFor(tc.opts, parse(tc.uri), notTerminal); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%+v %s: got %v, want %q", tc.opts, tc.uri, err, tc.want)

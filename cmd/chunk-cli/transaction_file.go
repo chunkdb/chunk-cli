@@ -112,8 +112,10 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 			_, err = io.Copy(stdout, &output)
 			return err
 		}
+		// A reread error repeats on the same statements, and a lost
+		// connection may have committed: neither is run again.
 		var server *chunkclient.ServerError
-		if !errors.As(err, &server) || server.RetryClass() != "rerun" && server.RetryClass() != "reread" && server.RetryClass() != "backoff" {
+		if !errors.As(err, &server) || server.RetryClass() != "rerun" && server.RetryClass() != "backoff" {
 			return err
 		}
 		if attempt >= limit {
@@ -121,7 +123,7 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 			failure.Message = fmt.Sprintf("transaction gave up after %d attempt(s): %s", attempt+1, server.Message)
 			return &failure
 		}
-		if err := retryPause(ctx, attempt); err != nil {
+		if err := serverRetryPause(ctx, attempt, server); err != nil {
 			return err
 		}
 	}

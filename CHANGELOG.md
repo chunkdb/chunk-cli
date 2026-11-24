@@ -19,6 +19,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
+- CONNECTION.md says `statement_timeout_ms` is applied, COMMANDS.md says `--uri` defaults to `chunk://127.0.0.1:4242/`, and the watch synopsis lists `--columns`, `--no-before`, `--chunks`, `--takeover`, `--ack-timeout-ms` and `--no-reconnect`. Part of #45.
 - Add a checked AGGREGATE example with a BY CHUNK JSON reply to the command reference. Part of chunkdb/chunkdb#151.
 - Replace the README start with a checked world example: a named migration for `world_cli`, two writes, block and area reads, and a watched change; `examples/world.sh` applies the same migration, so it reruns cleanly and does not clash with the server quick start's `world` table. Part of chunkdb/chunkdb#152.
 - Clarify CLI commands and user guides with checked input and output examples (#6).
@@ -31,6 +32,11 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- A connection lost or timed out after a statement was sent exits 5, the `unknown_outcome` status, and `--json` reports class `unknown_outcome`, since the statement may have applied; inside a transaction only `COMMIT` does, because the server rolls back the statements before it. A lost login still exits 1. Part of #45.
+- Transaction-file retries wait the error's `retry_after_ms` when it has one, and `reread` errors (`VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH`) are not retried, since the same statements fail the same way. Part of #45.
+- A watch reconnect never sends `TAKEOVER`: only the first attach takes the slot over when `--takeover` is given, and `SLOT_BUSY` on a reconnect ends the watch with that error. Part of #45.
+- Reply lines are capped at 1 MiB, as in the Go library. Part of #45.
+- User names are checked as `[a-z_][a-z0-9_]*` before login, so a name with `$`, `'` or `"` fails before connecting instead of changing HELLO. Part of #45.
 - A URI that does not parse no longer repeats its password on stderr or in `--json` output; the error shows the URI with the password replaced by `xxxxx`. Part of #45.
 - A login refuses a server-first message whose iteration count is outside 4096 to 1000000, the range a chunkdb server issues. Part of #45.
 - `watch --area` accepts six inclusive bounds for three-axis tables, `cx0,cy0,cz0,cx1,cy1,cz1`, and refuses any other count

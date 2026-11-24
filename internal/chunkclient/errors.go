@@ -73,3 +73,22 @@ func (e *ServerError) UintKey(key string) (uint64, bool) {
 	number, err := strconv.ParseUint(e.Keys[key], 10, 64)
 	return number, err == nil
 }
+
+// OutcomeUnknownError is a connection lost after a request was written and
+// before its reply: the request may have applied. Its retry class and exit
+// status are those of OUTCOME_UNKNOWN. A transaction's statements before
+// COMMIT never get it, since the server rolls them back when the
+// connection closes.
+type OutcomeUnknownError struct {
+	Err error
+}
+
+func (e *OutcomeUnknownError) Error() string {
+	return e.Err.Error() + "; the outcome is unknown: the statement was sent and may have applied"
+}
+
+func (e *OutcomeUnknownError) Unwrap() error { return e.Err }
+
+func (e *OutcomeUnknownError) RetryClass() string { return "unknown_outcome" }
+
+func (e *OutcomeUnknownError) ExitCode() int { return 5 }

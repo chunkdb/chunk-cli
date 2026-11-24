@@ -291,13 +291,16 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
+		// A server error ends the watch, SLOT_BUSY on a reconnect included:
+		// another consumer holds the slot.
 		var lost *watchConnectionError
-		var server *chunkclient.ServerError
-		slotDetaching := reconnecting && watch.slot != "" && errors.As(err, &server) && server.Code == "SLOT_BUSY"
-		if watch.noReconnect || !slotDetaching && (!errors.As(err, &lost) || !transportFailure(lost.error)) {
+		if watch.noReconnect || !errors.As(err, &lost) || !transportFailure(lost.error) {
 			return err
 		}
 		reconnecting = true
+		// Only the first attach takes the slot over; a reconnect must not take
+		// it back from a consumer that took it over since.
+		watch.statement = withoutTakeover(watch.statement)
 		if position != before {
 			attempt = 0
 		}
@@ -311,6 +314,19 @@ func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term 
 			return nil
 		}
 	}
+}
+
+// withoutTakeover drops the TAKEOVER keyword; table, column and slot names
+// are lowercase, so no name is taken for it.
+func withoutTakeover(statement string) string {
+	words := strings.Fields(statement)
+	kept := words[:0]
+	for _, word := range words {
+		if word != "TAKEOVER" {
+			kept = append(kept, word)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 type watchConnectionError struct{ error }

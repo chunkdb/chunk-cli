@@ -37,6 +37,7 @@ A URI path such as `/world` selects the table for `watch` when it names none.
 URI credentials use percent escapes for `:`, `@`, `/` and `%`.
 An error about a URI that does not parse shows it with the password replaced by `xxxxx`.
 The CLI uses SCRAM-SHA-256 to prove password knowledge without sending the password itself.
+User names match `[a-z_][a-z0-9_]*`; another name fails before connecting.
 A login fails when the server asks for fewer than 4096 or more than 1000000 PBKDF2 iterations; a chunkdb server issues counts in that range.
 
 ## TLS
@@ -63,7 +64,7 @@ For example, `--hello-option client_name=importer` names the connection.
 `default_tag` accepts at most 256 bytes.
 
 HELLO reports applied options in `options` and unapplied options, including unknown names, in `not_applied`.
-Currently, `client_name` is applied; `statement_timeout_ms` and `default_tag` report `implementation_pending`.
+Currently, `client_name` and `statement_timeout_ms` are applied; `default_tag` reports `implementation_pending`.
 Unapplied options do not change statement behavior.
 `features` lists supported protocol capabilities; it does not list enabled storage features.
 For storage features and their raw masks, use `SHOW STATUS` with `ADMIN` on `*`.
@@ -101,7 +102,8 @@ Each successful attachment prints another `start` event.
 Five consecutive reconnect attempts use delays of 25, 50, 100, 200 and 400 milliseconds.
 Printing a new frontier resets this limit.
 `watch <table> --no-reconnect` exits on the first lost connection.
-After a transport failure, `SLOT_BUSY` also uses the bounded reconnect attempts while the old consumer detaches, without taking over another consumer.
+Only the first attach sends `TAKEOVER` when `--takeover` is given; a reconnect never takes the slot over.
+`SLOT_BUSY` on a reconnect ends the watch with that error: another consumer holds the slot.
 Other server refusals, malformed frames and output errors stop the watch without reconnecting.
 Ctrl-C interrupts reconnection waits and closes an active watch with its final ACK and UNWATCH.
 
