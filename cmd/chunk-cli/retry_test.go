@@ -160,9 +160,9 @@ func TestWatchReconnectNeverTakesOver(t *testing.T) {
 
 func TestWithoutTakeover(t *testing.T) {
 	for statement, want := range map[string]string{
-		"WATCH world SLOT 'consumer' TAKEOVER":                           "WATCH world SLOT 'consumer'",
+		"WATCH world SLOT 'consumer' TAKEOVER":                            "WATCH world SLOT 'consumer'",
 		"WATCH world SLOT 'consumer' COLUMNS a, b TAKEOVER ACK TIMEOUT 5": "WATCH world SLOT 'consumer' COLUMNS a, b ACK TIMEOUT 5",
-		"WATCH world SLOT 'consumer'":                                    "WATCH world SLOT 'consumer'",
+		"WATCH world SLOT 'consumer'":                                     "WATCH world SLOT 'consumer'",
 	} {
 		if got := withoutTakeover(statement); got != want {
 			t.Errorf("%q: got %q, want %q", statement, got, want)
