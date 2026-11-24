@@ -7,7 +7,7 @@ Global options precede the command or quoted statement.
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
 chunk-cli [options] transaction <file>
-chunk-cli [options] watch <table> [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision] [--json]
+chunk-cli [options] watch [<table>] [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
 chunk-cli version
@@ -33,7 +33,8 @@ chunk-cli help
 | `--out <file>` | Write reply bytes to a file |
 | `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
 
-The URI path does not select a table.
+The URI path selects the table for `watch` when it names none: `chunk://host:4242/world` makes `watch --json` watch `world`.
+Statements name their tables themselves.
 The CLI requires `--uri` on each invocation.
 `CHUNKDB_URI` in these examples is a shell variable.
 See [Connection](CONNECTION.md) for password precedence.

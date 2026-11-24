@@ -206,3 +206,41 @@ func TestWatchAckEveryRequiresSlot(t *testing.T) {
 		t.Fatalf("argument error: %v", err)
 	}
 }
+
+func TestWatchUsesURIPathTable(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		table string
+		want  string
+	}{
+		{"path table", []string{"--slot", "consumer"}, "world", "WATCH world SLOT 'consumer'"},
+		{"path table alone", nil, "world", "WATCH world"},
+		{"named table wins", []string{"space", "--no-before"}, "world", "WATCH space NO BEFORE"},
+	}
+	for _, c := range cases {
+		opts, err := parseWatchArgs(withURITable(c.args, c.table), false)
+		if err != nil || opts.statement != c.want {
+			t.Errorf("%s: got %+v, %v", c.name, opts, err)
+		}
+	}
+	for _, args := range [][]string{nil, {"--slot", "consumer"}} {
+		if _, err := parseWatchArgs(withURITable(args, ""), false); err == nil || !strings.Contains(err.Error(), "URI path") {
+			t.Errorf("accepted %q without a table: %v", args, err)
+		}
+	}
+}
+
+func TestWatchURIPathTableErrors(t *testing.T) {
+	var out, failure bytes.Buffer
+	if code := run([]string{"--uri", "chunk://127.0.0.1:1/World", "watch"}, strings.NewReader(""), &out, &failure); code != 1 ||
+		!strings.Contains(failure.String(), `invalid table "World"`) {
+		t.Fatalf("invalid path table: code %d, stderr %q", code, failure.String())
+	}
+	out.Reset()
+	failure.Reset()
+	if code := run([]string{"--uri", "chunk://127.0.0.1:1/", "--json", "watch"}, strings.NewReader(""), &out, &failure); code != 1 ||
+		!strings.Contains(failure.String(), "select it with the URI path") {
+		t.Fatalf("empty path: code %d, stderr %q", code, failure.String())
+	}
+}
