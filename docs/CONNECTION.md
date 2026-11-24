@@ -35,7 +35,9 @@ PONG
 Password precedence is `--password-file`, URI password, `CHUNKDB_PASSWORD`, then a terminal prompt without echo.
 A URI path such as `/world` selects the table for `watch` when it names none.
 URI credentials use percent escapes for `:`, `@`, `/` and `%`.
+An error about a URI that does not parse shows it with the password replaced by `xxxxx`.
 The CLI uses SCRAM-SHA-256 to prove password knowledge without sending the password itself.
+A login fails when the server asks for fewer than 4096 or more than 1000000 PBKDF2 iterations; a chunkdb server issues counts in that range.
 
 ## TLS
 
