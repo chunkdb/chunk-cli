@@ -655,7 +655,7 @@ func TestCLIUsers(t *testing.T) {
 	for statement, want := range map[string]string{
 		"SET BLOCK 0 0 IN world id = 4": "error: PERMISSION_DENIED reason=permission_denied WRITE on world; ask an administrator to grant this right\n",
 		"GRANT WRITE ON world TO bot":   "error: PERMISSION_DENIED reason=permission_denied MANAGES USERS; ask an administrator to grant this right\n",
-		"SHOW METRICS":                  "error: PERMISSION_DENIED reason=permission_denied ADMIN on *; ask an administrator to grant this right\n",
+		"SHOW METRICS":                  "error: PERMISSION_DENIED reason=permission_denied MONITOR or ADMIN on *; ask an administrator to grant this right\n",
 	} {
 		if code, out, errOut := bot("bot: first@", statement); code != 1 || out != "" || !strings.HasPrefix(errOut, want) {
 			t.Fatalf("bot %s: %d %q %q", statement, code, out, errOut)
