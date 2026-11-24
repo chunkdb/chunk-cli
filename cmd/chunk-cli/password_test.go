@@ -98,20 +98,23 @@ func TestLoginFor(t *testing.T) {
 
 func TestPasswordStatement(t *testing.T) {
 	for statement, want := range map[string][2]string{
-		"CREATE USER bot PASSWORD":                {"CREATE USER bot VERIFIER $1", "bot"},
-		"create  user bot password manages users": {"create user bot VERIFIER $1 manages users", "bot"},
-		"ALTER USER bot PASSWORD":                 {"ALTER USER bot VERIFIER $1", "bot"},
+		"CREATE USER bot PASSWORD":                             {"CREATE USER bot VERIFIER $1", "bot"},
+		"create  user bot password manages users":              {"create user bot VERIFIER $1 manages users", "bot"},
+		"ALTER USER bot PASSWORD":                              {"ALTER USER bot VERIFIER $1", "bot"},
+		"CREATE USER IF NOT EXISTS bot PASSWORD MANAGES USERS": {"CREATE USER IF NOT EXISTS bot VERIFIER $1 MANAGES USERS", "bot"},
+		"create user if not exists if password":                {"create user if not exists if VERIFIER $1", "if"},
+		"CREATE USER if PASSWORD":                              {"CREATE USER if VERIFIER $1", "if"},
 	} {
-		rewritten, user, ok := passwordStatement(statement)
-		if !ok || rewritten != want[0] || user != want[1] {
+		rewritten, user, add, ok := passwordStatement(statement)
+		if !ok || add || rewritten != want[0] || user != want[1] {
 			t.Errorf("%q: got %q, %q, %v", statement, rewritten, user, ok)
 		}
 	}
 	for _, statement := range []string{
 		"CREATE USER bot VERIFIER $1", "ALTER USER bot MANAGES USERS", "CREATE TABLE password (a u8) CHUNK 2 x 2",
-		"DROP USER bot", "CREATE USER bot", "GRANT READ ON * TO bot", "",
+		"DROP USER bot", "CREATE USER bot", "GRANT READ ON * TO bot", "", "CREATE USER IF NOT EXISTS bot", "ALTER USER bot ADD VERIFIER $1",
 	} {
-		if _, _, ok := passwordStatement(statement); ok {
+		if _, _, _, ok := passwordStatement(statement); ok {
 			t.Errorf("%q was rewritten", statement)
 		}
 	}
@@ -121,5 +124,12 @@ func TestPasswordStatement(t *testing.T) {
 	}
 	if got, err := newPassword(statementOptions{newPasswordFile: writeFile(t, "new\n")}, "bot", console{}); err != nil || got != "new" {
 		t.Fatalf("from a file: %q, %v", got, err)
+	}
+}
+
+func TestAddPasswordStatement(t *testing.T) {
+	rewritten, user, add, ok := passwordStatement("alter user bot add password")
+	if !ok || !add || user != "bot" || rewritten != "alter user bot add VERIFIER $1" {
+		t.Fatalf("%q %q %v %v", rewritten, user, add, ok)
 	}
 }

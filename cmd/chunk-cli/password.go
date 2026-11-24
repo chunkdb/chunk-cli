@@ -111,18 +111,42 @@ func readPasswordFile(path string) (string, error) {
 	return line, nil
 }
 
-// passwordStatement rewrites `CREATE USER <name> PASSWORD` with its
-// trailing clauses and `ALTER USER <name> PASSWORD` into the VERIFIER
-// statements the server takes, with the verifier as $1; ok is false for
-// any other statement.
-func passwordStatement(statement string) (rewritten, user string, ok bool) {
+// passwordStatement rewrites `CREATE USER [IF NOT EXISTS] <name> PASSWORD`
+// with its trailing clauses, `ALTER USER <name> PASSWORD` and `ALTER USER
+// <name> ADD PASSWORD` into the VERIFIER statements the server takes, with
+// the verifier as $1; add reports ADD PASSWORD, whose verifier reuses the
+// salt of the user's current one. ok is false for any other statement. IF
+// is the keyword only when NOT follows, since a user may be named if.
+func passwordStatement(statement string) (rewritten, user string, add, ok bool) {
 	words := strings.Fields(statement)
-	if len(words) < 4 || !strings.EqualFold(words[1], "USER") || !strings.EqualFold(words[3], "PASSWORD") ||
-		(!strings.EqualFold(words[0], "CREATE") && !strings.EqualFold(words[0], "ALTER")) {
-		return "", "", false
+	word := func(i int) string {
+		if i < len(words) {
+			return strings.ToUpper(words[i])
+		}
+		return ""
 	}
-	words[3] = "VERIFIER $1"
-	return strings.Join(words, " "), words[2], true
+	if word(1) != "USER" {
+		return "", "", false, false
+	}
+	name := 2
+	switch word(0) {
+	case "CREATE":
+		if word(2) == "IF" && word(3) == "NOT" && word(4) == "EXISTS" {
+			name = 5
+		}
+	case "ALTER":
+		if word(3) == "ADD" && word(4) == "PASSWORD" {
+			words[4] = "VERIFIER $1"
+			return strings.Join(words, " "), words[2], true, true
+		}
+	default:
+		return "", "", false, false
+	}
+	if word(name+1) != "PASSWORD" {
+		return "", "", false, false
+	}
+	words[name+1] = "VERIFIER $1"
+	return strings.Join(words, " "), words[name], false, true
 }
 
 // newPassword returns the password of a PASSWORD statement: the first line of

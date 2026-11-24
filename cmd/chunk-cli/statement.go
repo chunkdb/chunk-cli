@@ -385,15 +385,22 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	}
 
 	var parameters [][]byte
-	if rewritten, user, ok := passwordStatement(statement); ok {
+	if rewritten, user, add, ok := passwordStatement(statement); ok {
 		if opts.hasIn() {
 			return errors.New("--in cannot be used with PASSWORD, whose verifier is the parameter $1")
+		}
+		info := client.Info()
+		if add && (info == nil || info.LoginUser != user || len(info.LoginSalt) == 0) {
+			return fmt.Errorf("ADD PASSWORD reuses the salt of %s's current verifier, which only a login as %s receives: connect as %s, or run ALTER USER %s ADD VERIFIER with a verifier computed elsewhere", user, user, user, user)
 		}
 		password, err := newPassword(opts, user, term)
 		if err != nil {
 			return err
 		}
 		verifier, err := chunkclient.Verifier(password, chunkclient.MinIterations)
+		if add {
+			verifier, err = chunkclient.VerifierWithSalt(password, info.LoginSalt, info.LoginIterations)
+		}
 		if err != nil {
 			return err
 		}

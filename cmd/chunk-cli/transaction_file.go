@@ -50,7 +50,7 @@ func parseTransactionFile(source []byte) (string, []string, error) {
 		if txnControlOf(statement) != txnNone {
 			return "", nil, errors.New("transaction file may contain only one outer BEGIN or BEGIN READ ONLY and COMMIT pair")
 		}
-		if _, _, password := passwordStatement(statement); password {
+		if _, _, _, password := passwordStatement(statement); password {
 			return "", nil, errors.New("password statements do not run in a transaction file")
 		}
 	}

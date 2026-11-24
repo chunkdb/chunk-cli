@@ -55,6 +55,12 @@ type ServerInfo struct {
 	// ServerSignature is the SCRAM server-final message of a login
 	// (v=<signature>), empty without a user.
 	ServerSignature string
+	// LoginUser is the user the connection logged in as, and LoginSalt and
+	// LoginIterations the salt and iteration count of the verifier its
+	// password matched; empty without a user.
+	LoginUser       string
+	LoginSalt       []byte
+	LoginIterations int
 }
 
 // Request is one statement and its parameter frames ($1 … $n). A nil
@@ -228,7 +234,12 @@ func (c *Client) Hello(login Login) (*ServerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.acceptHello(reply, signature)
+	info, err := c.acceptHello(reply, signature)
+	if err != nil {
+		return nil, err
+	}
+	info.LoginUser, info.LoginSalt, info.LoginIterations = login.User, scram.salt, scram.iterations
+	return info, nil
 }
 
 // helloStep sends one line of the login and returns its reply; a server
