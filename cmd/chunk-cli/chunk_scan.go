@@ -115,11 +115,44 @@ func printChunkScan(w io.Writer, schema *chunkclient.Schema, info statementInfo,
 		}
 		list = append(list, fields)
 	}
-	if more.Bool && len(list) == 0 {
+	result := orderedMap{{"chunks", list}, {"more", more.Bool}}
+	if info.scanWhere {
+		// A filtered page may be empty; after is the last visited chunk.
+		next, ok := reply.Lookup("after")
+		if !ok {
+			return bad("expected after in a filtered scan")
+		}
+		var afterPoint any
+		if next.Kind != chunkclient.KindNull {
+			if next.Kind != chunkclient.KindArray || len(next.Items) != dims {
+				return bad("invalid after coordinate")
+			}
+			point := make([]int64, dims)
+			for axis := range point {
+				if point[axis], err = next.Items[axis].Int64(); err != nil {
+					return bad("invalid after coordinate")
+				}
+			}
+			afterPoint = point
+		}
+		if more.Bool != (afterPoint != nil) {
+			return bad("after and more disagree")
+		}
+		result = append(result, jsonField{"after", afterPoint})
+		if afterPoint == nil {
+			out.WriteString("after = NULL\n")
+		} else {
+			out.WriteString("after =")
+			for _, value := range afterPoint.([]int64) {
+				fmt.Fprintf(&out, " %d", value)
+			}
+			out.WriteByte('\n')
+		}
+	} else if more.Bool && len(list) == 0 {
 		return bad("empty page reports more")
 	}
 	if opts.json {
-		return writeJSON(w, orderedMap{{"chunks", list}, {"more", more.Bool}, {"epoch", epochText}, {"position", frontier}, {"retained_deletion_floor", retainedFloor}})
+		return writeJSON(w, append(result, orderedMap{{"epoch", epochText}, {"position", frontier}, {"retained_deletion_floor", retainedFloor}}...))
 	}
 	_, err = w.Write(out.Bytes())
 	return err
