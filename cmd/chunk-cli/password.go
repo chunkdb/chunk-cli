@@ -59,6 +59,11 @@ func loginFor(opts globalOptions, uri chunkuri.Parsed, term console) (chunkclien
 		}
 		return chunkclient.Login{}, nil
 	}
+	// HELLO carries the name unquoted, so a name outside the grammar would
+	// change the statement.
+	if !validUserName(user) {
+		return chunkclient.Login{}, fmt.Errorf("invalid user name %q: names are [a-z_][a-z0-9_]*", user)
+	}
 	login := chunkclient.Login{User: user}
 	switch {
 	case opts.PasswordFile != "":
@@ -82,6 +87,10 @@ func loginFor(opts globalOptions, uri chunkuri.Parsed, term console) (chunkclien
 		login.Password = password
 	}
 	return login, nil
+}
+
+func validUserName(name string) bool {
+	return name != "" && (name[0] < '0' || name[0] > '9') && strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") == ""
 }
 
 // readPasswordFile returns the first line of the file, without its line end.

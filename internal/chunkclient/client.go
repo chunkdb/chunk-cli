@@ -82,7 +82,10 @@ type Client struct {
 	info    *ServerInfo
 	// broken is the transport or framing error that left the connection
 	// unusable.
-	broken         error
+	broken error
+	// inTransaction is whether a BEGIN succeeded and no COMMIT or ROLLBACK
+	// has ended it since.
+	inTransaction  bool
 	sessionOptions map[string]Value
 	channelBinding ChannelBinding
 }
@@ -232,7 +235,7 @@ func (c *Client) Hello(login Login) (*ServerInfo, error) {
 // error is returned as a *ServerError, explained when it comes from a server
 // of another protocol.
 func (c *Client) helloStep(request Request, withUser bool) (Value, error) {
-	replies, err := c.roundTrip([]Request{request})
+	replies, err := c.roundTrip([]Request{request}, false)
 	if err != nil {
 		return Value{}, err
 	}
@@ -340,7 +343,51 @@ func (c *Client) Pipeline(requests []Request) ([]Reply, error) {
 			return nil, err
 		}
 	}
-	return c.roundTrip(requests)
+	return c.roundTrip(requests, c.mayApply(requests))
+}
+
+// mayApply reports whether a lost reply could leave the requests applied:
+// a COMMIT, or a statement outside a transaction. The server rolls back a
+// transaction's statements before COMMIT when the connection closes.
+func (c *Client) mayApply(requests []Request) bool {
+	inTransaction := c.inTransaction
+	for _, request := range requests {
+		switch statementWord(request.Statement) {
+		case "COMMIT":
+			return true
+		case "BEGIN":
+			inTransaction = true
+		case "ROLLBACK":
+			inTransaction = false
+		default:
+			if !inTransaction {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// trackTransaction follows BEGIN, COMMIT and ROLLBACK through the replies.
+func (c *Client) trackTransaction(requests []Request, replies []Reply) {
+	for i, reply := range replies {
+		switch statementWord(requests[i].Statement) {
+		case "BEGIN":
+			if reply.Err == nil {
+				c.inTransaction = true
+			}
+		case "COMMIT", "ROLLBACK":
+			c.inTransaction = false
+		}
+	}
+}
+
+func statementWord(statement string) string {
+	words := strings.Fields(statement)
+	if len(words) == 0 {
+		return ""
+	}
+	return strings.ToUpper(words[0])
 }
 
 // checkRequest refuses a request the server could not frame: a statement is
@@ -401,41 +448,58 @@ func ParameterCount(statement string) int {
 	return count
 }
 
-func (c *Client) roundTrip(requests []Request) ([]Reply, error) {
+// roundTrip sends the requests and reads their replies. When the connection
+// is lost after writing began and `mayApply`, the error is an
+// *OutcomeUnknownError.
+func (c *Client) roundTrip(requests []Request, mayApply bool) ([]Reply, error) {
 	if c.conn == nil {
 		return nil, errors.New("connection is closed")
 	}
 	if c.broken != nil {
 		return nil, fmt.Errorf("connection is unusable after an earlier error: %w", c.broken)
 	}
-	replies, err := c.exchange(requests)
+	replies, written, err := c.exchange(requests)
 	if err != nil {
 		err = connectionError("request", c.conn.RemoteAddr().String(), false, err)
 		c.broken = err
+		if written && mayApply && transportFailure(err) {
+			return nil, &OutcomeUnknownError{Err: err}
+		}
 		return nil, err
 	}
+	c.trackTransaction(requests, replies)
 	return replies, nil
 }
 
-func (c *Client) exchange(requests []Request) ([]Reply, error) {
+// transportFailure reports a lost or timed-out connection, as opposed to a
+// reply that does not parse.
+func transportFailure(err error) bool {
+	var network net.Error
+	return errors.As(err, &network) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
+}
+
+// exchange reports whether writing began: from then on the requests may
+// have reached the server, partly or fully.
+func (c *Client) exchange(requests []Request) ([]Reply, bool, error) {
 	deadline := time.Now().Add(c.timeout)
 	if err := c.conn.SetDeadline(deadline); err != nil {
-		return nil, fmt.Errorf("set deadline: %w", err)
+		return nil, false, fmt.Errorf("set deadline: %w", err)
 	}
 	for _, request := range requests {
 		if err := writeRequest(c.writer, request); err != nil {
-			return nil, err
+			return nil, true, err
 		}
 	}
 	if err := c.writer.Flush(); err != nil {
-		return nil, fmt.Errorf("send statement: %w", err)
+		return nil, true, fmt.Errorf("send statement: %w", err)
 	}
 	replies := make([]Reply, 0, len(requests))
 	for len(replies) < len(requests) {
 		value, err := readReplyLimited(c.reader, requests[len(replies)].ReplyLimits)
 		if err == nil && value.Kind == KindPush {
 			if !UnknownPush(value) {
-				return nil, errors.New("unexpected known push outside WATCH")
+				return nil, true, errors.New("unexpected known push outside WATCH")
 			}
 			continue
 		}
@@ -447,12 +511,12 @@ func (c *Client) exchange(requests []Request) ([]Reply, error) {
 			if requests[len(replies)].ReplyLimits != nil {
 				_ = c.conn.Close()
 			}
-			return nil, err
+			return nil, true, err
 		default:
 			replies = append(replies, Reply{Value: value, Deadline: deadline})
 		}
 	}
-	return replies, nil
+	return replies, true, nil
 }
 
 func writeRequest(w *bufio.Writer, request Request) error {

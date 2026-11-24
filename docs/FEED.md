@@ -88,7 +88,7 @@ OK
 - `--columns a,b` projects block columns in the requested order; chunk metadata remains complete. `--no-before` omits before rows.
 - `--chunks` streams committed chunk versions and binary forms, including a nullable form for deletion.
 - Chunk-column changes appear in chunk change metadata; binary chunk forms retain the complete chunk-column row.
-- `--takeover` requires a slot and replaces its active consumer.
+- `--takeover` requires a slot and replaces its active consumer on the first attach; reconnects never take the slot over.
 - `--ack-timeout-ms <ms>` requires a slot and a positive mutation acknowledgement deadline.
 - `--json` prints one JSON object per line, including before/after rows and event metadata.
 

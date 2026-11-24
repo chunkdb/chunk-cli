@@ -12,14 +12,21 @@ import (
 func printError(w io.Writer, err error, json bool) int {
 	code := 1
 	var server *chunkclient.ServerError
-	if errors.As(err, &server) {
+	var unknown *chunkclient.OutcomeUnknownError
+	switch {
+	case errors.As(err, &server):
 		code = server.ExitCode()
+	case errors.As(err, &unknown):
+		code = unknown.ExitCode()
 	}
 	if !json {
 		fmt.Fprintf(w, "error: %v\n", err)
 		return code
 	}
 	name, class, message := "CLIENT_ERROR", "fatal", err.Error()
+	if unknown != nil {
+		class = unknown.RetryClass()
+	}
 	var reason any
 	keys := orderedMap{}
 	if server != nil {

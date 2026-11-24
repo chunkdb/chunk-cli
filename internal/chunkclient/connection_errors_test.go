@@ -149,3 +149,89 @@ func TestResetReplyAdvice(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// lostReplyClient answers each statement with its reply in replies, in
+// order, and closes the connection at the first statement without one.
+func lostReplyClient(t *testing.T, replies ...string) *Client {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	client := &Client{conn: clientConn, reader: bufio.NewReader(clientConn), writer: bufio.NewWriter(clientConn), timeout: 2 * time.Second}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer serverConn.Close()
+		r := bufio.NewReader(serverConn)
+		for _, reply := range append(replies, "") {
+			if _, err := r.ReadString('\n'); err != nil || reply == "" {
+				return
+			}
+			if _, err := io.WriteString(serverConn, reply); err != nil {
+				return
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		_ = client.Close()
+		<-done
+	})
+	return client
+}
+
+func TestLostReplyIsAnUnknownOutcome(t *testing.T) {
+	var unknown *OutcomeUnknownError
+	// Outside a transaction a statement may have applied.
+	_, err := lostReplyClient(t).Do("SET BLOCK 0 0 IN world v = 1")
+	if !errors.As(err, &unknown) || unknown.RetryClass() != "unknown_outcome" || unknown.ExitCode() != 5 || !errors.Is(err, io.EOF) ||
+		!strings.Contains(err.Error(), "the outcome is unknown") {
+		t.Fatalf("outside a transaction: %v", err)
+	}
+
+	// Before COMMIT the server rolls the transaction back.
+	client := lostReplyClient(t, "+OK\r\n")
+	if _, err := client.Do("BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Do("SET BLOCK 0 0 IN world v = 1"); err == nil || errors.As(err, &unknown) || !errors.Is(err, io.EOF) {
+		t.Fatalf("inside a transaction: %v", err)
+	}
+
+	// COMMIT may have applied, also when it is pipelined with the rest.
+	client = lostReplyClient(t, "+OK\r\n", "_\r\n")
+	if _, err := client.Do("begin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Do("SET BLOCK 0 0 IN world v = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Do("COMMIT"); !errors.As(err, &unknown) {
+		t.Fatalf("COMMIT: %v", err)
+	}
+	_, err = lostReplyClient(t).Pipeline([]Request{{Statement: "BEGIN"}, {Statement: "SET BLOCK 0 0 IN world v = 1"}, {Statement: "COMMIT"}})
+	if !errors.As(err, &unknown) {
+		t.Fatalf("pipelined COMMIT: %v", err)
+	}
+	_, err = lostReplyClient(t).Pipeline([]Request{{Statement: "BEGIN"}, {Statement: "SET BLOCK 0 0 IN world v = 1"}})
+	if err == nil || errors.As(err, &unknown) {
+		t.Fatalf("pipelined statements before COMMIT: %v", err)
+	}
+
+	// A login applies nothing.
+	if _, err := lostReplyClient(t).Hello(Login{}); err == nil || errors.As(err, &unknown) {
+		t.Fatalf("HELLO: %v", err)
+	}
+}
+
+func TestReplyLinesAreCapped(t *testing.T) {
+	long := "+" + strings.Repeat("a", maxReplyLineBytes) + "\r\n"
+	if _, err := readReply(bufio.NewReader(strings.NewReader(long))); err == nil || !strings.Contains(err.Error(), "reply line exceeds 1048576 bytes") {
+		t.Fatalf("got %v", err)
+	}
+	fits := "+" + strings.Repeat("a", maxReplyLineBytes-3) + "\r\n"
+	if value, err := readReply(bufio.NewReader(strings.NewReader(fits))); err != nil || len(value.Text) != maxReplyLineBytes-3 {
+		t.Fatalf("a line of the limit: %d bytes, %v", len(value.Text), err)
+	}
+	limits := &ReplyLimits{MaxBytes: 4 << 20, MaxAreaChunks: 1}
+	if _, err := readReplyLimited(bufio.NewReader(strings.NewReader(long)), limits); err == nil || !strings.Contains(err.Error(), "reply line exceeds") {
+		t.Fatalf("budgeted: %v", err)
+	}
+}

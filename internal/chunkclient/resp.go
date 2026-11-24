@@ -311,16 +311,32 @@ func readValueLimited(r *bufio.Reader, depth int, budget *replyBudget, shape rep
 	return Value{}, fmt.Errorf("unsupported reply type %q", line)
 }
 
-// readLine reads a CRLF-terminated line without its terminator.
+// maxReplyLineBytes bounds a simple-string, error or header line, as in the
+// Go library; bulk bodies have their own limits.
+const maxReplyLineBytes = 1 << 20
+
+// readLine reads a CRLF-terminated line of at most maxReplyLineBytes
+// without its terminator.
 func readLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
+	var buf []byte
+	for {
+		fragment, err := r.ReadSlice('\n')
+		if len(buf)+len(fragment) > maxReplyLineBytes {
+			return "", fmt.Errorf("reply line exceeds %d bytes", maxReplyLineBytes)
+		}
+		buf = append(buf, fragment...)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		if errors.Is(err, io.EOF) {
 			return "", fmt.Errorf("connection closed by the server: %w", err)
 		}
 		return "", fmt.Errorf("read reply: %w", err)
 	}
-	line, ok := strings.CutSuffix(line, "\r\n")
+	line, ok := strings.CutSuffix(string(buf), "\r\n")
 	if !ok {
 		return "", fmt.Errorf("reply line is not terminated by CRLF: %q", line)
 	}

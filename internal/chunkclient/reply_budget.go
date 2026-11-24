@@ -79,6 +79,9 @@ func (b *replyBudget) line(reader *bufio.Reader) (string, error) {
 		if err := b.consume(1); err != nil {
 			return "", err
 		}
+		if len(line) == maxReplyLineBytes {
+			return "", fmt.Errorf("reply line exceeds %d bytes", maxReplyLineBytes)
+		}
 		line = append(line, value)
 		if value == '\n' {
 			text, valid := strings.CutSuffix(string(line), "\r\n")

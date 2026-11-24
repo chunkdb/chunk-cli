@@ -7,7 +7,8 @@ Global options precede the command or quoted statement.
 chunk-cli [options] <CQL statement>
 chunk-cli [options] shell
 chunk-cli [options] transaction <file>
-chunk-cli [options] watch [<table>] [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision] [--json]
+chunk-cli [options] watch [<table>] [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision]
+          [--columns a,b] [--no-before] [--chunks] [--takeover] [--ack-timeout-ms ms] [--no-reconnect] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
 chunk-cli version
@@ -36,7 +37,7 @@ chunk-cli help
 
 The URI path selects the table for `watch` when it names none: `chunk://host:4242/world` makes `watch --json` watch `world`.
 Statements name their tables themselves.
-The CLI requires `--uri` on each invocation.
+Without `--uri` the CLI connects to `chunk://127.0.0.1:4242/`.
 `CHUNKDB_URI` in these examples is a shell variable.
 See [Connection](CONNECTION.md) for password precedence.
 
@@ -111,6 +112,7 @@ The CLI refuses to decode rows when returned schema metadata differs from its fe
 Failed commands print `error: <CODE> <keys> <message>` to stderr.
 With `--json`, stderr contains `{error:{code,class,reason,keys,message}}`; `reason` is the server's `reason` key, or null; local failures use `CLIENT_ERROR`, class `fatal` and a null `reason`.
 Unknown error codes are fatal; unknown keys remain diagnostic strings.
+A connection lost after a statement was sent exits 5 and reports `CLIENT_ERROR` with class `unknown_outcome`, since the statement may have applied; inside a transaction only `COMMIT` does, because the server rolls back the statements before it.
 Classification depends only on the error code, never message text or keys.
 
 | Exit | Class | Codes |
@@ -119,7 +121,7 @@ Classification depends only on the error code, never message text or keys.
 | 2 | `reread` | `VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH` |
 | 3 | `rerun` | `CONFLICT`; roll back and rerun the transaction |
 | 4 | `backoff` | `BUSY`, `DISK_FULL`, `RATE_LIMITED` |
-| 5 | `unknown_outcome` | `OUTCOME_UNKNOWN`; determine whether the write applied before retrying |
+| 5 | `unknown_outcome` | `OUTCOME_UNKNOWN`, or a connection lost or timed out after a statement was sent; determine whether the write applied before retrying |
 
 [Transaction files](TRANSACTIONS.md#transaction-files) retry known retryable errors; one-shot and interactive statements are not retried.
 Watches reconnect unless `--no-reconnect` is supplied; see [Connection](CONNECTION.md#watch-reconnection).
