@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `--in <n>=<file>` supplies the binary parameter `$n`, and `--in` may repeat; `--json` errors carry the server's `reason`; exit codes are tested for every server code. Part of chunkdb/chunkdb#151.
 - `watch` takes its table from the URI path when none is named, as in `chunk://host:4242/world`. Part of chunkdb/chunkdb#151.
 - Connection, URI and login errors name the next step: the `chunk://user@host:4242/` form, `chunk://` versus `chunks://` after a reset, and the password sources after `AUTH_FAILED`. Part of chunkdb/chunkdb#152.
 - Render GET AREA pages with exact continuation cursors, enforce negotiated reply bounds while reading, and bound aggregate decoded output arrays (chunkdb/chunkdb#136).

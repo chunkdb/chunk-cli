@@ -209,7 +209,7 @@ func renameWatchColumns(statement string, from []string, schema *chunkclient.Sch
 // runWatch owns the stream reader. Cancellation sends UNWATCH concurrently;
 // this reader drains every preceding push before consuming its acknowledgement.
 func runWatch(ctx context.Context, opts globalOptions, watch watchOptions, term console, stdout io.Writer) error {
-	if opts.Statement.blocks || opts.Statement.in != "" || opts.Statement.out != "" || opts.Statement.newPasswordFile != "" {
+	if opts.Statement.blocks || opts.Statement.hasIn() || opts.Statement.out != "" || opts.Statement.newPasswordFile != "" {
 		return errors.New("watch supports --json; statement file and --blocks options do not apply")
 	}
 	uri, err := chunkuri.Parse(opts.URI)

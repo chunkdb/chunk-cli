@@ -37,9 +37,9 @@ func TestFoundationJSONIntegerRange(t *testing.T) {
 }
 
 func TestFoundationCLIErrorExitCodes(t *testing.T) {
-	for code, exit := range map[string]int{"VERSION_MISMATCH": 2, "CONDITION_FAILED": 2, "SCHEMA_MISMATCH": 2, "CONFLICT": 3, "BUSY": 4, "DISK_FULL": 4, "RATE_LIMITED": 4, "OUTCOME_UNKNOWN": 5, "SLOT_BUSY": 1, "MIGRATION_MISMATCH": 1, "CANCELLED": 1, "TIMEOUT": 1, "KILLED": 1, "FUTURE_ERROR": 1} {
+	for code, exit := range map[string]int{"VERSION_MISMATCH": 2, "CONDITION_FAILED": 2, "SCHEMA_MISMATCH": 2, "CONFLICT": 3, "BUSY": 4, "DISK_FULL": 4, "RATE_LIMITED": 4, "OUTCOME_UNKNOWN": 5, "SLOT_BUSY": 1, "MIGRATION_MISMATCH": 1, "CANCELLED": 1, "TIMEOUT": 1, "KILLED": 1, "FUTURE_ERROR": 1, "PROTOCOL": 1, "AUTH_REQUIRED": 1, "AUTH_FAILED": 1, "PERMISSION_DENIED": 1, "SYNTAX": 1, "INVALID_ARGUMENT": 1, "OUT_OF_RANGE": 1, "NO_TABLE": 1, "TABLE_EXISTS": 1, "BAD_REQUEST": 1, "SLOT_LOST": 1, "RESYNC_REQUIRED": 1, "CHECK_FAILED": 1, "UNKNOWN_COMMAND": 1, "INTERNAL": 1} {
 		t.Run(code, func(t *testing.T) {
-			uri, done := fakeMigrationServer(t, []string{"SHOW TABLES"}, []string{"-ERR " + code + " current=18446744073709551615 future=a%20b%3Dc malformed=%Q0 backoff CONFLICT\r\n"})
+			uri, done := fakeMigrationServer(t, []string{"SHOW TABLES"}, []string{"-ERR " + code + " reason=why current=18446744073709551615 future=a%20b%3Dc malformed=%Q0 backoff CONFLICT\r\n"})
 			var out, failure bytes.Buffer
 			if got := run([]string{"--uri", uri, "--json", "SHOW TABLES"}, strings.NewReader(""), &out, &failure); got != exit || out.Len() != 0 {
 				t.Fatal(got, out.String(), failure.String())
@@ -47,13 +47,14 @@ func TestFoundationCLIErrorExitCodes(t *testing.T) {
 			var envelope struct {
 				Error struct {
 					Code, Class, Message string
+					Reason               *string
 					Keys                 map[string]any
 				}
 			}
 			if err := json.Unmarshal(failure.Bytes(), &envelope); err != nil {
 				t.Fatal(err, failure.String())
 			}
-			if envelope.Error.Code != code || envelope.Error.Class != (&chunkclient.ServerError{Code: code}).RetryClass() || envelope.Error.Message != "backoff CONFLICT" || envelope.Error.Keys["current"] != "18446744073709551615" || envelope.Error.Keys["future"] != "a b=c" || envelope.Error.Keys["malformed"] != "%Q0" {
+			if envelope.Error.Code != code || envelope.Error.Class != (&chunkclient.ServerError{Code: code}).RetryClass() || envelope.Error.Reason == nil || *envelope.Error.Reason != "why" || envelope.Error.Message != "backoff CONFLICT" || envelope.Error.Keys["current"] != "18446744073709551615" || envelope.Error.Keys["future"] != "a b=c" || envelope.Error.Keys["malformed"] != "%Q0" {
 				t.Fatal(failure.String())
 			}
 			waitSlotServer(t, done)

@@ -20,6 +20,8 @@ type statementOptions struct {
 	blocks    bool
 	// in is a file sent as the parameter $1 (a chunk form for SET CHUNK).
 	in string
+	// inMore holds the files of the parameters $2 and up, by number.
+	inMore map[int]string
 	// out is a file the reply's bytes are written to (a chunk form of GET
 	// CHUNK).
 	out string
@@ -303,6 +305,7 @@ func readColumnNames(tokens []string) ([]string, bool) {
 // follows, unchanged.
 func parseLineOptions(line string, defaults statementOptions) (statementOptions, string, error) {
 	opts := defaults
+	lineIn := false
 	rest := strings.TrimSpace(line)
 	for strings.HasPrefix(rest, "--") {
 		word, after, _ := strings.Cut(rest, " ")
@@ -319,7 +322,13 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 			}
 			switch word {
 			case "--in":
-				opts.in = file
+				if !lineIn {
+					// A line's own --in replaces the global ones.
+					opts.in, opts.inMore, lineIn = "", nil, true
+				}
+				if err := opts.addIn(file); err != nil {
+					return opts, "", err
+				}
 			case "--out":
 				opts.out = file
 			default:
@@ -354,7 +363,7 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 
 	var parameters [][]byte
 	if rewritten, user, ok := passwordStatement(statement); ok {
-		if opts.in != "" {
+		if opts.hasIn() {
 			return errors.New("--in cannot be used with PASSWORD, whose verifier is the parameter $1")
 		}
 		password, err := newPassword(opts, user, term)
@@ -366,18 +375,23 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 			return err
 		}
 		statement, parameters = rewritten, [][]byte{[]byte(verifier)}
-	} else if opts.in != "" {
-		var data []byte
-		var err error
-		if shape, ok := rawChunkShapeOf(statement); ok {
-			data, err = readChunkImport(client, shape.table, opts.in, shape.columns...)
-		} else {
-			data, err = os.ReadFile(opts.in)
-		}
+	} else if opts.hasIn() {
+		files, err := opts.inFiles()
 		if err != nil {
-			return fmt.Errorf("read %s: %w", opts.in, err)
+			return err
 		}
-		parameters = [][]byte{data}
+		for i, file := range files {
+			var data []byte
+			if shape, ok := rawChunkShapeOf(statement); ok && i == 0 {
+				data, err = readChunkImport(client, shape.table, file, shape.columns...)
+			} else {
+				data, err = os.ReadFile(file)
+			}
+			if err != nil {
+				return fmt.Errorf("read %s: %w", file, err)
+			}
+			parameters = append(parameters, data)
+		}
 	}
 
 	info := classify(statement)
@@ -524,4 +538,63 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		}
 		return printArea(stdout, schema, info.columns, reply, opts)
 	}
+}
+
+// hasIn reports whether any --in file was given.
+// maxInParameter is the largest parameter number the server accepts.
+const maxInParameter = 65535
+
+func (o statementOptions) hasIn() bool { return o.in != "" || len(o.inMore) > 0 }
+
+// addIn records an --in value: a file for the parameter $1, or n=file for the
+// parameter $n.
+func (o *statementOptions) addIn(spec string) error {
+	number, file := 1, spec
+	if digits, rest, found := strings.Cut(spec, "="); found {
+		if n, err := strconv.Atoi(digits); err == nil {
+			if n < 1 {
+				return fmt.Errorf("--in %s: parameters are numbered from $1", spec)
+			}
+			if n > maxInParameter {
+				return fmt.Errorf("--in %s: parameters are numbered up to $%d; write ./%s for a file name that starts with digits and =", spec, maxInParameter, spec)
+			}
+			number, file = n, rest
+		}
+	}
+	if file == "" {
+		return errors.New("--in needs a file")
+	}
+	if number == 1 {
+		if o.in != "" {
+			return errors.New("--in gives parameter $1 twice")
+		}
+		o.in = file
+		return nil
+	}
+	if _, found := o.inMore[number]; found {
+		return fmt.Errorf("--in gives parameter $%d twice", number)
+	}
+	if o.inMore == nil {
+		o.inMore = map[int]string{}
+	}
+	o.inMore[number] = file
+	return nil
+}
+
+// inFiles returns the --in files in parameter order; they must number $1 up
+// without a gap.
+func (o statementOptions) inFiles() ([]string, error) {
+	files := []string{o.in}
+	for number := range o.inMore {
+		for len(files) < number {
+			files = append(files, "")
+		}
+		files[number-1] = o.inMore[number]
+	}
+	for i, file := range files {
+		if file == "" {
+			return nil, fmt.Errorf("--in gives parameters up to $%d but not $%d", len(files), i+1)
+		}
+	}
+	return files, nil
 }
