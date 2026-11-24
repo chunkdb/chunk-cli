@@ -244,3 +244,13 @@ func TestWatchURIPathTableErrors(t *testing.T) {
 		t.Fatalf("empty path: code %d, stderr %q", code, failure.String())
 	}
 }
+
+func TestWatchSeveralAreas(t *testing.T) {
+	opts, err := parseWatchArgs([]string{"world", "--area", "0,0,1,1", "--area", "-4,2,-3,+2"}, false)
+	if err != nil || opts.statement != "WATCH world AREA 0 0 TO 1 1, AREA -4 2 TO -3 2" {
+		t.Fatalf("got %+v, %v", opts, err)
+	}
+	if _, err := parseWatchArgs([]string{"world", "--area", "0,0,1,1", "--area", "0,0,0,1,1,1"}, false); err == nil || err.Error() != "--area values need the same axes" {
+		t.Fatalf("mixed axes: %v", err)
+	}
+}

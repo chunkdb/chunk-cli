@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- `watch --area` may repeat to watch several areas with the same axes in one stream. Part of chunkdb/chunkdb#151.
 - `--in <n>=<file>` supplies the binary parameter `$n`, and `--in` may repeat; `--json` errors carry the server's `reason`; exit codes are tested for every server code. Part of chunkdb/chunkdb#151.
 - `watch` takes its table from the URI path when none is named, as in `chunk://host:4242/world`. Part of chunkdb/chunkdb#151.
 - Connection, URI and login errors name the next step: the `chunk://user@host:4242/` form, `chunk://` versus `chunks://` after a reset, and the password sources after `AUTH_FAILED`. Part of chunkdb/chunkdb#152.
@@ -17,6 +18,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 
 ### Documentation
+- Add a checked AGGREGATE example with a BY CHUNK JSON reply to the command reference. Part of chunkdb/chunkdb#151.
 - Replace the README start with a checked world example: a named migration for `world_cli`, two writes, block and area reads, and a watched change; `examples/world.sh` applies the same migration, so it reruns cleanly and does not clash with the server quick start's `world` table. Part of chunkdb/chunkdb#152.
 - Clarify CLI commands and user guides with checked input and output examples (#6).
 - Correct the world example description and link feed recovery to the server procedure (#6).

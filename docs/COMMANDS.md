@@ -199,6 +199,22 @@ kind = 7
 
 Use `--blocks "GET CHUNK 0 0 0 FROM space"` to include the present block and chunk columns, or `"SCAN CHUNKS FROM space SINCE 0 WITH DATA"` for retained versions and tombstones.
 
+Aggregate the present blocks of an area; BY CHUNK prints one row per chunk as `[cx, cy, results...]`:
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "AGGREGATE AREA 0 0 TO 1 0 FROM world COUNT(*), SUM(kind), MAX(kind)"
+chunk-cli --uri "$CHUNKDB_URI" --json "AGGREGATE AREA 0 0 TO 1 0 FROM world COUNT(*), SUM(kind) BY CHUNK"
+```
+
+```output
+count(*) = 2
+sum(kind) = 6
+max(kind) = 3
+[[0,0,1,3],[1,0,1,3]]
+```
+
+In JSON, integers beyond 2^53 - 1, such as a large `SUM`, print as decimal strings.
+
 ## Notes
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.

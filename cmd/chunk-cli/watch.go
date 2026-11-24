@@ -73,11 +73,12 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	opts := watchOptions{table: table, statement: "WATCH " + table, json: json, ackEvery: 1}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var area, after string
+	var areas areaFlags
+	var after string
 	var columns string
 	var noBefore, chunks, takeover bool
 	var ackTimeout uint64
-	fs.StringVar(&area, "area", "", "inclusive chunk rectangle")
+	fs.Var(&areas, "area", "inclusive chunk rectangle; repeat for several")
 	fs.StringVar(&after, "after", "", "epoch:revision")
 	fs.StringVar(&opts.slot, "slot", "", "durable slot name")
 	fs.StringVar(&columns, "columns", "", "comma-separated projected column names")
@@ -94,7 +95,7 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	var emptyFlag string
 	var ackEverySet, ackTimeoutSet bool
 	fs.Visit(func(f *flag.Flag) {
-		if (f.Name == "area" || f.Name == "after" || f.Name == "slot" || f.Name == "columns") && f.Value.String() == "" {
+		if (f.Name == "after" || f.Name == "slot" || f.Name == "columns") && f.Value.String() == "" {
 			emptyFlag = f.Name
 		}
 		if f.Name == "ack-every" {
@@ -129,28 +130,15 @@ func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 		}
 		opts.statement += " SLOT '" + name + "'"
 	}
-	if area != "" {
-		// Two-axis tables take four bounds, three-axis tables six.
-		parts := strings.Split(area, ",")
-		if len(parts) != 4 && len(parts) != 6 {
-			return watchOptions{}, errors.New("--area needs cx0,cy0,cx1,cy1 or cx0,cy0,cz0,cx1,cy1,cz1")
+	for i, area := range areas {
+		if len(area) != len(areas[0]) {
+			return watchOptions{}, errors.New("--area values need the same axes")
 		}
-		bounds := make([]int64, len(parts))
-		for i, part := range parts {
-			n, err := strconv.ParseInt(part, 10, 64)
-			if err != nil {
-				return watchOptions{}, fmt.Errorf("--area: %w", err)
-			}
-			bounds[i] = n
-			parts[i] = strconv.FormatInt(n, 10)
+		axes := len(area) / 2
+		if i > 0 {
+			opts.statement += ","
 		}
-		axes := len(parts) / 2
-		for axis := 0; axis < axes; axis++ {
-			if bounds[axis] > bounds[axis+axes] {
-				return watchOptions{}, errors.New("--area bounds are reversed")
-			}
-		}
-		opts.statement += " AREA " + strings.Join(parts[:axes], " ") + " TO " + strings.Join(parts[axes:], " ")
+		opts.statement += " AREA " + strings.Join(area[:axes], " ") + " TO " + strings.Join(area[axes:], " ")
 	}
 	if after != "" {
 		p, err := parseWatchPosition(after)
@@ -869,4 +857,43 @@ func connectWatchLogin(ctx context.Context, opts globalOptions, uri chunkuri.Par
 		return nil, loginError(login, err)
 	}
 	return client, nil
+}
+
+// areaFlags collects repeated --area values as decimal bounds.
+type areaFlags [][]string
+
+func (a *areaFlags) String() string {
+	parts := make([]string, len(*a))
+	for i, area := range *a {
+		parts[i] = strings.Join(area, ",")
+	}
+	return strings.Join(parts, " ")
+}
+
+func (a *areaFlags) Set(value string) error {
+	if value == "" {
+		return errors.New("--area needs a value")
+	}
+	// Two-axis tables take four bounds, three-axis tables six.
+	parts := strings.Split(value, ",")
+	if len(parts) != 4 && len(parts) != 6 {
+		return errors.New("--area needs cx0,cy0,cx1,cy1 or cx0,cy0,cz0,cx1,cy1,cz1")
+	}
+	bounds := make([]int64, len(parts))
+	for i, part := range parts {
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			return fmt.Errorf("--area: %w", err)
+		}
+		bounds[i] = n
+		parts[i] = strconv.FormatInt(n, 10)
+	}
+	axes := len(parts) / 2
+	for axis := 0; axis < axes; axis++ {
+		if bounds[axis] > bounds[axis+axes] {
+			return errors.New("--area bounds are reversed")
+		}
+	}
+	*a = append(*a, parts)
+	return nil
 }

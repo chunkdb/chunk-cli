@@ -76,7 +76,7 @@ OK
 
 ## Options
 
-- `--area` uses inclusive chunk coordinates.
+- `--area` uses inclusive chunk coordinates; repeat it to watch up to 64 areas with the same axes; a slot keeps one area.
 - Three-axis tables use `--area cx0,cy0,cz0,cx1,cy1,cz1`; the third axis remains explicit when zero.
 - Without `--slot` or `--after`, watching begins after completed writes.
 - `--after <epoch:revision>` resumes from a retained position.
