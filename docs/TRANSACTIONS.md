@@ -63,7 +63,7 @@ See [Transactions](https://github.com/chunkdb/chunkdb/blob/main/docs/TRANSACTION
 
 Put one CQL statement per line in a file, then run it as one transaction.
 Blank lines and lines starting with `--` are ignored.
-An outer `BEGIN` and `COMMIT` pair is optional; nested transaction controls are refused.
+An outer `BEGIN` and `COMMIT` pair is optional; `BEGIN READ ONLY` in its place reads one snapshot without a read set and refuses writes; nested transaction controls are refused.
 
 ```sh docs-check-shell
 cat > changes.cql <<'CQL'

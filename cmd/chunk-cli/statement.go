@@ -41,6 +41,8 @@ const (
 	statementGetArea
 	statementDescribe
 	statementScanChunks
+	// statementReturning is SET BLOCK or DELETE BLOCK with RETURNING.
+	statementReturning
 )
 
 type statementInfo struct {
@@ -117,6 +119,9 @@ func classify(statement string) statementInfo {
 			return strings.ToUpper(tokens[i])
 		}
 		return ""
+	}
+	if (keyword(0) == "SET" || keyword(0) == "DELETE") && keyword(1) == "BLOCK" {
+		return classifyReturning(tokens)
 	}
 	if keyword(0) == "DESCRIBE" && len(tokens) == 2 {
 		return statementInfo{kind: statementDescribe, table: tokens[1]}
@@ -227,7 +232,7 @@ func classify(statement string) statementInfo {
 			start := i + 1
 			i = start
 			for i < len(tokens) {
-				if info.kind == statementGetArea && i > start && tokens[i-1] != "," && (keyword(i) == "LIMIT" || keyword(i) == "AFTER") {
+				if info.kind == statementGetArea && i > start && tokens[i-1] != "," && (keyword(i) == "LIMIT" || keyword(i) == "AFTER" || keyword(i) == "SCALE") {
 					break
 				}
 				if i > start && tokens[i-1] != "," && keyword(i) == "WITH" && (keyword(i+1) == "VERSION" || keyword(i+1) == "SCHEMA") {
@@ -263,6 +268,15 @@ func classify(statement string) statementInfo {
 			areaSelector.limit = limit
 			info.areaPage = areaSelector
 			i += 2
+		case "SCALE":
+			// SCALE k USING reduction: the forms carry their scale in section 7.
+			if info.kind != statementGetArea || i+3 >= len(tokens) || keyword(i+2) != "USING" {
+				return statementInfo{}
+			}
+			if _, err := strconv.ParseUint(tokens[i+1], 10, 32); err != nil {
+				return statementInfo{}
+			}
+			i += 4
 		case "AFTER":
 			if info.kind != statementGetArea || areaSelector == nil || areaSelector.after != nil || i+areaSelector.dims >= len(tokens) {
 				return statementInfo{}
@@ -518,6 +532,8 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		return printReadMetadata(stdout, schema, info, reply, opts)
 	}
 	switch info.kind {
+	case statementReturning:
+		return printReturning(stdout, schema, info, reply, opts)
 	case statementScanChunks:
 		return printChunkScan(stdout, schema, info, reply, opts)
 	case statementGetBlock:

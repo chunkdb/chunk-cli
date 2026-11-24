@@ -304,3 +304,13 @@ func (w *retryProgressOutput) Write(p []byte) (int, error) {
 	return n, err
 }
 func (w *retryProgressOutput) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
+
+func TestTransactionFileReadOnlyBegin(t *testing.T) {
+	begin, statements, err := transactionFile([]byte("begin  read only\nPING\nCOMMIT\n"))
+	if err != nil || begin != "BEGIN READ ONLY" || len(statements) != 1 {
+		t.Fatal(begin, statements, err)
+	}
+	if begin, _, err := transactionFile([]byte("PING\n")); err != nil || begin != "BEGIN" {
+		t.Fatal(begin, err)
+	}
+}

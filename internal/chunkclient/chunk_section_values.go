@@ -69,6 +69,21 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, opt
 	if form.header.schema != schema.Version {
 		return bad("schema version mismatch")
 	}
+	width, height, depth := schema.ChunkWidth, schema.ChunkHeight, 1
+	if schema.Dims == 3 {
+		depth = schema.ChunkDepth
+	}
+	scale, reduction, err := formScale(form, width, height, depth, schema.Dims == 3)
+	if err != nil {
+		return nil, err
+	}
+	if scale != 0 {
+		width, height = width/scale, height/scale
+		if schema.Dims == 3 {
+			depth /= scale
+		}
+		count = width * height * depth
+	}
 	if form.header.flags&chunkFormProjected != 0 && len(columns) == 0 {
 		return bad("projection flag mismatch")
 	}
@@ -160,13 +175,9 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, opt
 	if opts.values && len(selected) != 0 && presentCount > maxDecodedChunkCells/len(selected) {
 		return nil, &DecodeLimitError{Detail: "chunk form: decoded chunk exceeds 524288 present column values; use --out for binary data"}
 	}
-	depth := 1
-	if schema.Dims == 3 {
-		depth = schema.ChunkDepth
-	}
 	chunk := &Chunk{Version: form.header.version, SchemaVersion: form.header.schema, CommitTimeMS: form.header.commitTime,
 		Projected: form.header.flags&chunkFormProjected != 0, Private: form.header.flags&chunkFormPrivate != 0,
-		Width: schema.ChunkWidth, Height: schema.ChunkHeight, Depth: depth, Columns: selected, populatedBlocks: presentCount,
+		Width: width, Height: height, Depth: depth, Scale: scale, Reduction: reduction, Columns: selected, populatedBlocks: presentCount,
 	}
 	if opts.values {
 		chunk.Present, chunk.Values = make([]bool, count), make([][]Value, len(selected))
@@ -276,7 +287,7 @@ func decodeSectionedChunkForm(schema *Schema, columns []string, data []byte, opt
 		if !opts.output {
 			break
 		}
-		if section.kind >= sectionPresence && section.kind <= sectionBlockSpans {
+		if (section.kind >= sectionPresence && section.kind <= sectionBlockSpans) || section.kind == sectionScale {
 			continue
 		}
 		if chunk.UnknownSections == nil {
@@ -308,4 +319,26 @@ func decodeSectionedMetadata(column Column, raw []byte, null bool) (Value, error
 		return bad()
 	}
 	return Value{Kind: KindBulk, Bulk: raw}, nil
+}
+
+const sectionScale uint16 = 7
+
+var reductionNames = map[uint16]string{1: "MAX", 2: "MIN", 3: "MODE", 4: "FIRST", 5: "ANY"}
+
+// formScale reads section 7 of a downsampled form from GET AREA ... SCALE:
+// the factor and reduction, or zero and "" for a full form.
+func formScale(form sectionedForm, width, height, depth int, threeD bool) (int, string, error) {
+	body := form.section(sectionScale)
+	if body == nil {
+		return 0, "", nil
+	}
+	if len(body) != 8 || binary.LittleEndian.Uint16(body[6:]) != 0 {
+		return 0, "", fmt.Errorf("chunk form: invalid scale section")
+	}
+	scale := binary.LittleEndian.Uint32(body)
+	reduction, ok := reductionNames[binary.LittleEndian.Uint16(body[4:])]
+	if !ok || scale == 0 || scale > uint32(width) || width%int(scale) != 0 || height%int(scale) != 0 || (threeD && depth%int(scale) != 0) {
+		return 0, "", fmt.Errorf("chunk form: scale does not divide the chunk")
+	}
+	return int(scale), reduction, nil
 }

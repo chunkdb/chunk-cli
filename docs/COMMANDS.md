@@ -58,6 +58,8 @@ Its revision is `NULL` when a read-only server cannot establish the writer's fro
 - Written empty chunks retain their versioned form while their stored or cached state remains.
 - Chunk replies show version, schema version, commit time, chunk columns and presence count; `--blocks` adds rows.
 - Area replies group blocks by chunk.
+- `GET AREA ... SCALE k USING reduction` chunks print `scale = k USING reduction`, and their presence count and `--blocks` rows count samples; JSON adds `scale` and `reduction`.
+- `SET BLOCK` and `DELETE BLOCK` with `RETURNING` print `applied`, `version` and one `row x y` per returned block with its `column = value` lines; JSON prints `{"applied", "version", "rows"}` with each row's coordinates and values.
 - GET AREA with LIMIT or AFTER prints `more` and `after` with its chunk summaries; JSON preserves the `chunks`, `more`, `after` page map.
 - Writes print the affected chunk's new version.
 

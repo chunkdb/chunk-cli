@@ -11,11 +11,15 @@ type Chunk struct {
 	// Version is the chunk version the form carries.
 	Version uint64
 	// SchemaVersion is the schema version the form's columns follow.
-	SchemaVersion   uint64
-	Width           int
-	Height          int
-	Depth           int
-	CommitTimeMS    uint64
+	SchemaVersion uint64
+	Width         int
+	Height        int
+	Depth         int
+	CommitTimeMS  uint64
+	// Scale and Reduction describe a downsampled form from GET AREA ... SCALE;
+	// Width, Height and Depth then count samples. Scale is zero otherwise.
+	Scale           int
+	Reduction       string
 	Projected       bool
 	Private         bool
 	MetadataColumns []Column

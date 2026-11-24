@@ -443,6 +443,9 @@ func writeChunk(out *bytes.Buffer, chunk *chunkclient.Chunk, cx, cy int64, block
 		}
 		fmt.Fprintf(out, "%scommit_time_ms = %s\n", indent, timestamp)
 	}
+	if chunk.Scale != 0 {
+		fmt.Fprintf(out, "%sscale = %d USING %s\n", indent, chunk.Scale, chunk.Reduction)
+	}
 	fmt.Fprintf(out, "%spresent = %d of %d blocks\n", indent, chunk.PresentCount(), chunkBlockCount(chunk))
 	if chunk.Projected {
 		fmt.Fprintf(out, "%sprojected = true\n", indent)
@@ -609,6 +612,9 @@ func chunkJSON(chunk *chunkclient.Chunk, cx, cy int64, blocks bool, z ...int64) 
 		{"schema_version", chunk.SchemaVersion},
 		{"present", chunk.PresentCount()},
 		{"block_count", chunkBlockCount(chunk)},
+	}
+	if chunk.Scale != 0 {
+		fields = append(fields, jsonField{"scale", chunk.Scale}, jsonField{"reduction", chunk.Reduction})
 	}
 	if chunk.Depth != 0 {
 		var timestamp any = chunk.CommitTimeMS
