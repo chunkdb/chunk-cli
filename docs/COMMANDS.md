@@ -215,6 +215,11 @@ max(kind) = 3
 
 In JSON, integers beyond 2^53 - 1, such as a large `SUM`, print as decimal strings.
 
+AGGREGATE and SCAN CHUNKS take `WHERE condition`, and SET BLOCK and DELETE BLOCK take `IF condition` and computed values such as `coins = coins + $1`; see the server's [Expressions](https://github.com/chunkdb/chunkdb/blob/main/docs/reference/EXPRESSIONS.md) reference.
+A `$n` parameter takes the type of the column it meets, so an integer goes in an 8-byte little-endian `--in` file, and each `$n` appears once.
+A false condition fails with `CONDITION_FAILED current=<version>` and exit code 2.
+A filtered scan page can hold no chunks; continue with `AFTER` the printed `after` coordinate while `more` is true.
+
 ## Notes
 
 `--out` exports the raw chunk form, including columns whose types this client does not know.

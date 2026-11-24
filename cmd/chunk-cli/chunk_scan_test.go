@@ -87,3 +87,47 @@ func TestChunkModelScanRejectsInvalidIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestFilteredScanReadsAfter(t *testing.T) {
+	schema, reply := modelScanFixture(t)
+	info := classify(`SCAN CHUNKS FROM world LIMIT 4 WHERE kind > 2 AND POS_X < 9 WITH DATA COLUMNS kind`)
+	if info.kind != statementScanChunks || !info.scanWhere || len(info.columns) != 1 {
+		t.Fatal(info)
+	}
+	if classify(`SCAN CHUNKS FROM world WHERE kind > 2`).kind == statementScanChunks {
+		t.Fatal("a scan without data took the data renderer")
+	}
+	empty := chunkclient.Value{Kind: chunkclient.KindArray}
+	set := func(key string, value chunkclient.Value) chunkclient.Value {
+		out := chunkclient.Value{Kind: chunkclient.KindMap}
+		found := false
+		for _, entry := range reply.Map {
+			if string(entry.Key.Bulk) == key {
+				entry.Value, found = value, true
+			}
+			out.Map = append(out.Map, entry)
+		}
+		if !found {
+			out.Map = append(out.Map, chunkclient.MapEntry{Key: chunkclient.Value{Kind: chunkclient.KindBulk, Bulk: []byte(key)}, Value: value})
+		}
+		return out
+	}
+	integer := func(n string) chunkclient.Value { return chunkclient.Value{Kind: chunkclient.KindInteger, Text: n} }
+	point := chunkclient.Value{Kind: chunkclient.KindArray, Items: []chunkclient.Value{integer("1"), integer("2"), integer("0")}}
+	reply = set("chunks", empty)
+	reply = set("more", chunkclient.Value{Kind: chunkclient.KindBool, Bool: true})
+	page := set("after", point)
+	var out bytes.Buffer
+	if err := printChunkScan(&out, schema, info, page, statementOptions{json: true}); err != nil || !strings.Contains(out.String(), `"chunks":[],"more":true,"after":[1,2,0]`) {
+		t.Fatal(out.String(), err)
+	}
+	out.Reset()
+	if err := printChunkScan(&out, schema, info, page, statementOptions{}); err != nil || !strings.Contains(out.String(), "after = 1 2 0\n") {
+		t.Fatal(out.String(), err)
+	}
+	for _, broken := range []chunkclient.Value{reply, set("after", chunkclient.Value{Kind: chunkclient.KindNull}), set("after", empty)} {
+		if err := printChunkScan(&out, schema, info, broken, statementOptions{}); err == nil {
+			t.Fatal("accepted a broken filtered page")
+		}
+	}
+}

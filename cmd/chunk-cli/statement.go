@@ -53,7 +53,9 @@ type statementInfo struct {
 	cx, cy, cz int64
 	dims       int
 	scanSince  *uint64
-	areaPage   *areaPageRequest
+	// scanWhere reports a SCAN CHUNKS WHERE, whose reply carries after.
+	scanWhere bool
+	areaPage  *areaPageRequest
 }
 
 // tokenize splits a statement into words, skipping quoted values and the
@@ -147,6 +149,13 @@ func classify(statement string) statementInfo {
 					info.scanSince = &value
 				}
 				i += 2
+			case "WHERE":
+				// The condition runs to WITH DATA; it cannot hold those words.
+				info.scanWhere = true
+				i++
+				for i < len(tokens) && !(keyword(i) == "WITH" && keyword(i+1) == "DATA") {
+					i++
+				}
 			case "WITH":
 				if keyword(i+1) != "DATA" {
 					return statementInfo{}
