@@ -20,7 +20,7 @@ func TestCLIServerStatementFields(t *testing.T) {
 	}
 
 	out = s.ok(t, "SHOW STATUS")
-	for _, part := range []string{"version = ", "\nuptime_ms = ", "\nread_only = false\n", "  name = units\n  state = ok\n  reason = NULL\n", "\nfenced = []\n", "\nactivation_pending = "} {
+	for _, part := range []string{"version = ", "\nuptime_ms = ", "\nread_only = false\n", "\n    name = units\n    state = ok\n    reason = NULL\n", "\nfenced = []\n", "\nactivation_pending = "} {
 		if !strings.Contains(out, part) {
 			t.Fatalf("SHOW STATUS lacks %q:\n%s", part, out)
 		}

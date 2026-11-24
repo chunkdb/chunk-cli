@@ -94,7 +94,7 @@ func TestPrintCatalogEvent(t *testing.T) {
 
 func TestPrintSchemaChecksAndFence(t *testing.T) {
 	schema := &chunkclient.Schema{Table: "units", Version: 2, Dims: 2, ChunkWidth: 2, ChunkHeight: 2, LargeWidth: 8, LargeHeight: 8}
-	schema.Columns = []chunkclient.Column{{Name: "hp", Type: chunkclient.ColumnType{Kind: chunkclient.ColumnSigned, Size: 16}}}
+	schema.Columns = []chunkclient.Column{{Name: "hp", Type: chunkclient.ColumnType{Kind: chunkclient.ColumnSigned, Size: 16}, Default: chunkclient.Value{Kind: chunkclient.KindNull}}}
 	schema.Checks = []chunkclient.Check{{Name: "hp_check", Expression: "hp >= 0"}, {Name: "hp_max", Expression: "hp <= 100"}}
 	schema.Fenced = "recovery failed"
 	var out bytes.Buffer
