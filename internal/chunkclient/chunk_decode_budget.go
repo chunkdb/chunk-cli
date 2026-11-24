@@ -26,6 +26,22 @@ func ChunkDecodeArrayBytes(schema *Schema, columns []string, data []byte, values
 		return 0, &ServerError{Code: "SCHEMA_MISMATCH", Keys: map[string]string{"actual": fmt.Sprint(form.header.schema), "current": fmt.Sprint(schema.Version), "table": schema.Table}, Message: "re-read schema before decoding values"}
 	}
 	count := uint64(schema.BlockCount())
+	depth := 1
+	if schema.Dims == 3 {
+		depth = schema.ChunkDepth
+	}
+	scale, _, err := formScale(form, schema.ChunkWidth, schema.ChunkHeight, depth, schema.Dims == 3)
+	if err != nil {
+		return 0, err
+	}
+	if scale != 0 {
+		// A downsampled form holds one sample per scale blocks on each axis.
+		samples := (schema.ChunkWidth / scale) * (schema.ChunkHeight / scale)
+		if schema.Dims == 3 {
+			samples *= depth / scale
+		}
+		count = uint64(samples)
+	}
 	presence := form.section(sectionPresence)
 	if uint64(len(presence)) != (count+7)/8 || count%8 != 0 && presence[len(presence)-1]>>uint(count%8) != 0 {
 		return 0, fmt.Errorf("GET AREA: invalid presence shape")

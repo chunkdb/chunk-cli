@@ -16,6 +16,14 @@ import (
 
 // transactionStatements snapshots the input before any request is sent.
 func transactionStatements(source []byte) ([]string, error) {
+	_, statements, err := parseTransactionFile(source)
+	return statements, err
+}
+
+// parseTransactionFile returns the BEGIN statement that opens the file's
+// transaction, BEGIN or BEGIN READ ONLY, and the statements inside it.
+func parseTransactionFile(source []byte) (string, []string, error) {
+	begin := "BEGIN"
 	var statements []string
 	scanner := bufio.NewScanner(bytes.NewReader(source))
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
@@ -27,23 +35,26 @@ func transactionStatements(source []byte) ([]string, error) {
 		statements = append(statements, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read transaction: %w", err)
+		return "", nil, fmt.Errorf("read transaction: %w", err)
 	}
-	if len(statements) >= 2 && strings.EqualFold(statements[0], "BEGIN") && strings.EqualFold(statements[len(statements)-1], "COMMIT") {
-		statements = statements[1 : len(statements)-1]
+	if len(statements) >= 2 && strings.EqualFold(statements[len(statements)-1], "COMMIT") {
+		switch words := strings.ToUpper(strings.Join(strings.Fields(statements[0]), " ")); words {
+		case "BEGIN", "BEGIN READ ONLY":
+			begin, statements = words, statements[1:len(statements)-1]
+		}
 	}
 	if len(statements) == 0 {
-		return nil, errors.New("transaction file has no statements")
+		return "", nil, errors.New("transaction file has no statements")
 	}
 	for _, statement := range statements {
 		if txnControlOf(statement) != txnNone {
-			return nil, errors.New("transaction file may contain only one outer BEGIN and COMMIT pair")
+			return "", nil, errors.New("transaction file may contain only one outer BEGIN or BEGIN READ ONLY and COMMIT pair")
 		}
 		if _, _, password := passwordStatement(statement); password {
-			return nil, errors.New("password statements do not run in a transaction file")
+			return "", nil, errors.New("password statements do not run in a transaction file")
 		}
 	}
-	return statements, nil
+	return begin, statements, nil
 }
 
 func runTransactionFile(ctx context.Context, opts globalOptions, args []string, term console, stdout io.Writer) error {
@@ -69,7 +80,7 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 	if err != nil {
 		return fmt.Errorf("read transaction %s: %w", file, err)
 	}
-	statements, err := transactionStatements(source)
+	begin, statements, err := parseTransactionFile(source)
 	if err != nil {
 		return err
 	}
@@ -92,7 +103,7 @@ func runTransactionFile(ctx context.Context, opts globalOptions, args []string, 
 			err = watchCall(ctx, client, func() error {
 				txn := &shellTxn{}
 				statementOpts := statementOptions{json: opts.Statement.json}
-				if err := txn.control(client, txnBegin, "BEGIN", statementOpts, &output); err != nil {
+				if err := txn.control(client, txnBegin, begin, statementOpts, &output); err != nil {
 					return err
 				}
 				for _, statement := range statements {
