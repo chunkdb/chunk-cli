@@ -44,6 +44,7 @@ A login fails when the server asks for fewer than 4096 or more than 1000000 PBKD
 Use `chunks://` for a TLS server and `chunk://` for plain TCP.
 TLS protects statements and replies.
 For a certificate with a different name, set `--tls-server-name <name>`.
+`--tls-ca <file>` verifies the server with the PEM CA certificates in that file, such as a private CA or a self-signed server certificate, instead of the system roots.
 `--tls-insecure` accepts an untrusted certificate, including local self-signed certificates.
 
 Over `chunks://` the CLI binds the login to the TLS connection, so a login relayed by something that ends TLS in between fails with `AUTH_FAILED reason=channel_binding`, even with `--tls-insecure`.

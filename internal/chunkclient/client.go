@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,8 @@ type Config struct {
 	Timeout       time.Duration
 	TLSInsecure   bool
 	TLSServerName string
+	// TLSRootCAs verifies the server certificate instead of the system roots.
+	TLSRootCAs *x509.CertPool
 	// TLSMaxVersion caps the TLS version offered; zero offers the newest.
 	TLSMaxVersion uint16
 	// ChannelBinding binds logins to the TLS connection; the zero value is
@@ -117,6 +120,7 @@ func DialContext(ctx context.Context, cfg Config) (*Client, error) {
 			MinVersion:         tls.VersionTLS12,
 			MaxVersion:         cfg.TLSMaxVersion,
 			InsecureSkipVerify: cfg.TLSInsecure,
+			RootCAs:            cfg.TLSRootCAs,
 		}
 		if cfg.TLSServerName != "" {
 			tlsCfg.ServerName = cfg.TLSServerName
