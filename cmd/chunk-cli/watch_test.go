@@ -230,3 +230,17 @@ func TestWatchUsesURIPathTable(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchURIPathTableErrors(t *testing.T) {
+	var out, failure bytes.Buffer
+	if code := run([]string{"--uri", "chunk://127.0.0.1:1/World", "watch"}, strings.NewReader(""), &out, &failure); code != 1 ||
+		!strings.Contains(failure.String(), `invalid table "World"`) {
+		t.Fatalf("invalid path table: code %d, stderr %q", code, failure.String())
+	}
+	out.Reset()
+	failure.Reset()
+	if code := run([]string{"--uri", "chunk://127.0.0.1:1/", "--json", "watch"}, strings.NewReader(""), &out, &failure); code != 1 ||
+		!strings.Contains(failure.String(), "select it with the URI path") {
+		t.Fatalf("empty path: code %d, stderr %q", code, failure.String())
+	}
+}
