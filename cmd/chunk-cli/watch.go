@@ -50,9 +50,21 @@ func parseWatchPosition(text string) (watchPosition, error) {
 	return watchPosition{strings.ToLower(epoch), rev}, nil
 }
 
+// withURITable puts the URI path table in front of watch arguments that do not
+// start with a table, so `watch --slot s` follows chunk://host:4242/world.
+func withURITable(args []string, uriTable string) []string {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args
+	}
+	if uriTable == "" {
+		return nil
+	}
+	return append([]string{uriTable}, args...)
+}
+
 func parseWatchArgs(args []string, json bool) (watchOptions, error) {
 	if len(args) == 0 {
-		return watchOptions{}, errors.New("watch needs a table")
+		return watchOptions{}, errors.New("watch needs a table; name one, or select it with the URI path as in chunk://user@host:4242/world")
 	}
 	table := args[0]
 	if table == "" || (table[0] != '_' && (table[0] < 'a' || table[0] > 'z')) || strings.Trim(table, "abcdefghijklmnopqrstuvwxyz0123456789_") != "" {
