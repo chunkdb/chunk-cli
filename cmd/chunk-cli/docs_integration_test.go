@@ -54,7 +54,7 @@ func normalizeDocOutput(output string) string {
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
-		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n  retained_bytes = \d+\n  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
+		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n(?:  revision = (?:\d+|NULL)\n  lag_revisions = (?:\d+|NULL)\n)?  retained_bytes = \d+\n(?:  attached = (?:true|false)\n)?  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
 		{`(?m)^([ \t]*version = (?:\d+|NULL)\n[ \t]*schema_version = \d+\n[ \t]*commit_time_ms = )\d+(\n[ \t]*present = \d+ of \d+ blocks\n)`, `${1}<time-ms>${2}`},
 		{`(?m)^((?:chunks:\n(?:  \d+\) \[-?\d+, -?\d+(?:, -?\d+){1,2}\]\n)+|chunks = \[\]\n)more = (?:true|false)\nepoch = )[0-9a-f]{32}(\nposition = (?:\d+|NULL)\nretained_deletion_floor = \d+\n)`, `${1}<epoch>${2}`},
@@ -128,7 +128,9 @@ func TestDocSlotTranscript(t *testing.T) {
 	slot := foundationMapValue(
 		watchBulk("table"), watchBulk("world"), watchBulk("name"), watchBulk("consumer"),
 		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("2"),
-		watchBulk("retained_bytes"), watchInt("0"), watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("revision"), watchInt("2"), watchBulk("lag_revisions"), watchInt("0"),
+		watchBulk("retained_bytes"), watchInt("0"), watchBulk("attached"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
 		watchBulk("owner"), watchBulk("admin"),
 	)

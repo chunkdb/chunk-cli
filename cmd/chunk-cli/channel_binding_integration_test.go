@@ -106,9 +106,7 @@ func TestCLIChannelBinding(t *testing.T) {
 	if out := s.ok(t, "--new-password-file", writePasswordFile(t, "bot"), "CREATE USER bot PASSWORD REQUIRE CHANNEL BINDING"); out != "OK\n" {
 		t.Fatalf("CREATE USER: %q", out)
 	}
-	if out := s.ok(t, "--json", "SHOW USERS"); !strings.Contains(out, `{"name":"bot","manages_users":false,"requires_channel_binding":true,"grants":{}}`) {
-		t.Fatalf("SHOW USERS: %q", out)
-	}
+	assertShownUser(t, s.ok(t, "--json", "SHOW USERS"), "bot", false, true, map[string]string{})
 	bot := func(args ...string) (int, string, string) {
 		t.Helper()
 		return s.cliAt(t, s.uriFor("bot", "bot"), "", args...)

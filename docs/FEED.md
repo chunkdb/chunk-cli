@@ -61,7 +61,10 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   name = consumer
   epoch = <epoch>
   acked = 2
+  revision = 2
+  lag_revisions = 0
   retained_bytes = 0
+  attached = false
   lost = false
   lost_reason = NULL
   filters:
