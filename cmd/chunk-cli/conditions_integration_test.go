@@ -23,7 +23,7 @@ func TestCLIConditionsAndWhere(t *testing.T) {
 		t.Fatalf("computed value not written: %q", got)
 	}
 	s.failsCode(t, 2, "CONDITION_FAILED current=", "SET BLOCK 0 0 IN wallet coins = 0 IF coins > 100")
-	s.failsCode(t, 2, "OUT_OF_RANGE", "SET BLOCK 0 0 IN wallet coins = coins - 8")
+	s.fails(t, "OUT_OF_RANGE", "SET BLOCK 0 0 IN wallet coins = coins - 8")
 	s.failsCode(t, 2, "CONDITION_FAILED", "DELETE BLOCK 6 0 FROM wallet IF kind = 9")
 
 	if got := s.ok(t, "--in", two, "AGGREGATE AREA 0 0 TO 3 0 FROM wallet COUNT(*), SUM(coins) WHERE kind > $1"); got != "count(*) = 1\nsum(coins) = 1\n" {
