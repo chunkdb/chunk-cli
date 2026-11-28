@@ -71,6 +71,8 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   lost_reason = NULL
   filters:
     area = [0, 0, 0, 0]
+    areas:
+      1) [0, 0, 0, 0]
     column_ids = NULL
     columns = NULL
     no_before = false
@@ -81,7 +83,7 @@ OK
 
 ## Options
 
-- `--area` uses inclusive chunk coordinates; repeat it to watch up to 64 areas with the same axes; a slot keeps one area.
+- `--area` uses inclusive chunk coordinates. Repeat it to watch up to 64 areas with the same axes.
 - Three-axis tables use `--area cx0,cy0,cz0,cx1,cy1,cz1`; the third axis remains explicit when zero.
 - Without `--slot` or `--after`, watching begins after completed writes.
 - `--after <epoch:revision>` resumes from a retained position.
@@ -99,12 +101,14 @@ Creating and dropping slots requires `ADMIN`.
 Watching requires `READ`; watching another user's slot also requires `ADMIN` on `*`.
 
 CREATE SLOT stores AREA, COLUMNS, NO BEFORE and CHUNKS filters.
+Use comma-separated AREA clauses to save up to 64 areas with the same axes.
 `OWNER <user>` sets the slot's owner; it defaults to the user running CREATE SLOT, and the user need not exist yet.
 Under `--auth none`, CREATE SLOT without OWNER records no owner.
 CREATE SLOT IF NOT EXISTS with another OWNER returns `INVALID_ARGUMENT reason=slot_filters`.
 Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
 Changing filters requires a different slot.
 `SHOW SLOTS` includes typed filters, stable column IDs, nullable loss reasons and the owner.
+The `areas` list contains all saved areas in coordinate order and is `NULL` for a whole-table slot. The `area` field holds the bounds when exactly one area is saved and is `NULL` otherwise.
 For an attached watch, `peer` is the client's `[address]:port` as shown by `SHOW CONNECTIONS`, and `last_ack_ms` is the time in milliseconds since the watch's last accepted ACK.
 Both fields are `NULL` when the slot is detached.
 `last_ack_ms` is also `NULL` before the watch's first accepted ACK.
