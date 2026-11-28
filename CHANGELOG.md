@@ -21,6 +21,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - `CREATE SLOT ... OWNER <user>` sets a slot's owner, and `SHOW SLOTS` validates and prints its nullable `owner`.
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 - `ALTER USER <name> ADD PASSWORD` adds a second password with the salt of the current one, from a login as that user, for rotation with DROP OLD VERIFIER; `CREATE USER IF NOT EXISTS <name> PASSWORD` computes the verifier too. Part of chunkdb/chunkdb#151.
+- `SCAN CHUNKS FROM table AREA ...` and `AREA AROUND ...` print typed `WITH DATA` pages and refuse a chunk outside the area. Part of chunkdb/chunkdb#151.
 
 ### Documentation
 - Follow the server's rights and statements: BACKUP TO takes `BACKUP` or `MANAGES USERS` and RESTORE TABLE restores one table online, `migrations` lists the records within your rights, transactions list every statement they allow, and the shell rolls back a conflict itself. Part of chunkdb/chunkdb#151.

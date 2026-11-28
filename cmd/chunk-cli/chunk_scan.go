@@ -63,6 +63,13 @@ func printChunkScan(w io.Writer, schema *chunkclient.Schema, info statementInfo,
 			}
 			fields = append(fields, jsonField{[]string{"cx", "cy", "cz"}[axis], point[axis]})
 		}
+		if info.scanArea != nil {
+			var cell [3]int64
+			copy(cell[:], point)
+			if info.scanArea.dims != dims || !info.scanArea.contains(cell) {
+				return bad("chunk outside the scanned area")
+			}
+		}
 		if previous != nil {
 			less := false
 			for axis := range point {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,8 @@ type statementInfo struct {
 	// scanWhere reports a SCAN CHUNKS WHERE, whose reply carries after.
 	scanWhere bool
 	areaPage  *areaPageRequest
+	// scanArea is the AREA or AREA AROUND selector of a SCAN CHUNKS.
+	scanArea *areaPageRequest
 }
 
 // tokenize splits a statement into words, skipping quoted values and the
@@ -128,7 +131,19 @@ func classify(statement string) statementInfo {
 	}
 	if keyword(0) == "SCAN" && keyword(1) == "CHUNKS" && keyword(2) == "FROM" && len(tokens) >= 6 {
 		info := statementInfo{kind: statementScanChunks, table: tokens[3]}
-		for i := 4; i < len(tokens); {
+		i := 4
+		if keyword(i) == "AREA" {
+			// AREA a TO b or AREA AROUND c RADIUS r, right after the table.
+			end := i + 1
+			for end < len(tokens) && !slices.Contains([]string{"AFTER", "LIMIT", "SINCE", "WHERE", "WITH"}, keyword(end)) {
+				end++
+			}
+			if info.scanArea = parseAreaSelector(tokens[i+1 : end]); info.scanArea == nil {
+				return statementInfo{}
+			}
+			i = end
+		}
+		for i < len(tokens) {
 			switch keyword(i) {
 			case "AFTER":
 				i++
