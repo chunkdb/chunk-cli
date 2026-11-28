@@ -369,9 +369,12 @@ func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
 					if !bytes.Equal(body, append(append([]byte{}, data...), 13, 10)) {
 						return fmt.Errorf("raw bytes changed %x", body)
 					}
-					if mode == "transaction" {
+					switch mode {
+					case "transaction":
 						io.WriteString(conn, "_\r\n")
-					} else {
+					case "verifier":
+						io.WriteString(conn, "+OK\r\n")
+					default:
 						io.WriteString(conn, ":9\r\n")
 					}
 				}
@@ -420,8 +423,14 @@ func TestRawImportExportKnownBytesAndUnrelatedParameters(t *testing.T) {
 				if err = execute(client, tx, "ROLLBACK", statementOptions{}, &out, console{}); err != nil {
 					t.Fatal(err)
 				}
-			} else if out.String() != "9\n" {
-				t.Fatal(out.String())
+			} else {
+				want := "9\n"
+				if mode == "verifier" {
+					want = "OK\n"
+				}
+				if out.String() != want {
+					t.Fatalf("output = %q, want %q", out.String(), want)
+				}
 			}
 			client.Close()
 			waitSlotServer(t, done)

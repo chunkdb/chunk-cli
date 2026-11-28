@@ -48,7 +48,7 @@ func TestCLIServerStatementFields(t *testing.T) {
 
 func TestCLISchemaBinaryDefaults(t *testing.T) {
 	s := startServer(t, false)
-	s.ok(t, "CREATE TABLE defaults (payload bytes(8) DEFAULT x'6162') CHUNK 2 x 2 CHUNK COLUMNS (flags bits(3) DEFAULT b'101')")
+	s.ok(t, "CREATE TABLE defaults (kind u8, payload bytes(8) DEFAULT x'6162') CHUNK 2 x 2 CHUNK COLUMNS (flags bits(3) DEFAULT b'101')")
 	if out := s.ok(t, "DESCRIBE defaults"); !strings.Contains(out, "payload bytes(8) DEFAULT x'6162'\n") ||
 		!strings.Contains(out, "flags bits(3) DEFAULT b'101'\n") {
 		t.Fatalf("text defaults: %q", out)
