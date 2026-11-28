@@ -24,8 +24,8 @@ func TestCLIScanArea(t *testing.T) {
 	if !strings.Contains(got, "chunk 0 0\n") || !strings.Contains(got, "chunk 1 0\n") || strings.Contains(got, "chunk 0 2\n") || !strings.Contains(got, "more = false\n") {
 		t.Fatalf("%q", got)
 	}
-	got = s.ok(t, "--json", "SCAN CHUNKS FROM field AREA 0 0 TO 3 3 AFTER 0 0 LIMIT 1 WITH DATA")
-	if !strings.Contains(got, `"chunks":[{"cx":0,"cy":2,"version":3,`) || !strings.Contains(got, `"more":true`) {
+	got = s.ok(t, "--json", "SCAN CHUNKS FROM field AREA 0 1 TO 3 3 WITH DATA AFTER 0 0 WHERE kind > 0 LIMIT 1")
+	if !strings.Contains(got, `"chunks":[{"cx":0,"cy":2,"version":3,`) || !strings.Contains(got, `"more":true,"after":[0,2]`) {
 		t.Fatalf("%q", got)
 	}
 	s.fails(t, "INVALID_ARGUMENT", "SCAN CHUNKS FROM field AREA 0 0 0 TO 1 1 1 WITH DATA")

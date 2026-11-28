@@ -89,7 +89,8 @@ func TestValidateSlotsFeedFields(t *testing.T) {
 	slot := func(key string, value Value) Value {
 		pairs := []Value{foundationBulk("table"), foundationBulk("world"), foundationBulk("name"), foundationBulk("consumer"), foundationBulk("epoch"), foundationBulk("0123456789abcdef0123456789abcdef"),
 			foundationBulk("acked"), u64, foundationBulk("revision"), u64, foundationBulk("lag_revisions"), {Kind: KindInteger, Text: "0"}, foundationBulk("retained_bytes"), u64,
-			foundationBulk("attached"), {Kind: KindBool, Bool: true}, foundationBulk("lost"), {Kind: KindBool}, foundationBulk("lost_reason"), {Kind: KindNull}}
+			foundationBulk("attached"), {Kind: KindBool, Bool: true}, foundationBulk("lost"), {Kind: KindBool}, foundationBulk("lost_reason"), {Kind: KindNull},
+			foundationBulk("peer"), foundationBulk("[127.0.0.1]:1234"), foundationBulk("last_ack_ms"), u64}
 		for i := 0; i < len(pairs); i += 2 {
 			if string(pairs[i].Bulk) == key {
 				pairs[i+1] = value
@@ -100,9 +101,15 @@ func TestValidateSlotsFeedFields(t *testing.T) {
 	if err := ValidateSlots(slot("", Value{})); err != nil {
 		t.Fatal(err)
 	}
-	for key, bad := range map[string]Value{"revision": {Kind: KindNull}, "lag_revisions": {Kind: KindInteger, Text: "-1"}, "attached": foundationBulk("yes")} {
+	for key, bad := range map[string]Value{"revision": {Kind: KindNull}, "lag_revisions": {Kind: KindInteger, Text: "-1"},
+		"attached": foundationBulk("yes"), "peer": u64, "last_ack_ms": foundationBulk("2")} {
 		if err := ValidateSlots(slot(key, bad)); err == nil {
 			t.Error("accepted invalid", key)
+		}
+	}
+	for _, field := range []string{"peer", "last_ack_ms"} {
+		if err := ValidateSlots(slot(field, Value{Kind: KindNull})); err != nil {
+			t.Error("rejected null", field, err)
 		}
 	}
 }

@@ -56,6 +56,18 @@ func (t *shellTxn) control(client *chunkclient.Client, control txnControl, state
 		return fmt.Errorf("%s takes no --in or --out", control)
 	}
 	reply, err := client.Do(statement)
+	if err == nil {
+		if control == txnCommit {
+			err = chunkclient.ValidateRevision(string(control), reply, true)
+		} else {
+			err = chunkclient.ValidateOK(string(control), reply)
+		}
+		if err != nil {
+			client.RejectReply(err)
+			t.open = false
+			return err
+		}
+	}
 	var serverErr *chunkclient.ServerError
 	switch {
 	case err == nil:
@@ -84,7 +96,14 @@ func (t *shellTxn) ended(client *chunkclient.Client, statement string, err error
 	}
 	t.open = false
 	if txnControlOf(statement) != txnCommit {
-		if _, rollbackErr := client.Do(string(txnRollback)); rollbackErr != nil {
+		reply, rollbackErr := client.Do(string(txnRollback))
+		if rollbackErr == nil {
+			rollbackErr = chunkclient.ValidateOK(string(txnRollback), reply)
+			if rollbackErr != nil {
+				client.RejectReply(rollbackErr)
+			}
+		}
+		if rollbackErr != nil {
 			t.open = client.Broken() == nil
 			return fmt.Errorf("%w (the transaction ended and wrote nothing, but ROLLBACK failed: %v)", err, rollbackErr)
 		}

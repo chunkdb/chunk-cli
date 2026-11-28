@@ -317,13 +317,29 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 }
 
 const shellHelp = `Type one CQL statement per line; exit or quit leaves the shell.
-A line may start with --json, --blocks, --in <file>, --out <file> or
---new-password-file <file>. CREATE USER <name> PASSWORD, ALTER USER <name>
-PASSWORD and ALTER USER <name> ADD PASSWORD ask for the password and send
-its verifier.
-BEGIN starts a transaction (the prompt turns chunk*>): its reads see one
-snapshot, its writes apply together at COMMIT, ROLLBACK discards them.
-Streams use chunk-cli watch <table> or watch --catalog, outside the shell.
+A line may start with --json, --blocks, --in <file>, --in <n>=<file>,
+--out <file> or --new-password-file <file>.
+
+Data
+  GET BLOCK, SET BLOCK, DELETE BLOCK, GET CHUNK, SET CHUNK, GET AREA,
+  AGGREGATE, SCAN CHUNKS, COMPACT TOMBSTONES, SHOW TABLE STATS
+Tables and migrations
+  CREATE TABLE, ALTER TABLE, DROP TABLE, RECOVER TABLE, SWAP TABLES,
+  SHOW TABLES, DESCRIBE, SHOW STATUS, ENABLE FEATURE, MIGRATE, SHOW MIGRATIONS
+Transactions
+  BEGIN [READ ONLY], COMMIT, ROLLBACK
+  The chunk*> prompt marks an open transaction. COMMIT publishes its writes.
+Users
+  CREATE USER, ALTER USER, DROP USER, GRANT, REVOKE, SHOW USERS
+  PASSWORD and ADD PASSWORD take a password and send its verifier.
+Feeds
+  CREATE SLOT, DROP SLOT, SHOW SLOTS
+  Use chunk-cli watch <table> for WATCH and watch --catalog for WATCH CATALOG.
+  A slot watch sends ACK as it prints events. Ctrl-C sends UNWATCH.
+Server
+  PING, FLUSH WAL, SHOW METRICS, BACKUP TO, RESTORE TABLE, RELOAD TLS,
+  SHOW CONNECTIONS, CANCEL, KILL CONNECTION
+  HELLO and AUTH are handled when the CLI connects.
 `
 
 func printUsage(w io.Writer) {
@@ -360,7 +376,7 @@ Options:
   --out <file>              write the reply's bytes to the file (GET CHUNK)
   --new-password-file <file>
                             the password of CREATE USER <name> PASSWORD and
-                            ALTER USER <name> PASSWORD (asked for on a terminal)
+                            ALTER USER <name> [ADD] PASSWORD (asked for on a terminal)
 
 Watch options:
   --catalog                 stream table, user and slot changes (WATCH CATALOG)

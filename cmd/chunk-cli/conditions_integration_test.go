@@ -40,5 +40,10 @@ func TestCLIConditionsAndWhere(t *testing.T) {
 	if !strings.Contains(got, "chunk 3 0\n") || !strings.Contains(got, "after = NULL\n") {
 		t.Fatalf("%q", got)
 	}
+	got = s.ok(t, "--blocks", "SCAN CHUNKS FROM wallet WITH DATA WHERE kind > 2 COLUMNS (kind) AFTER 0 0 LIMIT 1")
+	if !strings.Contains(got, "chunk 3 0\n") || !strings.Contains(got, "  projected = true\n") ||
+		!strings.Contains(got, "    kind = 4\n") || strings.Contains(got, "coins =") {
+		t.Fatalf("scan projection: %q", got)
+	}
 	s.ok(t, "DELETE BLOCK 6 0 FROM wallet IF kind = 4")
 }

@@ -119,8 +119,9 @@ func TestDocSlotTranscript(t *testing.T) {
 	// Use the production formatter, including the nested filters map. The
 	// docs fence must keep every field and value rather than flattening it.
 	null := chunkclient.Value{Kind: chunkclient.KindNull}
+	area := watchArray(watchInt("0"), watchInt("0"), watchInt("0"), watchInt("0"))
 	filters := foundationMapValue(
-		watchBulk("area"), watchArray(watchInt("0"), watchInt("0"), watchInt("0"), watchInt("0")),
+		watchBulk("area"), area, watchBulk("areas"), watchArray(area),
 		watchBulk("column_ids"), null, watchBulk("columns"), null,
 		watchBulk("no_before"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("chunks"), chunkclient.Value{Kind: chunkclient.KindBool},
@@ -162,6 +163,7 @@ func TestDocSlotTranscript(t *testing.T) {
 		{"acked = 2", "acked = 3"}, {"retained_bytes = 0", "retained_bytes = 7"},
 		{"peer = NULL", "peer = [127.0.0.1]:4242"}, {"last_ack_ms = NULL", "last_ack_ms = 17"},
 		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
+		{"1) [0, 0, 0, 0]", "1) [0, 0, 1, 1]"},
 		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
 		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
 		{"lost_reason = NULL", "lost_reason = schema_filter"},

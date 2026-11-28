@@ -29,30 +29,28 @@ func classifyReturning(tokens []string) statementInfo {
 			break
 		}
 	}
-	at := -1
-	for i := len(tokens) - 1; i > table && table > 0; i-- {
-		if keyword(i) == "RETURNING" {
-			at = i
-			break
+	if table < 0 || table >= len(tokens) {
+		return statementInfo{}
+	}
+	for at := len(tokens) - 2; at > table; at-- {
+		if keyword(at) != "RETURNING" || tokens[at-1] == "," {
+			continue
+		}
+		rest := tokens[at+1:]
+		if strings.EqualFold(rest[0], "OLD") || strings.EqualFold(rest[0], "NEW") {
+			rest = rest[1:]
+		}
+		info := statementInfo{kind: statementReturning, table: tokens[table]}
+		if len(rest) == 1 && rest[0] == "*" {
+			return info
+		}
+		columns, ok := readColumnNames(rest)
+		if ok {
+			info.columns = columns
+			return info
 		}
 	}
-	if table < 0 || table >= len(tokens) || at < 0 {
-		return statementInfo{}
-	}
-	info := statementInfo{kind: statementReturning, table: tokens[table]}
-	rest := tokens[at+1:]
-	if len(rest) > 1 && (strings.EqualFold(rest[0], "OLD") || strings.EqualFold(rest[0], "NEW")) {
-		rest = rest[1:]
-	}
-	if len(rest) == 1 && rest[0] == "*" {
-		return info
-	}
-	columns, ok := readColumnNames(rest)
-	if !ok {
-		return statementInfo{}
-	}
-	info.columns = columns
-	return info
+	return statementInfo{}
 }
 
 // printReturning prints {applied, version, rows} with typed values.

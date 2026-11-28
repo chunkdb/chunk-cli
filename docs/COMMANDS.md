@@ -34,7 +34,7 @@ chunk-cli help
 | `--blocks` | Include present blocks in chunk, area and scan data output |
 | `--in <file>` or `--in <n>=<file>` | Supply binary parameter `$1`, or `$n`; repeat for several, numbered from `$1` without a gap, up to `$65535`; a file name that starts with digits and `=` needs `./` in front |
 | `--out <file>` | Write reply bytes to a file |
-| `--new-password-file <file>` | Read the new password for CREATE/ALTER USER PASSWORD |
+| `--new-password-file <file>` | Read the new password for CREATE USER PASSWORD or ALTER USER [ADD] PASSWORD |
 
 The URI path selects the table for `watch` when it names none: `chunk://host:4242/world` makes `watch --json` watch `world`.
 Statements name their tables themselves.
@@ -45,6 +45,7 @@ See [Connection](CONNECTION.md) for password precedence.
 The shell accepts one statement per line, plus `exit`, `quit`, and `help`.
 Per-line options are `--json`, `--blocks`, `--in`, `--out` and `--new-password-file`.
 A line's own `--in` replaces the `--in` files given on the command line.
+Type `help` in the shell for the statement list.
 
 ## Returns
 
@@ -63,13 +64,14 @@ Its revision is `NULL` when a read-only server cannot establish the writer's fro
 - Chunk replies show version, schema version, commit time, chunk columns and presence count; `--blocks` adds rows.
 - Area replies group blocks by chunk.
 - `GET AREA ... SCALE k USING reduction` chunks print `scale = k USING reduction`, and their presence count and `--blocks` rows count samples; JSON adds `scale` and `reduction`.
-- `SET BLOCK` and `DELETE BLOCK` with `RETURNING` print `applied`, `version` and one `row x y` per returned block with its `column = value` lines; JSON prints `{"applied", "version", "rows"}` with each row's coordinates and values.
+- `SET BLOCK` and `DELETE BLOCK` with `RETURNING` print `applied`, `version` and each returned block's coordinates and named values. JSON prints `{applied,version,rows}` with `x`, `y`, optional `z` and the selected columns in each row.
 - GET AREA with LIMIT or AFTER prints `more` and `after` with its chunk summaries; JSON preserves the `chunks`, `more`, `after` page map.
 - Writes print the affected chunk's new version.
 
 Values print as CQL literals: numbers, booleans, `NULL`, quoted text, `x'hex'` bytes and `b'bits'`.
 Bits print lowest bit first.
 JSON uses objects for blocks, hex strings for bytes and strings for bits.
+Schema defaults in JSON use the column's type, including hex for bytes and the lowest bit first for bits.
 
 Integers print exactly.
 JSON integers within inclusive ±9007199254740991 are numbers; larger magnitudes are decimal strings.
@@ -88,12 +90,13 @@ Chunk and area output retains that third coordinate, with x varying fastest with
 Transaction-private chunk forms print `NULL` for version and commit time and include `private = true`.
 Block-column projections retain all chunk columns and include `projected = true` when the form is projected.
 
-`SCAN CHUNKS ... WITH DATA` prints each coordinate, retained version and decoded chunk.
-JSON entries contain `{cx,cy,cz?,version,deleted,chunk}`; a tombstone has `deleted: true` and `chunk: null`.
-`SCAN CHUNKS FROM table AREA cx0 cy0 TO cx1 cy1` or `AREA AROUND cx cy RADIUS r`, right after the table, lists only the chunks inside the area, in the same order; the CLI refuses a page with a chunk outside it.
+`SCAN CHUNKS` lists rows of chunk coordinates and retained versions as `[cx,cy,version]` or `[cx,cy,cz,version]`.
+`WITH DATA` adds the decoded chunk. JSON entries contain `{cx,cy,cz?,version,deleted,chunk}`. A tombstone has `deleted: true` and `chunk: null`.
+`SCAN CHUNKS FROM table AREA cx0 cy0 [cz0] TO cx1 cy1 [cz1]` or `AREA AROUND cx cy [cz] RADIUS r` lists the chunks inside the area, in coordinate order. Put the selector immediately after the table name. The CLI refuses a page with a chunk outside the area.
 `SINCE` includes retained deletions and skips versions at or below the supplied revision.
 The page retains its table epoch, nullable completed frontier and retained deletion floor.
 If the supplied revision precedes that floor, start a fresh snapshot before resuming changes.
+`COMPACT TOMBSTONES` prints the resulting retained deletion floor.
 
 `GET BLOCK ... WITH VERSION` adds a nullable chunk version beside the values.
 The version is `NULL` for never-written chunks, collected empty chunks and transaction-private modified chunks.
@@ -102,6 +105,10 @@ An absent block can still have a retained committed chunk version.
 Both clauses together produce version, schema version and values, regardless of clause order.
 JSON uses `{version,values}`, `{schema_version,values}` or `{version,schema_version,values}` for blocks and `{schema_version,entries}` for areas.
 The CLI refuses to decode rows when returned schema metadata differs from its fetched schema.
+
+`SHOW TABLES` lists visible table names, including fenced tables. `SHOW USERS` lists users with their flags, verifier count, grants and server rights. `SHOW CONNECTIONS` lists connection IDs, users, peers, states, statements and copy progress. User, statement and progress can be null. `CANCEL` and `KILL CONNECTION` return the booleans `cancelled` and `killed`.
+`SHOW METRICS` prints Prometheus text or a single JSON string. `--out` saves the metrics text to a file.
+`SHOW MIGRATIONS` and `migrations` show the statement, application time and applying user for each visible migration. The user is null for callers without `MANAGES USERS`.
 
 ## Errors
 
@@ -207,6 +214,23 @@ kind = 7
 
 Use `--blocks "GET CHUNK 0 0 0 FROM space"` to include the present block and chunk columns, or `"SCAN CHUNKS FROM space SINCE 0 WITH DATA"` for retained versions and tombstones.
 
+List retained chunk coordinates and versions without fetching chunk data.
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "SCAN CHUNKS FROM space"
+chunk-cli --uri "$CHUNKDB_URI" --json "AGGREGATE CHUNK 0 0 0 FROM space COUNT(*), MAX(kind) BY CHUNK"
+```
+
+```output
+chunks:
+  1) [0, 0, 0, 2]
+more = false
+epoch = <epoch>
+position = 2
+retained_deletion_floor = 0
+[[0,0,0,1,7]]
+```
+
 Aggregate the present blocks of an area; BY CHUNK prints one row per chunk as `[cx, cy, results...]`:
 
 ```sh docs-check-shell
@@ -228,6 +252,23 @@ A `$n` parameter takes the type of the column it meets, so an integer goes in an
 A false condition fails with `CONDITION_FAILED current=<version>` and exit code 2.
 A filtered scan page can hold no chunks; continue with `AFTER` the printed `after` coordinate while `more` is true.
 
+Connection controls report whether they accepted the request. ID 0 identifies no client connection.
+
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "PING"
+chunk-cli --uri "$CHUNKDB_URI" "SHOW TABLES"
+chunk-cli --uri "$CHUNKDB_URI" "CANCEL 0"
+chunk-cli --uri "$CHUNKDB_URI" --json "KILL CONNECTION 0"
+```
+
+```output
+PONG
+1) space
+2) world
+cancelled = false
+{"killed":false}
+```
+
 ## Notes
 
 Ctrl-C during a one-shot statement sends `CANCEL` for it from a second connection with the same login: the server stops it with `CANCELLED applied=false`, and a statement past its decision point still completes; a second Ctrl-C quits at once.
@@ -248,27 +289,25 @@ For connection state, see [Transactions](TRANSACTIONS.md).
 `SHOW STATUS` reports the server `version`, `uptime_ms`, `read_only`, the directory's and each table's enabled features with raw unsigned `compat`, `ro_compat` and `incompat` masks, each table's `state` and `reason`, the `fenced` tables, and `activation_pending`.
 It requires `MONITOR` or `ADMIN` on `*`.
 `ENABLE FEATURE '<name>'` explicitly enables a registered feature for the directory and its affected tables; it requires `ADMIN` on `*`, and activation can change which server versions can open the data.
-`SHOW TABLE STATS <table>` reports `epoch`, the nullable `revision`, `dims`, `chunks`, `tombstones`, `retained_deletion_floor`, `loaded_chunks`, `files`, `disk_bytes`, `slots` and `watches`; it requires `READ` on the table.
-The CLI checks the types of the fields it knows in `SHOW STATUS`, `SHOW TABLE STATS` and `SHOW SLOTS`, and prints fields it does not know as they arrive.
+`SHOW TABLE STATS <table>` reports `epoch`, the nullable `revision`, `dims`, `chunks`, `tombstones`, `retained_deletion_floor`, `loaded_chunks`, `files`, `disk_bytes`, `slots` and `watches`. It requires `READ` on the table or `MONITOR` on `*`.
 
 ## Statements
 
-Every server statement runs as a one-shot statement or a shell line; these commands and options give the statements that need more than a line.
+Use a quoted statement in a one-shot invocation or enter it on its own shell line. Transactions, streams and login use the forms below.
 
 | Statements | CLI form |
 | --- | --- |
 | GET BLOCK, SET BLOCK, DELETE BLOCK, AGGREGATE | Statement; `--in` for `$n` values |
-| GET CHUNK, SET CHUNK, GET AREA, SCAN CHUNKS, COMPACT TOMBSTONES, SHOW TABLE STATS | Statement; `--out` saves a chunk form, `--in` sends one |
+| GET CHUNK, SET CHUNK, GET AREA, SCAN CHUNKS, COMPACT TOMBSTONES, SHOW TABLE STATS | Statement. GET CHUNK with `--out` saves a chunk form. SET CHUNK with `--in` sends one. |
 | CREATE TABLE, ALTER TABLE, DROP TABLE, RECOVER TABLE, SWAP TABLES, SHOW TABLES, DESCRIBE, SHOW STATUS, ENABLE FEATURE | Statement |
 | MIGRATE, SHOW MIGRATIONS | `migrate <file>` and `migrations`, or the statement |
-| BEGIN, COMMIT, ROLLBACK | Shell lines or `transaction <file>`; see [Transactions](TRANSACTIONS.md) |
-| WATCH, ACK, UNWATCH | `watch <table>`, which sends ACK for a slot and UNWATCH on Ctrl-C; see [Feed](FEED.md) |
+| BEGIN [READ ONLY], COMMIT, ROLLBACK | Shell lines. `transaction <file>` runs BEGIN and COMMIT on one connection. See [Transactions](TRANSACTIONS.md). |
+| WATCH, ACK, UNWATCH | `watch <table>` starts the stream, sends ACK for a slot and sends UNWATCH on Ctrl-C. See [Feed](FEED.md). |
 | WATCH CATALOG | `watch --catalog`; see [Feed](FEED.md#watch-the-catalog) |
 | CREATE SLOT, DROP SLOT, SHOW SLOTS | Statement |
-| CREATE USER, ALTER USER, DROP USER, GRANT, REVOKE, SHOW USERS | Statement; `--new-password-file` for `PASSWORD`; see [Users](USERS.md) |
+| CREATE USER, ALTER USER, DROP USER, GRANT, REVOKE, SHOW USERS | Statement. Use `--new-password-file` for `PASSWORD` or `ADD PASSWORD`. See [Users](USERS.md). |
 | PING, FLUSH WAL, SHOW METRICS, BACKUP TO, RESTORE TABLE, RELOAD TLS, SHOW CONNECTIONS, CANCEL, KILL CONNECTION | Statement; Ctrl-C sends CANCEL for a running one-shot statement; see [Backup](BACKUP.md) |
-
-The CLI sends HELLO and AUTH itself when it connects; see [Connection](CONNECTION.md).
+| HELLO, AUTH | Sent during connection setup using the connection and login options. See [Connection](CONNECTION.md). |
 
 ## Area pages
 
@@ -278,8 +317,16 @@ Continue the same selector strictly AFTER the returned coordinate while `more` i
 The final page has `more = false` and `after = NULL`.
 Use exactly two axes for a two-dimensional table and three for a three-dimensional table, including a third zero axis.
 
-```sh
-chunk-cli --uri "$CHUNKDB_URI" "GET AREA 0 0 TO 10000 0 FROM world LIMIT 256"
+```sh docs-check-shell
+chunk-cli --uri "$CHUNKDB_URI" "GET AREA 10 0 TO 12 0 FROM world LIMIT 2"
+chunk-cli --uri "$CHUNKDB_URI" --json "GET AREA 10 0 TO 12 0 FROM world LIMIT 2 AFTER 11 0"
+```
+
+```output
+more = true
+after = [11, 0]
+(empty)
+{"chunks":[],"more":false,"after":null}
 ```
 
 The server can stop a page early to honor its configured response-byte limit.

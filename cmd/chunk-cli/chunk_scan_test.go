@@ -90,7 +90,7 @@ func TestChunkModelScanRejectsInvalidIdentity(t *testing.T) {
 
 func TestFilteredScanReadsAfter(t *testing.T) {
 	schema, reply := modelScanFixture(t)
-	info := classify(`SCAN CHUNKS FROM world LIMIT 4 WHERE kind > 2 AND POS_X < 9 WITH DATA COLUMNS kind`)
+	info := classify(`SCAN CHUNKS FROM world AREA 0 0 0 TO 2 3 0 LIMIT 4 WHERE kind > 2 AND POS_X < 9 WITH DATA COLUMNS kind`)
 	if info.kind != statementScanChunks || !info.scanWhere || len(info.columns) != 1 {
 		t.Fatal(info)
 	}
@@ -125,7 +125,8 @@ func TestFilteredScanReadsAfter(t *testing.T) {
 	if err := printChunkScan(&out, schema, info, page, statementOptions{}); err != nil || !strings.Contains(out.String(), "after = 1 2 0\n") {
 		t.Fatal(out.String(), err)
 	}
-	for _, broken := range []chunkclient.Value{reply, set("after", chunkclient.Value{Kind: chunkclient.KindNull}), set("after", empty)} {
+	outside := chunkclient.Value{Kind: chunkclient.KindArray, Items: []chunkclient.Value{integer("3"), integer("2"), integer("0")}}
+	for _, broken := range []chunkclient.Value{reply, set("after", chunkclient.Value{Kind: chunkclient.KindNull}), set("after", empty), set("after", outside)} {
 		if err := printChunkScan(&out, schema, info, broken, statementOptions{}); err == nil {
 			t.Fatal("accepted a broken filtered page")
 		}
@@ -134,7 +135,7 @@ func TestFilteredScanReadsAfter(t *testing.T) {
 
 func TestScanAreaSelector(t *testing.T) {
 	schema, reply := modelScanFixture(t)
-	info := classify(`SCAN CHUNKS FROM world AREA -1 0 -1 TO 0 2 0 SINCE 3 WITH DATA`)
+	info := classify(`SCAN CHUNKS FROM world AREA -1 0 -1 TO 0 2 0 WITH DATA SINCE 3`)
 	if info.kind != statementScanChunks || info.scanArea == nil || info.scanArea.dims != 3 || info.scanArea.around || info.scanSince == nil || *info.scanSince != 3 {
 		t.Fatal(info)
 	}
@@ -156,6 +157,15 @@ func TestScanAreaSelector(t *testing.T) {
 		if err := printChunkScan(&out, schema, classify(statement), reply, statementOptions{json: true}); err == nil || out.Len() != 0 {
 			t.Error("printed a chunk outside the area", statement, out.String())
 		}
+	}
+	// Metadata rows omit the form but must still lie inside the selector.
+	info = classify(`SCAN CHUNKS FROM world AREA 0 0 -1 TO 0 0 0 SINCE 3`)
+	for i := range reply.Map[0].Value.Items {
+		entry := &reply.Map[0].Value.Items[i]
+		entry.Items = entry.Items[:4]
+	}
+	if _, err := validateScanPage(info, reply, nil); info.kind != statementScanIndex || err == nil || !strings.Contains(err.Error(), "chunk outside the scanned area") {
+		t.Fatalf("metadata scan outside the area: %+v, %v", info, err)
 	}
 	for _, statement := range []string{
 		`SCAN CHUNKS FROM world AREA 1 0 TO 0 0 WITH DATA`,

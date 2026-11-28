@@ -22,6 +22,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Decode extensible protocol metadata and feed events, negotiate HELLO options, classify errors by code, and preserve exact integers in JSON. Part of chunkdb/chunkdb#69.
 - `ALTER USER <name> ADD PASSWORD` adds a second password with the salt of the current one, from a login as that user, for rotation with DROP OLD VERIFIER; `CREATE USER IF NOT EXISTS <name> PASSWORD` computes the verifier too. Part of chunkdb/chunkdb#151.
 - `SCAN CHUNKS FROM table AREA ...` and `AREA AROUND ...` print typed `WITH DATA` pages and refuse a chunk outside the area. Part of chunkdb/chunkdb#151.
+- Validate statement replies in text and JSON, including aggregate results, scan pages, user and connection listings, catalog records, backups, and restores. The shell help lists all statements and their CLI forms. Part of chunkdb/chunkdb#151.
 
 ### Documentation
 - Follow the server's rights and statements: BACKUP TO takes `BACKUP` or `MANAGES USERS` and RESTORE TABLE restores one table online, `migrations` lists the records within your rights, transactions list every statement they allow, and the shell rolls back a conflict itself. Part of chunkdb/chunkdb#151.
@@ -54,6 +55,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Ctrl-C sends UNWATCH while watch output or a schema lookup is blocked; changes printed after cancellation begins are not acknowledged
 - final ACK and UNWATCH write failures are reported instead of the resulting stream read error
 - `--ack-every` without `--slot` reports the missing requirement
+- Accept redacted migration users, decode SCAN CHUNKS WITH DATA when projection, cursor, or limit clauses follow WITH DATA, and print binary schema defaults by column type in JSON. Part of chunkdb/chunkdb#151.
 
 ### Added
 - Retry transaction files on known retryable errors and resume watches after connection loss, with bounded backoff and flags to disable retries or reconnection (#25).

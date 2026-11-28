@@ -597,7 +597,9 @@ func validateWatchValue(v chunkclient.Value, column chunkclient.Column) error {
 		valid = v.Kind == chunkclient.KindBool
 	case typ.Kind == chunkclient.ColumnFloat32 || typ.Kind == chunkclient.ColumnFloat64:
 		n, err := v.Float64()
-		valid = err == nil && (typ.Kind == chunkclient.ColumnFloat64 || math.IsNaN(n) || math.IsInf(n, 0) || math.Abs(n) <= math.MaxFloat32)
+		// The server prints f32 with its shortest round-tripping decimal.
+		// That decimal can lie above MaxFloat32 when parsed as f64.
+		valid = err == nil && (typ.Kind == chunkclient.ColumnFloat64 || math.IsInf(n, 0) || !math.IsInf(float64(float32(n)), 0))
 	case typ.Kind == chunkclient.ColumnBits:
 		valid = v.Kind == chunkclient.KindBulk && len(v.Bulk) == (typ.Size+7)/8
 		if valid && typ.Size%8 != 0 {
@@ -709,10 +711,15 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 		if len(columns) == 0 {
 			return errors.New("WATCH: empty schema")
 		}
+		if err := validateColumnDefaults("WATCH", columns); err != nil {
+			return err
+		}
 		key := watchSchemaKey{position.Epoch, version}
 		schemas[key] = columns
 		metadata[key] = schemaMetadata
-		fields = append(fields, jsonField{"version", version}, jsonField{"columns", jsonValue(items[4], nil)})
+		if json {
+			fields = append(fields, jsonField{"version", version}, jsonField{"columns", schemaColumnsJSON(items[4], columns)})
+		}
 		fields = append(fields, jsonField{"dims", schemaMetadata.dims})
 		fields = append(fields, jsonField{"chunk_columns", columnsJSON(schemaMetadata.chunkColumns)})
 		fmt.Fprintf(&out, "schema %s:%d version %d\n", epoch, revision, version)
@@ -861,6 +868,10 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			fmt.Fprintf(&out, " user %s", user)
 		}
 		out.WriteByte('\n')
+		var events []any
+		if json {
+			events = make([]any, 0, len(items[5].Items))
+		}
 		for _, event := range items[5].Items {
 			if event.Kind != chunkclient.KindMap {
 				return errors.New("WATCH: invalid catalog entry")
@@ -884,9 +895,33 @@ func printWatchEvent(w io.Writer, push chunkclient.Value, json bool, schemas map
 			if !found || data.Kind != chunkclient.KindMap && data.Kind != chunkclient.KindNull {
 				return errors.New("WATCH: invalid catalog data")
 			}
+			kind, _ := event.Lookup("kind")
+			action, _ := event.Lookup("action")
+			name, _ := event.Lookup("name")
+			table, _ := event.Lookup("table")
+			schema, err := chunkclient.ParseCatalogRecord(string(kind.Bulk), string(action.Bulk), string(name.Bulk), table, data)
+			if err != nil {
+				return err
+			}
+			if schema != nil {
+				if err := validateSchemaOutput("WATCH CATALOG", data, schema); err != nil {
+					return err
+				}
+			}
+			if json {
+				record := jsonValue(event, nil).(orderedMap)
+				if schema != nil {
+					for i := range record {
+						if record[i].key == "data" {
+							record[i].value = schemaJSON(data, schema)
+						}
+					}
+				}
+				events = append(events, record)
+			}
 			fmt.Fprintf(&out, "  %s\n", strings.Join(words, " "))
 		}
-		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"events", jsonValue(items[5], nil)}, jsonField{"txn", txn})
+		fields = append(fields, jsonField{"commit_time_ms", timestamp}, jsonField{"user", user}, jsonField{"events", events}, jsonField{"txn", txn})
 	default:
 		return fmt.Errorf("WATCH: unknown event %q", kind)
 	}

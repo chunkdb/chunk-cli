@@ -201,6 +201,11 @@ func (c *Client) Describe(table string) (*Schema, error) {
 
 // ParseDescribe parses a DESCRIBE reply.
 func ParseDescribe(reply Value) (*Schema, error) {
+	return parseTableSchema(reply, true)
+}
+
+// Catalog table records share the DESCRIBE shape without its data revision.
+func parseTableSchema(reply Value, requireRevision bool) (*Schema, error) {
 	if reply.Kind != KindMap {
 		return nil, fmt.Errorf("DESCRIBE: expected a map, got %s", reply.Kind)
 	}
@@ -238,10 +243,10 @@ func ParseDescribe(reply Value) (*Schema, error) {
 		}
 		schema.Epoch = string(epoch.Bulk)
 		revision, found := reply.Lookup("revision")
-		if !found {
+		if !found && requireRevision {
 			return nil, errors.New("DESCRIBE: no revision")
 		}
-		if revision.Kind != KindNull {
+		if found && revision.Kind != KindNull {
 			n, err := revision.Uint64()
 			if err != nil {
 				return nil, errors.New("DESCRIBE: invalid revision")
