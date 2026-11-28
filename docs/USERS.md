@@ -23,6 +23,7 @@ OK
 
 The CLI computes a password verifier from `--new-password-file` or a repeated terminal prompt.
 The same options work with `ALTER USER bot PASSWORD`.
+`CREATE USER IF NOT EXISTS bot PASSWORD` keeps an existing user unchanged.
 A user may change their own password.
 
 2. Read as the new user.
@@ -52,6 +53,12 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP USER bot"
 OK
 OK
 ```
+
+## Rotate a password
+
+Logged in as the user, `ALTER USER bot ADD PASSWORD` adds a second password; the CLI computes its verifier with the salt and iteration count of the current one, which the login received.
+Both passwords log in until `ALTER USER bot DROP OLD VERIFIER`, so clients can move to the new one first.
+Another user, such as an administrator, cannot run ADD PASSWORD for bot: run `ALTER USER bot ADD VERIFIER $1` with a verifier computed from bot's salt instead, or `ALTER USER bot PASSWORD`.
 
 ## If it fails
 

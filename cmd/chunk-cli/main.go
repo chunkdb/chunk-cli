@@ -318,8 +318,9 @@ func parseGlobalFlags(args []string, stderr io.Writer) (globalOptions, []string,
 
 const shellHelp = `Type one CQL statement per line; exit or quit leaves the shell.
 A line may start with --json, --blocks, --in <file>, --out <file> or
---new-password-file <file>. CREATE USER <name> PASSWORD and ALTER USER <name>
-PASSWORD ask for the password and send its verifier.
+--new-password-file <file>. CREATE USER <name> PASSWORD, ALTER USER <name>
+PASSWORD and ALTER USER <name> ADD PASSWORD ask for the password and send
+its verifier.
 BEGIN starts a transaction (the prompt turns chunk*>): its reads see one
 snapshot, its writes apply together at COMMIT, ROLLBACK discards them.
 Streams use chunk-cli watch <table> or watch --catalog, outside the shell.
