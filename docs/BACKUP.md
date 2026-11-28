@@ -1,6 +1,6 @@
 # Back up server data
 
-Request a backup as a user with `MANAGES USERS`.
+Request a backup as a user with `BACKUP` or `MANAGES USERS`.
 The server must have a backup directory configured, and the destination name must be unused or empty.
 Use the connection variables from the [README](../README.md) and an unused `world` table name.
 
@@ -26,15 +26,14 @@ The reply reports table cuts, file counts and copied bytes.
 A cut identifies the last included revision, which orders committed changes within a table.
 The backup includes table schemas, users and named migration history.
 
-2. Follow [Backup](https://github.com/chunkdb/chunkdb/blob/main/docs/BACKUP.md) to restore the copy with `chunkdb_restore`.
-Restore runs offline on the server through a separate tool.
+2. Restore one table of the copy while the server keeps serving with `RESTORE TABLE`, or the whole copy offline with `chunkdb_restore`; see [Backup](https://github.com/chunkdb/chunkdb/blob/main/docs/BACKUP.md).
 Restored tables receive fresh identities, so existing feed consumers need new positions.
 
 ## If it fails
 
 - **Destination refused:** use a relative name under the server's backup directory, outside its live data directory.
 - **Invalid path:** use `/` separators; roots, backslashes, `..` and symlinks below the backup directory are refused.
-- **Permission denied:** use a login with `MANAGES USERS`.
+- **Permission denied:** use a login with `BACKUP` or `MANAGES USERS`.
 
 The path is resolved on the server, independently of your CLI working directory.
 See [Backup](https://github.com/chunkdb/chunkdb/blob/main/docs/BACKUP.md) for setup, completion and restore rules.

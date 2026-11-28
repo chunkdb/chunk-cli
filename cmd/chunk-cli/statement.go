@@ -374,7 +374,7 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts statementOptions, stdout io.Writer, term console) (err error) {
 	tokens := strings.Fields(statement)
 	if len(tokens) > 0 && strings.EqualFold(tokens[0], "WATCH") {
-		return errors.New("WATCH streams use chunk-cli watch <table>, outside the shell")
+		return errors.New("WATCH streams use chunk-cli watch <table> or chunk-cli watch --catalog, outside the shell")
 	}
 	inTxn := txn != nil && txn.open
 	if txn != nil {
@@ -475,6 +475,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 			}
 			if strings.EqualFold(words[1], "STATUS") {
 				err = chunkclient.ValidateStatus(reply)
+			}
+			if len(words) >= 3 && strings.EqualFold(words[1], "TABLE") && strings.EqualFold(words[2], "STATS") {
+				err = chunkclient.ValidateTableStats(reply)
 			}
 			if err != nil {
 				return err

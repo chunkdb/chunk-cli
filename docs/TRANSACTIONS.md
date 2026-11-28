@@ -45,17 +45,17 @@ A commit without writes prints `(nothing written)`.
 
 | Error | When | What to do |
 | --- | --- | --- |
-| `CONFLICT` | Another write changes a chunk you read | Send `ROLLBACK`, then retry from `BEGIN` |
+| `CONFLICT` | Another write changes a chunk you read or wrote | Run the transaction again from `BEGIN` |
 | One-shot transaction refused | You send `BEGIN`, `COMMIT` or `ROLLBACK` outside the shell | Use `shell` |
 | Statement refused | You use an unsupported statement inside a transaction | Roll back before running it |
 
-After `CONFLICT`, the transaction writes nothing and keeps returning the conflict until `ROLLBACK`.
+After `CONFLICT` the transaction has written nothing, and the shell sends `ROLLBACK` for it.
 Interactive shell transactions are retried manually.
 Transaction files use the bounded retries described below.
 An ordinary statement error prints to stderr, and the shell continues.
 
 `ROLLBACK`, leaving the shell or losing the connection discards uncommitted writes.
-Transactions allow GET, SET, DELETE, DESCRIBE and PING.
+Transactions allow GET BLOCK, GET CHUNK, GET AREA, AGGREGATE, SET BLOCK, DELETE BLOCK, SET CHUNK, DESCRIBE, PING, SHOW CONNECTIONS, CANCEL and KILL CONNECTION; `BEGIN READ ONLY` refuses the writes and also allows SCAN CHUNKS without SINCE.
 Conditional `IF VERSION` writes and other statements are refused inside a transaction.
 See [Transactions](https://github.com/chunkdb/chunkdb/blob/main/docs/TRANSACTIONS.md) for snapshot and conflict rules.
 

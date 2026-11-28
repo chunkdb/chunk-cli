@@ -68,7 +68,7 @@ HELLO reports applied options in `options` and unapplied options, including unkn
 Currently, `client_name` and `statement_timeout_ms` are applied; `default_tag` reports `implementation_pending`.
 Unapplied options do not change statement behavior.
 `features` lists supported protocol capabilities; it does not list enabled storage features.
-For storage features and their raw masks, use `SHOW STATUS` with `ADMIN` on `*`.
+For storage features and their raw masks, use `SHOW STATUS` with `MONITOR` or `ADMIN` on `*`.
 
 ## If it fails
 

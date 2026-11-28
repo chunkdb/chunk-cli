@@ -73,7 +73,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	if strings.EqualFold(rest[0], "watch") {
 		watchArgs := rest[1:]
-		if len(watchArgs) == 0 || strings.HasPrefix(watchArgs[0], "-") {
+		if !wantsCatalog(watchArgs) && (len(watchArgs) == 0 || strings.HasPrefix(watchArgs[0], "-")) {
 			uri, err := chunkuri.Parse(opts.URI)
 			if err != nil {
 				return fail(err)
@@ -323,7 +323,7 @@ PASSWORD and ALTER USER <name> ADD PASSWORD ask for the password and send
 its verifier.
 BEGIN starts a transaction (the prompt turns chunk*>): its reads see one
 snapshot, its writes apply together at COMMIT, ROLLBACK discards them.
-Streams use chunk-cli watch <table>, outside the shell.
+Streams use chunk-cli watch <table> or watch --catalog, outside the shell.
 `
 
 func printUsage(w io.Writer) {
@@ -334,6 +334,7 @@ Usage:
   chunk-cli [options] shell
   chunk-cli [options] transaction <file>
   chunk-cli [options] watch [<table>] [watch options]
+  chunk-cli [options] watch --catalog [--json] [--no-reconnect]
   chunk-cli [options] migrate <file>
   chunk-cli [options] migrations
   chunk-cli version | help
@@ -362,6 +363,7 @@ Options:
                             ALTER USER <name> PASSWORD (asked for on a terminal)
 
 Watch options:
+  --catalog                 stream table, user and slot changes (WATCH CATALOG)
   --slot <name>             durable consumer slot
   --ack-every <n>           acknowledge every n printed eligible events (default 1)
   --area <cx0,cy0,cx1,cy1>   inclusive chunk rectangle; three-axis tables take
