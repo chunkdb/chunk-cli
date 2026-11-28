@@ -397,10 +397,7 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		if err != nil {
 			return err
 		}
-		verifier, err := chunkclient.Verifier(password, chunkclient.MinIterations)
-		if add {
-			verifier, err = chunkclient.VerifierWithSalt(password, info.LoginSalt, info.LoginIterations)
-		}
+		verifier, err := passwordVerifier(password, add, info)
 		if err != nil {
 			return err
 		}

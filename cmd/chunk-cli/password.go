@@ -149,6 +149,14 @@ func passwordStatement(statement string) (rewritten, user string, add, ok bool) 
 	return strings.Join(words, " "), words[name], false, true
 }
 
+// passwordVerifier reuses the login's SCRAM parameters for ADD PASSWORD.
+func passwordVerifier(password string, add bool, info *chunkclient.ServerInfo) (string, error) {
+	if add {
+		return chunkclient.VerifierWithSalt(password, info.LoginSalt, info.LoginIterations)
+	}
+	return chunkclient.Verifier(password, chunkclient.MinIterations)
+}
+
 // newPassword returns the password of a PASSWORD statement: the first line of
 // --new-password-file, or asked for twice on the terminal.
 func newPassword(opts statementOptions, user string, term console) (string, error) {

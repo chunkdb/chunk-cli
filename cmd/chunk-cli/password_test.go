@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,5 +133,37 @@ func TestAddPasswordStatement(t *testing.T) {
 	rewritten, user, add, ok := passwordStatement("alter user bot add password")
 	if !ok || !add || user != "bot" || rewritten != "alter user bot add VERIFIER $1" {
 		t.Fatalf("%q %q %v %v", rewritten, user, add, ok)
+	}
+}
+
+func TestPasswordVerifier(t *testing.T) {
+	info := &chunkclient.ServerInfo{
+		LoginSalt:       []byte("fixed login salt"),
+		LoginIterations: chunkclient.MinIterations + 1,
+	}
+	for _, tc := range []struct {
+		name   string
+		add    bool
+		prefix string
+	}{
+		{
+			name:   "ADD PASSWORD",
+			add:    true,
+			prefix: fmt.Sprintf("SCRAM-SHA-256$%d:%s$", info.LoginIterations, base64.StdEncoding.EncodeToString(info.LoginSalt)),
+		},
+		{
+			name:   "PASSWORD",
+			prefix: fmt.Sprintf("SCRAM-SHA-256$%d:", chunkclient.MinIterations),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier, err := passwordVerifier("new password", tc.add, info)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(verifier, tc.prefix) {
+				t.Errorf("verifier %q does not start with %q", verifier, tc.prefix)
+			}
+		})
 	}
 }
