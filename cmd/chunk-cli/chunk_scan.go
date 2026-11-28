@@ -33,7 +33,7 @@ func scanPoint(values []chunkclient.Value) ([3]int64, error) {
 func badScan(why string) error { return fmt.Errorf("SCAN CHUNKS: %s", why) }
 
 // Metadata-only scans infer the axes from their first row or cursor if the
-// statement did not supply AFTER. They do not need an extra DESCRIBE.
+// statement did not supply AREA or AFTER. They do not need an extra DESCRIBE.
 func validateScanPage(info statementInfo, reply chunkclient.Value, schema *chunkclient.Schema) (scanPage, error) {
 	var page scanPage
 	chunks, haveChunks := reply.Lookup("chunks")
@@ -50,6 +50,12 @@ func validateScanPage(info statementInfo, reply chunkclient.Value, schema *chunk
 	}
 	if schema != nil && schema.Dims != 0 {
 		page.dims = schema.Dims
+	}
+	if area := info.scanArea; area != nil {
+		if page.dims != 0 && page.dims != area.dims {
+			return page, badScan("area dimensions do not match the scan")
+		}
+		page.dims = area.dims
 	}
 	var err error
 	page.floor, err = floor.Uint64()
@@ -84,6 +90,9 @@ func validateScanPage(info statementInfo, reply chunkclient.Value, schema *chunk
 		if err != nil {
 			return page, badScan("invalid chunk coordinate")
 		}
+		if info.scanArea != nil && !info.scanArea.contains(point) {
+			return page, badScan("chunk outside the scanned area")
+		}
 		if havePrevious && !areaCoordLess(previous, point, dims) {
 			return page, badScan("chunk coordinates do not advance in order")
 		}
@@ -117,6 +126,9 @@ func validateScanPage(info statementInfo, reply chunkclient.Value, schema *chunk
 			if err != nil || havePrevious && areaCoordLess(point, previous, dims) ||
 				info.scanAfter != nil && !areaCoordLess(*info.scanAfter, point, dims) {
 				return page, badScan("invalid or non-advancing after coordinate")
+			}
+			if info.scanArea != nil && !info.scanArea.contains(point) {
+				return page, badScan("after coordinate outside the scanned area")
 			}
 			page.after, page.dims = &point, dims
 		}

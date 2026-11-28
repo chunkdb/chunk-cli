@@ -60,6 +60,8 @@ type statementInfo struct {
 	// scanWhere reports a SCAN CHUNKS WHERE, whose reply carries after.
 	scanWhere bool
 	areaPage  *areaPageRequest
+	// scanArea is the AREA or AREA AROUND selector of a SCAN CHUNKS.
+	scanArea *areaPageRequest
 }
 
 // tokenize splits a statement into words, skipping quoted values and the

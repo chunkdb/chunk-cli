@@ -24,7 +24,20 @@ func classifyScan(statement string) statementInfo {
 		return statementInfo{}
 	}
 	info := statementInfo{kind: statementScanIndex, table: tokens[3]}
-	for i := 4; i < len(tokens); {
+	i := 4
+	if tokenIs(tokens, i, "AREA") {
+		// AREA is a selector directly after the table, before any options.
+		end := i + 1
+		for end < len(tokens) && !scanOptionAt(tokens, end) {
+			end++
+		}
+		info.scanArea = parseAreaSelector(tokens[i+1 : end])
+		if info.scanArea == nil {
+			return statementInfo{}
+		}
+		i = end
+	}
+	for i < len(tokens) {
 		switch {
 		case tokenIs(tokens, i, "AFTER"):
 			i++
@@ -100,12 +113,8 @@ func classifyScan(statement string) statementInfo {
 func scanConditionEnd(tokens []string, start int) int {
 	depth := 0
 	for i := start; i < len(tokens); i++ {
-		if depth == 0 && i > start && canEndScanCondition(tokens[i-1]) {
-			if tokenIs(tokens, i, "WITH") && tokenIs(tokens, i+1, "DATA") ||
-				tokenIs(tokens, i, "AFTER") || tokenIs(tokens, i, "SINCE") ||
-				tokenIs(tokens, i, "LIMIT") || tokenIs(tokens, i, "COLUMNS") {
-				return i
-			}
+		if depth == 0 && i > start && canEndScanCondition(tokens[i-1]) && scanOptionAt(tokens, i) {
+			return i
 		}
 		switch tokens[i] {
 		case "(":
@@ -115,6 +124,12 @@ func scanConditionEnd(tokens []string, start int) int {
 		}
 	}
 	return len(tokens)
+}
+
+func scanOptionAt(tokens []string, i int) bool {
+	return tokenIs(tokens, i, "WITH") && tokenIs(tokens, i+1, "DATA") ||
+		tokenIs(tokens, i, "AFTER") || tokenIs(tokens, i, "SINCE") ||
+		tokenIs(tokens, i, "LIMIT") || tokenIs(tokens, i, "COLUMNS") || tokenIs(tokens, i, "WHERE")
 }
 
 func canEndScanCondition(token string) bool {

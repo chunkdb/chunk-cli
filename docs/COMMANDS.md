@@ -92,6 +92,7 @@ Block-column projections retain all chunk columns and include `projected = true`
 
 `SCAN CHUNKS` lists rows of chunk coordinates and retained versions as `[cx,cy,version]` or `[cx,cy,cz,version]`.
 `WITH DATA` adds the decoded chunk. JSON entries contain `{cx,cy,cz?,version,deleted,chunk}`. A tombstone has `deleted: true` and `chunk: null`.
+`SCAN CHUNKS FROM table AREA cx0 cy0 [cz0] TO cx1 cy1 [cz1]` or `AREA AROUND cx cy [cz] RADIUS r` lists the chunks inside the area, in coordinate order. Put the selector immediately after the table name. The CLI refuses a page with a chunk outside the area.
 `SINCE` includes retained deletions and skips versions at or below the supplied revision.
 The page retains its table epoch, nullable completed frontier and retained deletion floor.
 If the supplied revision precedes that floor, start a fresh snapshot before resuming changes.
