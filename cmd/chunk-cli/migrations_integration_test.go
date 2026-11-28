@@ -109,3 +109,28 @@ func TestCLIRawMigrateStatements(t *testing.T) {
 		s.ok(t, "DESCRIBE "+name)
 	}
 }
+
+func TestCLIMigrationsRedactsUser(t *testing.T) {
+	s := startServer(t, false)
+	const statement = "CREATE TABLE world (id u8) CHUNK 2 x 2"
+	s.ok(t, "MIGRATE 'create_world' "+statement)
+	password := migrationFile(t, "viewer-password\n")
+	s.ok(t, "--new-password-file", password, "CREATE USER viewer PASSWORD")
+	s.ok(t, "GRANT ADMIN ON world TO viewer")
+	for _, command := range []string{"migrations", "SHOW MIGRATIONS"} {
+		code, got, failure := s.cliAt(t, s.uriFor("viewer", "viewer-password"), "", "--json", command)
+		if code != 0 || failure != "" {
+			t.Fatalf("%s: %d %q %q", command, code, got, failure)
+		}
+		var records []struct {
+			Name      string
+			User      *string
+			Statement string
+		}
+		if err := json.Unmarshal([]byte(got), &records); err != nil || len(records) != 1 ||
+			records[0].Name != "create_world" || records[0].User != nil || records[0].Statement != statement ||
+			!strings.Contains(got, `"user":null`) {
+			t.Fatalf("%s: %q: %v", command, got, err)
+		}
+	}
+}

@@ -7,6 +7,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 ## Unreleased
 
 ### Changed
+- Validate statement replies in text and JSON, including aggregate results, scan pages, user and connection listings, catalog records, backups, and restores. The shell help lists all statements and their CLI forms. Part of chunkdb/chunkdb#151.
 - `watch --catalog` streams WATCH CATALOG with one line per table, user and slot change; `DESCRIBE` prints a table's `checks` and `fenced` reason; `SHOW STATUS`, `SHOW TABLE STATS` and `SHOW SLOTS` check the types of their 2.0 fields; COMMANDS.md lists the CLI form of every statement. Part of chunkdb/chunkdb#151.
 - Ctrl-C during a one-shot statement sends CANCEL for it from a second connection; `--tls-ca <file>` verifies `chunks://` servers with the PEM CA certificates in the file. Part of chunkdb/chunkdb#151.
 - `GET AREA ... SCALE` chunks print their scale and reduction and count samples; `SET BLOCK` and `DELETE BLOCK ... RETURNING` print typed rows; transaction files may open with `BEGIN READ ONLY`. Part of chunkdb/chunkdb#151.
@@ -37,6 +38,7 @@ The current CLI uses chunkdb 2.0 protocol 3; see the server’s [compatibility p
 - Typed chunk forms carry schema versions; users authenticate with passwords through SCRAM-SHA-256.
 
 ### Fixed
+- Accept redacted migration users, decode SCAN CHUNKS WITH DATA when projection, cursor, or limit clauses follow WITH DATA, and print binary schema defaults by column type in JSON. Part of chunkdb/chunkdb#151.
 - A connection lost or timed out after a statement was sent exits 5, the `unknown_outcome` status, and `--json` reports class `unknown_outcome`, since the statement may have applied; inside a transaction only `COMMIT` does, because the server rolls back the statements before it. A lost login still exits 1. Part of #45.
 - Transaction-file retries wait the error's `retry_after_ms`, at most 10 seconds, when it has one, and `reread` errors (`VERSION_MISMATCH`, `CONDITION_FAILED`, `SCHEMA_MISMATCH`) are not retried, since the same statements fail the same way. Part of #45.
 - A watch reconnect never sends `TAKEOVER`: only the first attach takes the slot over when `--takeover` is given, and `SLOT_BUSY` on a reconnect ends the watch with that error. Part of #45.

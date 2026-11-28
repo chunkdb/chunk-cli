@@ -46,6 +46,19 @@ func TestCLIServerStatementFields(t *testing.T) {
 	}
 }
 
+func TestCLISchemaBinaryDefaults(t *testing.T) {
+	s := startServer(t, false)
+	s.ok(t, "CREATE TABLE defaults (payload bytes(8) DEFAULT x'6162') CHUNK 2 x 2 CHUNK COLUMNS (flags bits(3) DEFAULT b'101')")
+	if out := s.ok(t, "DESCRIBE defaults"); !strings.Contains(out, "payload bytes(8) DEFAULT x'6162'\n") ||
+		!strings.Contains(out, "flags bits(3) DEFAULT b'101'\n") {
+		t.Fatalf("text defaults: %q", out)
+	}
+	if out := s.ok(t, "--json", "DESCRIBE defaults"); !strings.Contains(out, `"type":"bytes(8)","null":false,"required":false,"default":"6162"`) ||
+		!strings.Contains(out, `"type":"bits(3)","null":false,"required":false,"default":"101"`) {
+		t.Fatalf("JSON defaults: %q", out)
+	}
+}
+
 // TestCLIWatchCatalog streams WATCH CATALOG: the whole catalog first, then
 // each change with the user that made it.
 func TestCLIWatchCatalog(t *testing.T) {

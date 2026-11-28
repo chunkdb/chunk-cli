@@ -44,11 +44,15 @@ func cancelOnInterrupt(client *chunkclient.Client, reconnect func() (*chunkclien
 		}
 		defer func() { _ = canceller.Close() }()
 		reply, err := canceller.Do("CANCEL " + strconv.FormatUint(id, 10))
+		var cancelled bool
+		if err == nil {
+			cancelled, err = chunkclient.ParseConnectionControl("CANCEL", "cancelled", reply)
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "cancel: %v\n", err)
 			return
 		}
-		if cancelled, ok := reply.Lookup("cancelled"); ok && cancelled.Kind == chunkclient.KindBool && !cancelled.Bool {
+		if !cancelled {
 			fmt.Fprintln(stderr, "cancel: the statement could no longer be cancelled")
 		}
 	}()

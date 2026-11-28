@@ -166,10 +166,11 @@ func TestMigrationsFakeServer(t *testing.T) {
 	for _, tc := range []struct{ reply, want, failure string }{
 		{"*0\r\n", "(empty)\n", ""},
 		{"*1\r\n" + record, "name = a, applied_ms = 123, user = , statement = DROP TABLE w", ""},
+		{"*1\r\n" + watchWireMap("name", watchWireBulk("a"), "applied_ms", ":123\r\n", "user", "_\r\n", "statement", watchWireBulk("DROP TABLE w")), "name = a, applied_ms = 123, user = NULL, statement = DROP TABLE w", ""},
 		{"+OK\r\n", "", "expected an array"},
 		{"*1\r\n+OK\r\n", "", "expected a record map"},
-		{"*1\r\n%0\r\n", "", "expected bulk string name"},
-		{"*1\r\n" + watchWireMap("name", watchWireBulk("a"), "user", watchWireBulk(""), "statement", watchWireBulk("DROP TABLE w"), "applied_ms", watchWireBulk("123")), "", "expected integer applied_ms"},
+		{"*1\r\n%0\r\n", "", "invalid or missing name"},
+		{"*1\r\n" + watchWireMap("name", watchWireBulk("a"), "user", watchWireBulk(""), "statement", watchWireBulk("DROP TABLE w"), "applied_ms", watchWireBulk("123")), "", "invalid or missing applied_ms"},
 	} {
 		uri, done := fakeMigrationServer(t, []string{"SHOW MIGRATIONS"}, []string{tc.reply})
 		var out, failure bytes.Buffer

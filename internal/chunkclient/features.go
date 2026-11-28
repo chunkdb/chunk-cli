@@ -150,7 +150,7 @@ func ValidateSlots(reply Value) error {
 		}
 		for _, key := range []string{"table", "name", "epoch"} {
 			value, found := slot.Lookup(key)
-			if !found || value.Kind != KindBulk {
+			if !found || value.Kind != KindBulk || key == "epoch" && !ValidEpoch(string(value.Bulk)) {
 				return fmt.Errorf("SHOW SLOTS: invalid %s", key)
 			}
 		}
@@ -164,6 +164,14 @@ func ValidateSlots(reply Value) error {
 		}
 		if attached, found := slot.Lookup("attached"); found && attached.Kind != KindBool {
 			return errors.New("SHOW SLOTS: invalid attached")
+		}
+		if peer, found := slot.Lookup("peer"); found && peer.Kind != KindNull && peer.Kind != KindBulk {
+			return errors.New("SHOW SLOTS: invalid peer")
+		}
+		if lastACK, found := slot.Lookup("last_ack_ms"); found && lastACK.Kind != KindNull {
+			if _, err := lastACK.Uint64(); err != nil {
+				return errors.New("SHOW SLOTS: invalid last_ack_ms")
+			}
 		}
 		lost, found := slot.Lookup("lost")
 		if !found || lost.Kind != KindBool {
@@ -179,51 +187,58 @@ func ValidateSlots(reply Value) error {
 		if !found {
 			continue
 		}
-		if filters.Kind != KindMap {
-			return errors.New("SHOW SLOTS: invalid filters")
+		if err := validateSlotFilters("SHOW SLOTS", filters); err != nil {
+			return err
 		}
-		for _, key := range []string{"no_before", "chunks"} {
-			value, found := filters.Lookup(key)
-			if !found || value.Kind != KindBool {
-				return fmt.Errorf("SHOW SLOTS: invalid %s", key)
+	}
+	return nil
+}
+
+func validateSlotFilters(statement string, filters Value) error {
+	if filters.Kind != KindMap {
+		return fmt.Errorf("%s: invalid filters", statement)
+	}
+	for _, key := range []string{"no_before", "chunks"} {
+		value, found := filters.Lookup(key)
+		if !found || value.Kind != KindBool {
+			return fmt.Errorf("%s: invalid %s", statement, key)
+		}
+	}
+	area, found := filters.Lookup("area")
+	if !found {
+		return fmt.Errorf("%s: missing area", statement)
+	}
+	if area.Kind != KindNull {
+		if area.Kind != KindArray || len(area.Items) != 4 && len(area.Items) != 6 {
+			return fmt.Errorf("%s: invalid area", statement)
+		}
+		dims := len(area.Items) / 2
+		for axis := 0; axis < dims; axis++ {
+			lo, e1 := area.Items[axis].Int64()
+			hi, e2 := area.Items[axis+dims].Int64()
+			if e1 != nil || e2 != nil || lo > hi {
+				return fmt.Errorf("%s: invalid area bounds", statement)
 			}
 		}
-		area, found := filters.Lookup("area")
-		if !found {
-			return errors.New("SHOW SLOTS: missing area")
+	}
+	columns, cFound := filters.Lookup("columns")
+	ids, iFound := filters.Lookup("column_ids")
+	if !cFound || !iFound {
+		return fmt.Errorf("%s: missing columns/column_ids", statement)
+	}
+	if columns.Kind == KindNull && ids.Kind == KindNull {
+		return nil
+	}
+	if columns.Kind != KindArray || ids.Kind != KindArray || len(columns.Items) != len(ids.Items) {
+		return fmt.Errorf("%s: unaligned columns", statement)
+	}
+	for i, name := range columns.Items {
+		if name.Kind != KindBulk && name.Kind != KindNull {
+			return fmt.Errorf("%s: invalid column name", statement)
 		}
-		if area.Kind != KindNull {
-			if area.Kind != KindArray || len(area.Items) != 4 && len(area.Items) != 6 {
-				return errors.New("SHOW SLOTS: invalid area")
-			}
-			dims := len(area.Items) / 2
-			for axis := 0; axis < dims; axis++ {
-				lo, e1 := area.Items[axis].Int64()
-				hi, e2 := area.Items[axis+dims].Int64()
-				if e1 != nil || e2 != nil || lo > hi {
-					return errors.New("SHOW SLOTS: invalid area bounds")
-				}
-			}
-		}
-		columns, cFound := filters.Lookup("columns")
-		ids, iFound := filters.Lookup("column_ids")
-		if !cFound || !iFound {
-			return errors.New("SHOW SLOTS: missing columns/column_ids")
-		}
-		if columns.Kind == KindNull && ids.Kind == KindNull {
-			continue
-		}
-		if columns.Kind != KindArray || ids.Kind != KindArray || len(columns.Items) != len(ids.Items) {
-			return errors.New("SHOW SLOTS: unaligned columns")
-		}
-		for i, name := range columns.Items {
-			if name.Kind != KindBulk && name.Kind != KindNull {
-				return errors.New("SHOW SLOTS: invalid column name")
-			}
-			id, err := ids.Items[i].Uint64()
-			if err != nil || id > math.MaxUint32 {
-				return errors.New("SHOW SLOTS: invalid column id")
-			}
+		id, err := ids.Items[i].Uint64()
+		if err != nil || id > math.MaxUint32 {
+			return fmt.Errorf("%s: invalid column id", statement)
 		}
 	}
 	return nil

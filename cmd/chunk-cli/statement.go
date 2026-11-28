@@ -40,6 +40,7 @@ const (
 	statementGetChunk
 	statementGetArea
 	statementDescribe
+	statementScanIndex
 	statementScanChunks
 	// statementReturning is SET BLOCK or DELETE BLOCK with RETURNING.
 	statementReturning
@@ -55,6 +56,7 @@ type statementInfo struct {
 	cx, cy, cz int64
 	dims       int
 	scanSince  *uint64
+	scanAfter  *[3]int64
 	// scanWhere reports a SCAN CHUNKS WHERE, whose reply carries after.
 	scanWhere bool
 	areaPage  *areaPageRequest
@@ -121,70 +123,38 @@ func classify(statement string) statementInfo {
 		return ""
 	}
 	if (keyword(0) == "SET" || keyword(0) == "DELETE") && keyword(1) == "BLOCK" {
-		return classifyReturning(tokens)
-	}
-	if keyword(0) == "DESCRIBE" && len(tokens) == 2 {
-		return statementInfo{kind: statementDescribe, table: tokens[1]}
-	}
-	if keyword(0) == "SCAN" && keyword(1) == "CHUNKS" && keyword(2) == "FROM" && len(tokens) >= 6 {
-		info := statementInfo{kind: statementScanChunks, table: tokens[3]}
-		for i := 4; i < len(tokens); {
-			switch keyword(i) {
-			case "AFTER":
-				i++
-				start := i
-				for i < len(tokens) {
-					if _, err := strconv.ParseInt(tokens[i], 10, 64); err != nil {
-						break
-					}
-					i++
+		for _, token := range tokens[2:] {
+			for at := 0; at+len("RETURNING") <= len(token); at++ {
+				if strings.EqualFold(token[at:at+len("RETURNING")], "RETURNING") {
+					return classifyReturning(replyTokens(statement))
 				}
-				if i-start != 2 && i-start != 3 {
-					return statementInfo{}
-				}
-			case "SINCE", "LIMIT":
-				if i+1 >= len(tokens) {
-					return statementInfo{}
-				}
-				value, err := strconv.ParseUint(strings.TrimPrefix(tokens[i+1], "-"), 10, 64)
-				if err != nil || strings.HasPrefix(tokens[i+1], "-") && value != 0 {
-					return statementInfo{}
-				}
-				if keyword(i) == "SINCE" {
-					info.scanSince = &value
-				}
-				i += 2
-			case "WHERE":
-				// The condition runs to WITH DATA; it cannot hold those words.
-				info.scanWhere = true
-				i++
-				for i < len(tokens) && !(keyword(i) == "WITH" && keyword(i+1) == "DATA") {
-					i++
-				}
-			case "WITH":
-				if keyword(i+1) != "DATA" {
-					return statementInfo{}
-				}
-				i += 2
-				if i != len(tokens) {
-					if keyword(i) != "COLUMNS" || i+1 >= len(tokens) {
-						return statementInfo{}
-					}
-					var ok bool
-					info.columns, ok = readColumnNames(tokens[i+1:])
-					if !ok {
-						return statementInfo{}
-					}
-				}
-				return info
-			default:
-				return statementInfo{}
 			}
 		}
 		return statementInfo{}
 	}
+	if keyword(0) == "DESCRIBE" && len(tokens) == 2 {
+		return statementInfo{kind: statementDescribe, table: tokens[1]}
+	}
+	if keyword(0) == "SCAN" && keyword(1) == "CHUNKS" {
+		return classifyScan(statement)
+	}
 	if keyword(0) != "GET" {
 		return statementInfo{}
+	}
+	info := classifyGet(tokens)
+	if info.kind == statementOther && (keyword(1) == "BLOCK" || keyword(1) == "CHUNK") {
+		// The server lexer also accepts adjacent coordinates and keywords.
+		return classifyGet(rawChunkTokens(statement, true))
+	}
+	return info
+}
+
+func classifyGet(tokens []string) statementInfo {
+	keyword := func(i int) string {
+		if i < len(tokens) {
+			return strings.ToUpper(tokens[i])
+		}
+		return ""
 	}
 	info := statementInfo{}
 	switch keyword(1) {
@@ -450,6 +420,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		if reply.Kind != chunkclient.KindBulk {
 			return fmt.Errorf("--out needs a reply of bytes (such as GET CHUNK), got a %s", reply.Kind)
 		}
+		if err := validateStatementReply(statement, tokens, info, reply, inTxn); err != nil {
+			return err
+		}
 		if err := os.WriteFile(opts.out, reply.Bulk, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", opts.out, err)
 		}
@@ -460,34 +433,26 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 		return err
 	}
 
-	if info.kind == statementOther || info.kind == statementDescribe {
+	if info.kind == statementOther || info.kind == statementDescribe || info.kind == statementScanIndex {
 		reply, err := limitedStatement(client, statement, readLimits, parameters)
 		if err != nil {
 			return err
 		}
-		words := strings.Fields(statement)
-		if len(words) >= 2 && strings.EqualFold(words[0], "SHOW") {
-			if strings.EqualFold(words[1], "SLOTS") {
-				err = chunkclient.ValidateSlots(reply)
-			}
-			if strings.EqualFold(words[1], "STATUS") {
-				err = chunkclient.ValidateStatus(reply)
-			}
-			if len(words) >= 3 && strings.EqualFold(words[1], "TABLE") && strings.EqualFold(words[2], "STATS") {
-				err = chunkclient.ValidateTableStats(reply)
-			}
-			if err != nil {
-				return err
-			}
+		if err := validateStatementReply(statement, tokens, info, reply, inTxn); err != nil {
+			return err
 		}
 		if info.kind == statementDescribe {
 			schema, err := chunkclient.ParseDescribe(reply)
 			if err != nil {
 				return err
 			}
-			if !opts.json {
-				return printSchema(stdout, schema)
+			if err := validateSchemaOutput("DESCRIBE", reply, schema); err != nil {
+				return err
 			}
+			if opts.json {
+				return writeJSON(stdout, schemaJSON(reply, schema))
+			}
+			return printSchema(stdout, schema)
 		}
 		// A write inside a transaction answers `_`: it applies at COMMIT.
 		if inTxn && reply.Kind == chunkclient.KindNull && !opts.json && isWrite(statement) {

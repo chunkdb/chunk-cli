@@ -38,10 +38,21 @@ func catalogEntry(kind, action, name string, table chunkclient.Value, data chunk
 
 func TestPrintCatalogEvent(t *testing.T) {
 	null := chunkclient.Value{Kind: chunkclient.KindNull}
-	data := foundationMapValue(watchBulk("table"), watchBulk("world"))
+	flag := chunkclient.Value{Kind: chunkclient.KindBool}
+	column := foundationMapValue(watchBulk("id"), watchInt("1"), watchBulk("name"), watchBulk("payload"), watchBulk("type"), watchBulk("bytes(8)"),
+		watchBulk("null"), flag, watchBulk("required"), flag, watchBulk("default"), watchBulk("ab"))
+	data := foundationMapValue(
+		watchBulk("table"), watchBulk("world"), watchBulk("version"), watchInt("1"),
+		watchBulk("columns"), watchArray(column),
+		watchBulk("chunk"), watchArray(watchInt("2"), watchInt("2")),
+		watchBulk("large"), watchArray(watchInt("8"), watchInt("8")), watchBulk("options"), foundationMapValue(),
+		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("dims"), watchInt("2"), watchBulk("chunk_columns"), watchArray(),
+	)
+	filters := foundationMapValue(watchBulk("area"), null, watchBulk("column_ids"), null, watchBulk("columns"), null,
+		watchBulk("no_before"), flag, watchBulk("chunks"), flag)
 	events := watchArray(
 		catalogEntry("table", "create", "world", null, data),
-		catalogEntry("slot", "create", "consumer", watchBulk("world"), foundationMapValue(watchBulk("owner"), null)),
+		catalogEntry("slot", "create", "consumer", watchBulk("world"), foundationMapValue(watchBulk("owner"), null, watchBulk("filters"), filters)),
 		catalogEntry("user", "drop", "bot", null, null),
 	)
 	var out bytes.Buffer
@@ -60,7 +71,7 @@ func TestPrintCatalogEvent(t *testing.T) {
 	if err := printCatalogEvent(&out, watchPush("catalog", watchInt("125"), null, events, null), true); err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []string{`{"type":"catalog","position":{"epoch":"` + watchEpoch + `","revision":9},"commit_time_ms":125,"user":null,"events":[`, `{"kind":"table","action":"create","name":"world","table":null,"data":{"table":"world"}}`, `"data":null}],"txn":null}`} {
+	for _, part := range []string{`{"type":"catalog","position":{"epoch":"` + watchEpoch + `","revision":9},"commit_time_ms":125,"user":null,"events":[`, `{"kind":"table","action":"create","name":"world","table":null,"data":{"table":"world","version":1,`, `"default":"6162"`, `"data":null}],"txn":null}`} {
 		if !strings.Contains(out.String(), part) {
 			t.Fatalf("JSON %q lacks %q", out.String(), part)
 		}
@@ -89,6 +100,17 @@ func TestPrintCatalogEvent(t *testing.T) {
 	broken := watchPush("catalog", watchInt("125"), null, watchArray(catalogEntry("table", "create", "world", watchInt("1"), data)), null)
 	if err := printCatalogEvent(&out, broken, false); err == nil || out.Len() != 0 {
 		t.Fatalf("invalid table accepted: %q %v", out.String(), err)
+	}
+	for _, event := range []chunkclient.Value{
+		catalogEntry("table", "create", "other", null, data),
+		catalogEntry("table", "drop", "world", null, data),
+		catalogEntry("slot", "alter", "consumer", watchBulk("world"), foundationMapValue(watchBulk("owner"), null)),
+		catalogEntry("user", "alter", "bot", null, foundationMapValue(watchBulk("name"), watchBulk("bot"))),
+	} {
+		broken := watchPush("catalog", watchInt("125"), null, watchArray(event), null)
+		if err := printCatalogEvent(&out, broken, true); err == nil || out.Len() != 0 {
+			t.Fatalf("invalid catalog record accepted: %q %v", out.String(), err)
+		}
 	}
 }
 

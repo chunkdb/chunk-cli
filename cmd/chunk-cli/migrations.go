@@ -152,8 +152,8 @@ func runMigrations(client *chunkclient.Client, steps []migrationStep, stdout io.
 		if err != nil {
 			return fmt.Errorf("migration %q: %w", step.name, err)
 		}
-		if reply.Kind != chunkclient.KindSimple || (reply.Text != "applied" && reply.Text != "skipped") {
-			return fmt.Errorf("migration %q: expected applied or skipped simple string", step.name)
+		if err := chunkclient.ValidateMigration(reply); err != nil {
+			return fmt.Errorf("migration %q: %w", step.name, err)
 		}
 		if json {
 			err = writeJSON(stdout, orderedMap{{"name", step.name}, {"status", reply.Text}})
@@ -172,23 +172,8 @@ func listMigrations(client *chunkclient.Client, stdout io.Writer, opts statement
 	if err != nil {
 		return err
 	}
-	if reply.Kind != chunkclient.KindArray {
-		return errors.New("SHOW MIGRATIONS: expected an array of records")
-	}
-	for _, record := range reply.Items {
-		if record.Kind != chunkclient.KindMap {
-			return errors.New("SHOW MIGRATIONS: expected a record map")
-		}
-		for _, key := range []string{"name", "user", "statement"} {
-			value, ok := record.Lookup(key)
-			if !ok || value.Kind != chunkclient.KindBulk {
-				return fmt.Errorf("SHOW MIGRATIONS: expected bulk string %s", key)
-			}
-		}
-		applied, ok := record.Lookup("applied_ms")
-		if _, err := applied.Int64(); !ok || err != nil {
-			return errors.New("SHOW MIGRATIONS: expected integer applied_ms")
-		}
+	if err := chunkclient.ValidateMigrations(reply); err != nil {
+		return err
 	}
 	return printReply(stdout, reply, opts)
 }

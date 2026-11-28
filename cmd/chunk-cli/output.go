@@ -239,6 +239,70 @@ func printSchema(w io.Writer, schema *chunkclient.Schema) error {
 	return err
 }
 
+func validateColumnDefaults(statement string, columns []chunkclient.Column) error {
+	for _, column := range columns {
+		if column.Default.Kind == chunkclient.KindNull {
+			continue
+		}
+		if err := validateWatchValue(column.Default, column); err != nil {
+			return fmt.Errorf("%s: invalid default for column %s (%s)", statement, column.Name, column.Type)
+		}
+	}
+	return nil
+}
+
+func validateSchemaOutput(statement string, reply chunkclient.Value, schema *chunkclient.Schema) error {
+	var blockColumns, chunkColumns bool
+	for _, entry := range reply.Map {
+		switch formatValue(entry.Key, nil) {
+		case "columns":
+			if blockColumns {
+				return fmt.Errorf("%s: duplicate columns", statement)
+			}
+			blockColumns = true
+		case "chunk_columns":
+			if chunkColumns {
+				return fmt.Errorf("%s: duplicate chunk_columns", statement)
+			}
+			chunkColumns = true
+		}
+	}
+	if err := validateColumnDefaults(statement, schema.Columns); err != nil {
+		return err
+	}
+	return validateColumnDefaults(statement, schema.ChunkColumns)
+}
+
+func schemaJSON(reply chunkclient.Value, schema *chunkclient.Schema) orderedMap {
+	fields := make(orderedMap, 0, len(reply.Map))
+	for _, entry := range reply.Map {
+		key := formatValue(entry.Key, nil)
+		switch key {
+		case "columns":
+			fields = append(fields, jsonField{key, schemaColumnsJSON(entry.Value, schema.Columns)})
+		case "chunk_columns":
+			fields = append(fields, jsonField{key, schemaColumnsJSON(entry.Value, schema.ChunkColumns)})
+		default:
+			fields = append(fields, jsonField{key, jsonValue(entry.Value, nil)})
+		}
+	}
+	return fields
+}
+
+func schemaColumnsJSON(reply chunkclient.Value, columns []chunkclient.Column) []any {
+	rows := make([]any, len(columns))
+	for i, column := range columns {
+		record := jsonValue(reply.Items[i], nil).(orderedMap)
+		for j := range record {
+			if record[j].key == "default" {
+				record[j].value = jsonValue(column.Default, &column.Type)
+			}
+		}
+		rows[i] = record
+	}
+	return rows
+}
+
 // blockColumns are the columns of a GET BLOCK reply: the COLUMNS, else every
 // column in schema order.
 func blockColumns(schema *chunkclient.Schema, names []string) ([]chunkclient.Column, error) {
