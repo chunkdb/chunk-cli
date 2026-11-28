@@ -36,6 +36,9 @@ type scramLogin struct {
 	// the connection gives for that type.
 	gs2Header   string
 	bindingData []byte
+	// salt and iterations are the server-first message's, kept after finish.
+	salt       []byte
+	iterations int
 }
 
 // startLogin returns the login with its client-first message; the nonce is
@@ -83,6 +86,7 @@ func (l *scramLogin) finish(serverFirst string) (clientFinal, serverSignature st
 	if err != nil {
 		return "", "", err
 	}
+	l.salt, l.iterations = salt, iterations
 	if !strings.HasPrefix(nonce, l.nonce) || len(nonce) == len(l.nonce) {
 		return "", "", errors.New("the server's SCRAM nonce does not continue the client nonce")
 	}
@@ -165,4 +169,14 @@ func hmacSHA256(key, message []byte) []byte {
 	mac := hmac.New(sha256.New, key)
 	mac.Write(message)
 	return mac.Sum(nil)
+}
+
+// VerifierWithSalt computes the verifier of password with a given salt and
+// iteration count, which ALTER USER ... ADD VERIFIER needs: those of the
+// user's current verifier, as a login receives them (ServerInfo.LoginSalt).
+func VerifierWithSalt(password string, salt []byte, iterations int) (string, error) {
+	if len(salt) < 16 || len(salt) > 256 {
+		return "", fmt.Errorf("a verifier salt has 16 to 256 bytes, got %d", len(salt))
+	}
+	return verifierWithSalt(password, salt, iterations)
 }

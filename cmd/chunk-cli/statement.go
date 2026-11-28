@@ -389,7 +389,7 @@ func parseLineOptions(line string, defaults statementOptions) (statementOptions,
 func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts statementOptions, stdout io.Writer, term console) (err error) {
 	tokens := strings.Fields(statement)
 	if len(tokens) > 0 && strings.EqualFold(tokens[0], "WATCH") {
-		return errors.New("WATCH streams use chunk-cli watch <table>, outside the shell")
+		return errors.New("WATCH streams use chunk-cli watch <table> or chunk-cli watch --catalog, outside the shell")
 	}
 	inTxn := txn != nil && txn.open
 	if txn != nil {
@@ -400,15 +400,19 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 	}
 
 	var parameters [][]byte
-	if rewritten, user, ok := passwordStatement(statement); ok {
+	if rewritten, user, add, ok := passwordStatement(statement); ok {
 		if opts.hasIn() {
 			return errors.New("--in cannot be used with PASSWORD, whose verifier is the parameter $1")
+		}
+		info := client.Info()
+		if add && (info == nil || info.LoginUser != user || len(info.LoginSalt) == 0) {
+			return fmt.Errorf("ADD PASSWORD reuses the salt of %s's current verifier, which only a login as %s receives: connect as %s, or run ALTER USER %s ADD VERIFIER with a verifier computed elsewhere", user, user, user, user)
 		}
 		password, err := newPassword(opts, user, term)
 		if err != nil {
 			return err
 		}
-		verifier, err := chunkclient.Verifier(password, chunkclient.MinIterations)
+		verifier, err := passwordVerifier(password, add, info)
 		if err != nil {
 			return err
 		}
@@ -483,6 +487,9 @@ func execute(client *chunkclient.Client, txn *shellTxn, statement string, opts s
 			}
 			if strings.EqualFold(words[1], "STATUS") {
 				err = chunkclient.ValidateStatus(reply)
+			}
+			if len(words) >= 3 && strings.EqualFold(words[1], "TABLE") && strings.EqualFold(words[2], "STATS") {
+				err = chunkclient.ValidateTableStats(reply)
 			}
 			if err != nil {
 				return err

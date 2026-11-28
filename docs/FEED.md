@@ -1,6 +1,6 @@
 # Watch changes with a durable slot
 
-A watch streams committed block changes.
+A watch streams committed block changes; `watch --catalog` streams [catalog changes](#watch-the-catalog).
 A durable slot retains changes until your consumer acknowledges them.
 A revision orders commits within a table, and an epoch identifies that table's lifetime.
 Use the connection variables from the [README](../README.md) and unused `world` and `consumer` names.
@@ -65,6 +65,8 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   lag_revisions = 0
   retained_bytes = 0
   attached = false
+  peer = NULL
+  last_ack_ms = NULL
   lost = false
   lost_reason = NULL
   filters:
@@ -103,6 +105,10 @@ CREATE SLOT IF NOT EXISTS with another OWNER returns `INVALID_ARGUMENT reason=sl
 Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
 Changing filters requires a different slot.
 `SHOW SLOTS` includes typed filters, stable column IDs, nullable loss reasons and the owner.
+For an attached watch, `peer` is the client's `[address]:port` as shown by `SHOW CONNECTIONS`, and `last_ack_ms` is the time in milliseconds since the watch's last accepted ACK.
+Both fields are `NULL` when the slot is detached.
+`last_ack_ms` is also `NULL` before the watch's first accepted ACK.
+The server shows `peer` to the watch's user and to clients allowed to list all connections, and returns `NULL` to other viewers.
 The owner is shown to that user, to users who manage users and to everyone on a server started with `--auth none`, and is `NULL` otherwise.
 A renamed column displays its current name; a dropped column retains its ID with a null name and loses the filtered slot.
 
@@ -110,9 +116,35 @@ JSON events include nullable `tag` and `txn`; changes also include `chunk_change
 Schema events carry dimensions, block columns and chunk columns.
 Progress advances the completed frontier without a mutation.
 Progress is ACK-eligible, but never starts or extends the oldest unacknowledged mutation's deadline.
-Schema, resync, reserved catalog events and unknown events are not ACK-eligible.
+Schema, resync, catalog and unknown events are not ACK-eligible.
 Unknown push kinds are fully decoded and ignored without consuming an ordinary reply.
 Resync includes nullable `parent_epoch` and `fork_revision` for lineage checks.
+
+## Watch the catalog
+
+`watch --catalog` streams changes to tables, users and slots with WATCH CATALOG.
+It needs `MONITOR` or `ADMIN` on `*`; users and slot owners appear only with `MANAGES USERS`.
+
+```sh
+chunk-cli --uri "$CHUNKDB_URI" watch --catalog
+```
+
+```text
+start <epoch>:<revision>
+catalog revision <revision> time_ms <time-ms>
+  create table world
+  create user admin
+  create slot consumer on world
+catalog revision <revision> time_ms <time-ms> user admin
+  drop slot consumer on world
+```
+
+The first event holds the whole catalog: start your copy from it.
+Each later event prints one `action kind name` line per change, with `on <table>` for a slot, and names the user whose statement made it.
+`--json` prints each event with the `data` of each change: the DESCRIBE map of a table, the SHOW USERS map of a user, and a slot's filters and owner.
+A `resync` line means the watch fell behind; the whole catalog follows it, so start your copy over from it.
+`--catalog` takes only `--json` and `--no-reconnect`; a reconnect starts again from the whole catalog.
+See the server's [WATCH CATALOG](https://github.com/chunkdb/chunkdb/blob/main/docs/reference/FEED.md#watch-catalog) reference for the event rules.
 
 ## If it fails
 

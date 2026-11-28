@@ -9,6 +9,7 @@ chunk-cli [options] shell
 chunk-cli [options] transaction <file>
 chunk-cli [options] watch [<table>] [--slot name] [--ack-every n] [--area cx0,cy0[,cz0],cx1,cy1[,cz1]] [--after epoch:revision]
           [--columns a,b] [--no-before] [--chunks] [--takeover] [--ack-timeout-ms ms] [--no-reconnect] [--json]
+chunk-cli [options] watch --catalog [--no-reconnect] [--json]
 chunk-cli [options] migrate <file>
 chunk-cli [options] migrations
 chunk-cli version
@@ -53,6 +54,7 @@ A schema version identifies the columns used to encode the chunk.
 A revision orders committed changes within a table.
 Within one table epoch, committed chunk versions are revisions and can be compared numerically.
 `DESCRIBE` includes the epoch, completed revision frontier, dimensions, block columns and chunk columns.
+A table with CHECK constraints adds `checks:` with one `name (condition)` line each; a fenced table ends with `fenced = <reason>`.
 Its revision is `NULL` when a read-only server cannot establish the writer's frontier.
 
 - Blocks print `column = value` lines; an absent block prints `NULL`.
@@ -243,9 +245,30 @@ Full chunk imports replace block data and chunk columns.
 For statement options, see [CQL reference](https://github.com/chunkdb/chunkdb/blob/main/docs/CQL.md).
 For connection state, see [Transactions](TRANSACTIONS.md).
 
-`SHOW STATUS` reports enabled directory/table features, raw unsigned `compat`, `ro_compat` and `incompat` masks, and `activation_pending`.
-`ENABLE FEATURE <name>` explicitly enables a registered feature for the directory and its affected tables.
-Both operations require `ADMIN` on `*`; feature activation can change which server versions can open the data.
+`SHOW STATUS` reports the server `version`, `uptime_ms`, `read_only`, the directory's and each table's enabled features with raw unsigned `compat`, `ro_compat` and `incompat` masks, each table's `state` and `reason`, the `fenced` tables, and `activation_pending`.
+It requires `MONITOR` or `ADMIN` on `*`.
+`ENABLE FEATURE '<name>'` explicitly enables a registered feature for the directory and its affected tables; it requires `ADMIN` on `*`, and activation can change which server versions can open the data.
+`SHOW TABLE STATS <table>` reports `epoch`, the nullable `revision`, `dims`, `chunks`, `tombstones`, `retained_deletion_floor`, `loaded_chunks`, `files`, `disk_bytes`, `slots` and `watches`; it requires `READ` on the table.
+The CLI checks the types of the fields it knows in `SHOW STATUS`, `SHOW TABLE STATS` and `SHOW SLOTS`, and prints fields it does not know as they arrive.
+
+## Statements
+
+Every server statement runs as a one-shot statement or a shell line; these commands and options give the statements that need more than a line.
+
+| Statements | CLI form |
+| --- | --- |
+| GET BLOCK, SET BLOCK, DELETE BLOCK, AGGREGATE | Statement; `--in` for `$n` values |
+| GET CHUNK, SET CHUNK, GET AREA, SCAN CHUNKS, COMPACT TOMBSTONES, SHOW TABLE STATS | Statement; `--out` saves a chunk form, `--in` sends one |
+| CREATE TABLE, ALTER TABLE, DROP TABLE, RECOVER TABLE, SWAP TABLES, SHOW TABLES, DESCRIBE, SHOW STATUS, ENABLE FEATURE | Statement |
+| MIGRATE, SHOW MIGRATIONS | `migrate <file>` and `migrations`, or the statement |
+| BEGIN, COMMIT, ROLLBACK | Shell lines or `transaction <file>`; see [Transactions](TRANSACTIONS.md) |
+| WATCH, ACK, UNWATCH | `watch <table>`, which sends ACK for a slot and UNWATCH on Ctrl-C; see [Feed](FEED.md) |
+| WATCH CATALOG | `watch --catalog`; see [Feed](FEED.md#watch-the-catalog) |
+| CREATE SLOT, DROP SLOT, SHOW SLOTS | Statement |
+| CREATE USER, ALTER USER, DROP USER, GRANT, REVOKE, SHOW USERS | Statement; `--new-password-file` for `PASSWORD`; see [Users](USERS.md) |
+| PING, FLUSH WAL, SHOW METRICS, BACKUP TO, RESTORE TABLE, RELOAD TLS, SHOW CONNECTIONS, CANCEL, KILL CONNECTION | Statement; Ctrl-C sends CANCEL for a running one-shot statement; see [Backup](BACKUP.md) |
+
+The CLI sends HELLO and AUTH itself when it connects; see [Connection](CONNECTION.md).
 
 ## Area pages
 

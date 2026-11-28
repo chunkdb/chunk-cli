@@ -150,6 +150,16 @@ type Schema struct {
 	LargeDepth    int
 	Options       []MapEntry
 	columnIndexes map[string]int
+	// Checks are the table's CHECK constraints, in DESCRIBE order.
+	Checks []Check
+	// Fenced is the reason a fenced table does not serve, or empty.
+	Fenced string
+}
+
+// Check is a CHECK constraint of DESCRIBE.
+type Check struct {
+	Name       string
+	Expression string
 }
 
 // Column returns the column called name.
@@ -280,6 +290,25 @@ func ParseDescribe(reply Value) (*Schema, error) {
 		return nil, err
 	}
 	schema.Options = options.Map
+	if checks, found := reply.Lookup("checks"); found {
+		if checks.Kind != KindArray {
+			return nil, errors.New("DESCRIBE: invalid checks")
+		}
+		for _, check := range checks.Items {
+			name, nameFound := check.Lookup("name")
+			expression, expressionFound := check.Lookup("expression")
+			if check.Kind != KindMap || !nameFound || name.Kind != KindBulk || !expressionFound || expression.Kind != KindBulk {
+				return nil, errors.New("DESCRIBE: invalid check")
+			}
+			schema.Checks = append(schema.Checks, Check{Name: string(name.Bulk), Expression: string(expression.Bulk)})
+		}
+	}
+	if fenced, found := reply.Lookup("fenced"); found {
+		if fenced.Kind != KindBulk || len(fenced.Bulk) == 0 {
+			return nil, errors.New("DESCRIBE: invalid fenced")
+		}
+		schema.Fenced = string(fenced.Bulk)
+	}
 	columns, err := field("columns", KindArray)
 	if err != nil {
 		return nil, err
