@@ -65,6 +65,8 @@ chunk-cli --uri "$CHUNKDB_URI" "DROP SLOT 'consumer' ON world"
   lag_revisions = 0
   retained_bytes = 0
   attached = false
+  peer = NULL
+  last_ack_ms = NULL
   lost = false
   lost_reason = NULL
   filters:
@@ -103,6 +105,10 @@ CREATE SLOT IF NOT EXISTS with another OWNER returns `INVALID_ARGUMENT reason=sl
 Omitted watch filters inherit the slot's saved filters; explicit filters must match or return `INVALID_ARGUMENT reason=slot_filters`.
 Changing filters requires a different slot.
 `SHOW SLOTS` includes typed filters, stable column IDs, nullable loss reasons and the owner.
+For an attached watch, `peer` is the client's `[address]:port` as shown by `SHOW CONNECTIONS`, and `last_ack_ms` is the time in milliseconds since the watch's last accepted ACK.
+Both fields are `NULL` when the slot is detached.
+`last_ack_ms` is also `NULL` before the watch's first accepted ACK.
+The server shows `peer` to the watch's user and to clients allowed to list all connections, and returns `NULL` to other viewers.
 The owner is shown to that user, to users who manage users and to everyone on a server started with `--auth none`, and is `NULL` otherwise.
 A renamed column displays its current name; a dropped column retains its ID with a null name and loses the filtered slot.
 

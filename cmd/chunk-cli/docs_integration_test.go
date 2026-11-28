@@ -54,7 +54,7 @@ func normalizeDocOutput(output string) string {
 	for _, rule := range []struct{ pattern, replacement string }{
 		{`(?m)^((?:start |schema ))[0-9a-f]{32}(:)`, `${1}<epoch>${2}`},
 		{`(?m)^([ \t]*\d+\) table = [a-z][a-z0-9_]*(?:, name = [a-z_][a-z0-9_]*)?, epoch = )[0-9a-f]{32}(,)`, `${1}<epoch>${2}`},
-		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n(?:  revision = (?:\d+|NULL)\n  lag_revisions = (?:\d+|NULL)\n)?  retained_bytes = \d+\n(?:  attached = (?:true|false)\n)?  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
+		{`(?m)^([1-9]\d*\)\n  table = [a-z_][a-z0-9_]*\n  name = [a-z_][a-z0-9_]*\n  epoch = )[0-9a-f]{32}(\n  acked = \d+\n(?:  revision = (?:\d+|NULL)\n  lag_revisions = (?:\d+|NULL)\n)?  retained_bytes = \d+\n(?:  attached = (?:true|false)\n)?(?:  peer = [^\n]+\n  last_ack_ms = (?:\d+|NULL)\n)?  lost = (?:true|false)\n  lost_reason = [^\n]+\n  filters:\n)`, `${1}<epoch>${2}`},
 		{`(?m)^(change revision \d+ time_ms )-?\d+`, `${1}<time-ms>`},
 		{`(?m)^([ \t]*version = (?:\d+|NULL)\n[ \t]*schema_version = \d+\n[ \t]*commit_time_ms = )\d+(\n[ \t]*present = \d+ of \d+ blocks\n)`, `${1}<time-ms>${2}`},
 		{`(?m)^((?:chunks:\n(?:  \d+\) \[-?\d+, -?\d+(?:, -?\d+){1,2}\]\n)+|chunks = \[\]\n)more = (?:true|false)\nepoch = )[0-9a-f]{32}(\nposition = (?:\d+|NULL)\nretained_deletion_floor = \d+\n)`, `${1}<epoch>${2}`},
@@ -130,6 +130,7 @@ func TestDocSlotTranscript(t *testing.T) {
 		watchBulk("epoch"), watchBulk(watchEpoch), watchBulk("acked"), watchInt("2"),
 		watchBulk("revision"), watchInt("2"), watchBulk("lag_revisions"), watchInt("0"),
 		watchBulk("retained_bytes"), watchInt("0"), watchBulk("attached"), chunkclient.Value{Kind: chunkclient.KindBool},
+		watchBulk("peer"), null, watchBulk("last_ack_ms"), null,
 		watchBulk("lost"), chunkclient.Value{Kind: chunkclient.KindBool},
 		watchBulk("lost_reason"), null, watchBulk("filters"), filters,
 		watchBulk("owner"), watchBulk("admin"),
@@ -159,6 +160,7 @@ func TestDocSlotTranscript(t *testing.T) {
 	t.Logf("Synthetic production formatter transcript:\n%s", out.String())
 	for _, replacement := range [][2]string{
 		{"acked = 2", "acked = 3"}, {"retained_bytes = 0", "retained_bytes = 7"},
+		{"peer = NULL", "peer = [127.0.0.1]:4242"}, {"last_ack_ms = NULL", "last_ack_ms = 17"},
 		{"lost = false", "lost = true"}, {"area = [0, 0, 0, 0]", "area = [0, 0, 1, 1]"},
 		{"columns = NULL", "columns = [kind]"}, {"column_ids = NULL", "column_ids = [1]"},
 		{"no_before = false", "no_before = true"}, {"chunks = false", "chunks = true"},
@@ -166,8 +168,9 @@ func TestDocSlotTranscript(t *testing.T) {
 		{"owner = admin", "owner = reader"},
 	} {
 		changed := strings.Replace(out.String(), replacement[0], replacement[1], 1)
-		if normalizeDocOutput(changed) == expected {
-			t.Fatalf("normalization hid changed metadata: %v", replacement)
+		want := strings.Replace(expected, replacement[0], replacement[1], 1)
+		if got := normalizeDocOutput(changed); got != want {
+			t.Fatalf("normalization of changed metadata %v:\ngot:\n%s\nwant:\n%s", replacement, got, want)
 		}
 	}
 	for _, data := range []string{
